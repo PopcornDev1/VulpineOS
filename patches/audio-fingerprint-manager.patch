@@ -3,13 +3,14 @@ new file mode 100644
 index 0000000000..f47a35b2e3
 --- /dev/null
 +++ b/dom/base/AudioFingerprintManager.cpp
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,81 @@
 +#include "AudioFingerprintManager.h"
 +#include "RoverfoxStorageManager.h"
 +#include "nsPIDOMWindow.h"
 +#include "nsGlobalWindowInner.h"
 +#include "xpcpublic.h"
 +#include "mozilla/dom/Document.h"
++#include <algorithm>
 +
 +namespace mozilla {
 +namespace dom {
@@ -98,12 +99,11 @@ new file mode 100644
 index 0000000000..535ce3a6f9
 --- /dev/null
 +++ b/dom/base/AudioFingerprintManager.h
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,34 @@
 +#ifndef mozilla_dom_AudioFingerprintManager_h
 +#define mozilla_dom_AudioFingerprintManager_h
 +
 +#include "nsString.h"
-+#include <algorithm>
 +
 +// Forward declarations for WebIDL binding (avoid js/TypeDecls.h namespace pollution)
 +struct JSContext;
