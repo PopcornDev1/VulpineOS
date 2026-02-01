@@ -99,15 +99,11 @@ new file mode 100644
 index 0000000000..535ce3a6f9
 --- /dev/null
 +++ b/dom/base/AudioFingerprintManager.h
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,27 @@
 +#ifndef mozilla_dom_AudioFingerprintManager_h
 +#define mozilla_dom_AudioFingerprintManager_h
 +
 +#include "nsString.h"
-+
-+// Forward declarations for WebIDL binding (avoid js/TypeDecls.h namespace pollution)
-+struct JSContext;
-+class JSObject;
 +
 +class nsPIDOMWindowInner;
 +
@@ -121,10 +117,7 @@ index 0000000000..535ce3a6f9
 +  static void SetSeed(uint32_t aUserContextId, uint32_t aSeed);
 +  static uint32_t GetSeed(uint32_t aUserContextId);
 +
-+  // Apply transformation to float audio data (for getChannelData, copyFromChannel, AnalyserNode float methods)
 +  static void ApplyTransformation(float* data, uint32_t length, uint32_t seed);
-+
-+  // Apply transformation to byte audio data (for AnalyserNode byte methods)
 +  static void ApplyTransformationToBytes(uint8_t* data, uint32_t length, uint32_t seed);
 +
 +  static bool IsFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj);
