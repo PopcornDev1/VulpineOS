@@ -139,14 +139,16 @@ diff --git a/dom/base/moz.build b/dom/base/moz.build
 index cd9090cda3..a1b2c3d4e5 100644
 --- a/dom/base/moz.build
 +++ b/dom/base/moz.build
-@@ -150,6 +150,7 @@ EXPORTS.mozilla.dom += [
+@@ -144,6 +144,7 @@ EXPORTS.mozilla.dom += [
+     "AnimationFrameProvider.h",
      "AnonymousContent.h",
      "Attr.h",
 +    "AudioFingerprintManager.h",
      "AutoPrintEventDispatcher.h",
-     "AutocompleteInfoCollector.h",
+     "AutoSuppressEventHandlingAndSuspend.h",
      "BarProps.h",
-@@ -341,6 +342,7 @@ UNIFIED_SOURCES += [
+@@ -330,6 +330,7 @@ UNIFIED_SOURCES += [
+     "AnimationFrameProvider.cpp",
      "AnonymousContent.cpp",
      "Attr.cpp",
      "AttrArray.cpp",
@@ -210,10 +212,10 @@ index f59d01944a..d21c86e030 100644
  #include "nsPrintfCString.h"
  #include "nsTHashSet.h"
 +#include "AudioFingerprintManager.h"
-
+ 
  namespace mozilla::dom {
 
-@@ -303,6 +304,23 @@ bool AudioBuffer::RestoreJSChannelData(JSContext* aJSContext) {
+@@ -303,5 +304,22 @@ bool AudioBuffer::RestoreJSChannelData(JSContext* aJSContext) {
        MOZ_ASSERT(!isShared);  // Was created as unshared above
        CopyChannelDataToFloat(mSharedChannels, i, 0, jsData, Length());
      }
@@ -237,7 +239,7 @@ index f59d01944a..d21c86e030 100644
      mJSChannels[i] = array;
    }
 
-@@ -373,6 +391,21 @@ void AudioBuffer::CopyFromChannel(const Float32Array& aDestination,
+@@ -373,5 +391,15 @@ void AudioBuffer::CopyFromChannel(const Float32Array& aDestination,
    aDestination.ProcessData([&](const Span<float>& aData, JS::AutoCheckCannotGC&&) {
      CopyChannelDataToFloat(data, aChannelNumber, aBufferOffset, aData.Elements(),
                             length);
@@ -258,19 +260,17 @@ diff --git a/dom/media/webaudio/AnalyserNode.cpp b/dom/media/webaudio/AnalyserNo
 index 4fd7c8be9a..e5f6a7b8c9 100644
 --- a/dom/media/webaudio/AnalyserNode.cpp
 +++ b/dom/media/webaudio/AnalyserNode.cpp
-@@ -14,6 +14,7 @@
+@@ -13,5 +13,6 @@
+ #include "mozilla/PodOperations.h"
  #include "mozilla/dom/AnalyserNodeBinding.h"
- #include "nsDocShell.h"
- #include "nsGlobalWindowInner.h"
+ #include "nsMathUtils.h"
 +#include "AudioFingerprintManager.h"
 
- namespace mozilla::dom {
-
-@@ -251,6 +252,16 @@ void AnalyserNode::GetFloatFrequencyData(const Float32Array& aArray) {
-     ApplyBlackmanWindow(mOutputBuffer.Elements(), mFFTSize);
-     FFTAnalysis(mOutputBuffer.Elements(), mFFTSize / 2, mFFTSize);
+ namespace mozilla {
+@@ -216,4 +217,13 @@ void AnalyserNode::GetFloatFrequencyData(const Float32Array& aArray) {
+     return;
    }
-+
+
 +  // Apply audio fingerprint transformation to frequency data
 +  nsPIDOMWindowInner* global = GetParentObject();
 +  if (global) {
@@ -280,34 +280,25 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
 +      AudioFingerprintManager::ApplyTransformation(mOutputBuffer.Elements(), mOutputBuffer.Length(), seed);
 +    }
 +  }
-
    aArray.ProcessData([&](const Span<float>& aData, JS::AutoCheckCannotGC&&) {
-     size_t length = std::min(aData.Length(), mOutputBuffer.Length());
-@@ -270,6 +281,19 @@ void AnalyserNode::GetByteFrequencyData(const Uint8Array& aArray) {
+@@ -232,4 +243,13 @@ void AnalyserNode::GetByteFrequencyData(const Uint8Array& aArray) {
+     return;
+   }
 
-   aArray.ProcessData([&](const Span<uint8_t>& aData, JS::AutoCheckCannotGC&&) {
-     size_t length = std::min(aData.Length(), mOutputBuffer.Length());
-+
-+    // Apply audio fingerprint transformation to frequency data before byte conversion
-+    nsPIDOMWindowInner* global = GetParentObject();
-+    if (global) {
-+      uint32_t userContextId = AudioFingerprintManager::GetUserContextIdFromWindow(global);
-+      uint32_t seed = AudioFingerprintManager::GetSeed(userContextId);
-+      if (seed != 0) {
-+        // Transform the underlying float buffer
-+        AudioFingerprintManager::ApplyTransformation(mOutputBuffer.Elements(), mOutputBuffer.Length(), seed);
-+      }
++  // Apply audio fingerprint transformation to frequency data
++  nsPIDOMWindowInner* global = GetParentObject();
++  if (global) {
++    uint32_t userContextId = AudioFingerprintManager::GetUserContextIdFromWindow(global);
++    uint32_t seed = AudioFingerprintManager::GetSeed(userContextId);
++    if (seed != 0) {
++      AudioFingerprintManager::ApplyTransformation(mOutputBuffer.Elements(), mOutputBuffer.Length(), seed);
 +    }
-+
-+    // Now convert to bytes
-     for (size_t i = 0; i < length; ++i) {
-       const double decibels =
-           COMPUTE_DECIBELS(mOutputBuffer.Elements()[i], MinDecibels());
-@@ -289,6 +313,17 @@ void AnalyserNode::GetFloatTimeDomainData(const Float32Array& aArray) {
-   aArray.ProcessData([&](const Span<float>& aData, JS::AutoCheckCannotGC&&) {
-     size_t length = std::min(aData.Length(), size_t(mFFTSize));
++  }
+   const double rangeScaleFactor = 1.0 / (mMaxDecibels - mMinDecibels);
+@@ -255,5 +275,14 @@ void AnalyserNode::GetFloatTimeDomainData(const Float32Array& aArray) {
+     size_t length = std::min(aData.Length(), size_t(FftSize()));
+
      GetTimeDomainData(aData.Elements(), length);
-+
 +    // Apply audio fingerprint transformation to time domain data
 +    nsPIDOMWindowInner* global = GetParentObject();
 +    if (global) {
@@ -319,39 +310,32 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
 +    }
    });
  }
-
-@@ -302,6 +337,17 @@ void AnalyserNode::GetByteTimeDomainData(const Uint8Array& aArray) {
-     std::vector<float> tmpBuffer(length);
-     GetTimeDomainData(tmpBuffer.data(), length);
-
+@@ -269,6 +298,15 @@ void AnalyserNode::GetByteTimeDomainData(const Uint8Array& aArray) {
+ 
+     GetTimeDomainData(tmpBuffer.Elements(), length);
+ 
 +    // Apply audio fingerprint transformation before byte conversion
 +    nsPIDOMWindowInner* global = GetParentObject();
 +    if (global) {
 +      uint32_t userContextId = AudioFingerprintManager::GetUserContextIdFromWindow(global);
 +      uint32_t seed = AudioFingerprintManager::GetSeed(userContextId);
 +      if (seed != 0) {
-+        AudioFingerprintManager::ApplyTransformation(tmpBuffer.data(), length, seed);
++        AudioFingerprintManager::ApplyTransformation(tmpBuffer.Elements(), length, seed);
 +      }
 +    }
-+
-+    // Convert to bytes
+     unsigned char* buffer = aData.Elements();
      for (size_t i = 0; i < length; ++i) {
-       const float clampedValue = std::clamp(tmpBuffer[i], -1.0f, 1.0f);
-       aData[i] =
-
+       const float value = tmpBuffer[i];
 diff --git a/dom/media/webaudio/moz.build b/dom/media/webaudio/moz.build
 index 3ee8c0aa76..4cf10f3039 100644
 --- a/dom/media/webaudio/moz.build
 +++ b/dom/media/webaudio/moz.build
-@@ -154,6 +154,9 @@ FINAL_LIBRARY = "xul"
+@@ -155,2 +155,5 @@ include("/ipc/chromium/chromium-config.mozbuild")
+ FINAL_LIBRARY = "xul"
  LOCAL_INCLUDES += [".."]
-
++
 +# AudioFingerprintManager in dom/base
 +LOCAL_INCLUDES += ["/dom/base"]
-+
- # DOM Mask
- LOCAL_INCLUDES += ["/camoucfg"]
-
 diff --git a/dom/webidl/Window.webidl b/dom/webidl/Window.webidl
 index a6f0d96a36..b3c4d5e6f7 100644
 --- a/dom/webidl/Window.webidl
