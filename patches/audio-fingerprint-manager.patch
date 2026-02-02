@@ -99,12 +99,15 @@ new file mode 100644
 index 0000000000..535ce3a6f9
 --- /dev/null
 +++ b/dom/base/AudioFingerprintManager.h
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,30 @@
 +#ifndef mozilla_dom_AudioFingerprintManager_h
 +#define mozilla_dom_AudioFingerprintManager_h
 +
 +#include "nsString.h"
++#include "RoverfoxStorageManager.h"
 +
++struct JSContext;
++class JSObject;
 +class nsPIDOMWindowInner;
 +
 +namespace mozilla {
@@ -338,7 +341,7 @@ index 3ee8c0aa76..4cf10f3039 100644
 +# AudioFingerprintManager in dom/base
 +LOCAL_INCLUDES += ["/dom/base"]
 diff --git a/dom/webidl/Window.webidl b/dom/webidl/Window.webidl
-index a6f0d96a36..b3c4d5e6f7 100644
+index 7c509eb87e..7a076768d1 100644
 --- a/dom/webidl/Window.webidl
 +++ b/dom/webidl/Window.webidl
 @@ -892,6 +892,12 @@ partial interface Window {
