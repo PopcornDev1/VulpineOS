@@ -99,12 +99,15 @@ new file mode 100644
 index 0000000000..535ce3a6f9
 --- /dev/null
 +++ b/dom/base/AudioFingerprintManager.h
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,31 @@
 +#ifndef mozilla_dom_AudioFingerprintManager_h
 +#define mozilla_dom_AudioFingerprintManager_h
 +
 +#include "nsString.h"
-+#include "RoverfoxStorageManager.h"
++
++// Forward declarations for WebIDL binding (avoid js/TypeDecls.h namespace pollution)
++struct JSContext;
++class JSObject;
 +
 +class nsPIDOMWindowInner;
 +
