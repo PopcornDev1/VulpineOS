@@ -118,14 +118,16 @@ index cd9090cda3..a1b2c3d4e5 100644
      "AutoPrintEventDispatcher.h",
      "AutoSuppressEventHandlingAndSuspend.h",
      "BarProps.h",
-@@ -330,6 +330,7 @@ UNIFIED_SOURCES += [
-     "AnimationFrameProvider.cpp",
-     "AnonymousContent.cpp",
-     "Attr.cpp",
-     "AttrArray.cpp",
-+    "AudioFingerprintManager.cpp",
-     "BarProps.cpp",
-     "BindContext.cpp",
+@@ -326,4 +326,9 @@ SOURCES += [
+     "nsWindowSizes.cpp",
+ ]
+
++# AudioFingerprintManager compiled separately to avoid namespace pollution
++# in unified builds (it includes RoverfoxStorageManager.h which can affect
++# alphabetically-later files like BarProps.cpp)
++SOURCES += ["AudioFingerprintManager.cpp"]
++
+ UNIFIED_SOURCES += [
 diff --git a/dom/base/nsGlobalWindowInner.cpp b/dom/base/nsGlobalWindowInner.cpp
 index 748ae6cf83..b2c3d4e5f6 100644
 --- a/dom/base/nsGlobalWindowInner.cpp
