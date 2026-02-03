@@ -349,14 +349,15 @@ index cd9090cda3..93cea20206 100644
      "WindowFeatures.h",
      "WindowProxyHolder.h",
  ]
-@@ -494,6 +495,7 @@ UNIFIED_SOURCES += [
-     "UserActivation.cpp",
-     "ViewportMetaData.cpp",
-     "VisualViewport.cpp",
-+    "WebRTCIPManager.cpp",
-     "WindowDestroyedEvent.cpp",
-     "WindowFeatures.cpp",
-     "WindowNamedPropertiesHandler.cpp",
+@@ -326,4 +327,8 @@ SOURCES += [
+     "nsWindowSizes.cpp",
+ ]
+
++# WebRTCIPManager compiled separately to avoid unified build errors
++# (it includes RoverfoxStorageManager.h which causes template issues)
++SOURCES += ["WebRTCIPManager.cpp"]
++
+ UNIFIED_SOURCES += [
 diff --git a/dom/base/nsGlobalWindowInner.cpp b/dom/base/nsGlobalWindowInner.cpp
 index 330a707789..4f87317dbb 100644
 --- a/dom/base/nsGlobalWindowInner.cpp
