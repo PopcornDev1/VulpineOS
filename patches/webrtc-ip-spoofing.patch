@@ -5,7 +5,7 @@ index 0000000000..94575f2631
 +++ b/dom/base/WebRTCIPManager.cpp
 @@ -0,0 +1,224 @@
 +#include "WebRTCIPManager.h"
-+#include "nsHashKeys.h"
++#include "nsTHashMap.h"
 +#include "RoverfoxStorageManager.h"
 +#include "nsPrintfCString.h"
 +#include "nsGlobalWindowInner.h"
