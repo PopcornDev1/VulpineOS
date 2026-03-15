@@ -63,6 +63,17 @@ BISECT_EXTRACT_DIR = "_bisect_extract"
 # Internals
 # ---------------------------------------------------------------------------
 
+def extract_zip(zip_path, dest_dir):
+    """Extract a zip file, preserving Unix file permissions."""
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(dest_dir)
+        for info in zf.infolist():
+            if info.external_attr:
+                perm = info.external_attr >> 16
+                if perm:
+                    os.chmod(os.path.join(dest_dir, info.filename), perm)
+
+
 def parse_upstream():
     """Read version and release from upstream.sh."""
     vals = {}
@@ -172,8 +183,7 @@ def package_and_extract(version, release, arch):
     os.makedirs(BISECT_EXTRACT_DIR)
 
     # Extract
-    with zipfile.ZipFile(zip_name, "r") as zf:
-        zf.extractall(BISECT_EXTRACT_DIR)
+    extract_zip(zip_name, BISECT_EXTRACT_DIR)
 
     # Clean up zip
     os.remove(zip_name)
@@ -210,7 +220,32 @@ def main():
         required=True,
         help="Build architecture",
     )
+    parser.add_argument(
+        "--test-only",
+        metavar="ZIP",
+        help="Skip building. Extract the given zip from dist/ and run test_criteria only.",
+    )
     args = parser.parse_args()
+
+    # Quick sanity-check mode: extract an existing zip and test it
+    if args.test_only:
+        zip_path = args.test_only
+        if not os.path.exists(zip_path):
+            print(f"ERROR: {zip_path} not found.")
+            sys.exit(1)
+        print(f"Extracting {zip_path} ...")
+        if os.path.exists(BISECT_EXTRACT_DIR):
+            shutil.rmtree(BISECT_EXTRACT_DIR)
+        os.makedirs(BISECT_EXTRACT_DIR)
+        extract_zip(zip_path, BISECT_EXTRACT_DIR)
+        app_path = os.path.join(os.path.abspath(BISECT_EXTRACT_DIR), "Camoufox.app")
+        if not os.path.exists(app_path):
+            print(f"ERROR: Camoufox.app not found in {BISECT_EXTRACT_DIR}/")
+            sys.exit(1)
+        print(f"Running test_criteria against: {app_path}")
+        passed = test_criteria(app_path)
+        print("PASS" if passed else "FAIL")
+        sys.exit(0 if passed else 1)
 
     os.environ["BUILD_TARGET"] = f"{args.target},{args.arch}"
 
