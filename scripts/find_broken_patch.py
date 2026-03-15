@@ -181,14 +181,27 @@ def apply_patches(patches):
     return True
 
 
+def mark_result(label, arch, passed):
+    """Rename the saved zip in dist/ to include pass/fail."""
+    src = f"dist/{label}-mac.{arch}.zip"
+    result = "pass" if passed else "fail"
+    dst = f"dist/{label}-{result}-mac.{arch}.zip"
+    if os.path.exists(src):
+        os.rename(src, dst)
+        print(f"  Saved: {dst}")
+
+
 def build():
     """Run the build. Returns True on success."""
     ret = os.system("./mach build")
     return ret == 0
 
 
-def package_and_extract(version, release, arch):
+def package_and_extract(version, release, arch, label=None):
     """Package the build and extract to _bisect_extract/.
+
+    If label is provided (e.g. "round-1"), the zip is saved to
+    dist/ with the label and pass/fail result after testing.
 
     Returns the absolute path to the extracted Camoufox.app.
     """
@@ -210,6 +223,11 @@ def package_and_extract(version, release, arch):
         print(f"ERROR: Expected package not found: {zip_name}")
         sys.exit(1)
 
+    # Save a copy if labelled
+    if label:
+        os.makedirs("dist", exist_ok=True)
+        shutil.copy2(zip_name, f"dist/{label}-mac.{arch}.zip")
+
     # Clear and recreate extract directory
     if os.path.exists(BISECT_EXTRACT_DIR):
         shutil.rmtree(BISECT_EXTRACT_DIR)
@@ -218,7 +236,7 @@ def package_and_extract(version, release, arch):
     # Extract
     extract_zip(zip_name, BISECT_EXTRACT_DIR)
 
-    # Clean up zip
+    # Clean up original zip
     os.remove(zip_name)
 
     app_path = os.path.join(os.path.abspath(BISECT_EXTRACT_DIR), "Camoufox.app")
@@ -324,9 +342,10 @@ def main():
             sys.exit(1)
 
     # Package and extract
-    app_path = package_and_extract(version, release, args.arch)
+    app_path = package_and_extract(version, release, args.arch, label="round-0-sanity")
     print(f"\nRunning test criteria against playwright-only build: {app_path}")
     passed = test_criteria(app_path)
+    mark_result("round-0-sanity", args.arch, passed)
 
     if not passed:
         print("FAIL — test criteria failed on playwright-only build.")
@@ -365,9 +384,11 @@ def main():
                 print("ERROR: Build failed. Cannot continue binary search.")
                 sys.exit(1)
 
-        app_path = package_and_extract(version, release, args.arch)
+        label = f"round-{iteration}"
+        app_path = package_and_extract(version, release, args.arch, label=label)
         print(f"\nRunning test criteria against: {app_path}")
         passed = test_criteria(app_path)
+        mark_result(label, args.arch, passed)
 
         if passed:
             print(f"PASS — leak not present with patches [0..{mid}]")
