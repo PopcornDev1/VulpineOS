@@ -1,0 +1,46 @@
+# VulpineOS Vulpine-Box: One-click Agent OS container
+# Usage: docker build -f Dockerfile.vulpinebox -t vulpineos .
+#        docker run -p 8443:8443 -e VULPINE_API_KEY=secret vulpineos
+
+# Stage 1: Build Go binary
+FROM golang:1.23-bookworm AS go-builder
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ cmd/
+COPY internal/ internal/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /vulpineos ./cmd/vulpineos/
+
+# Stage 2: Runtime
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgtk-3-0 libdbus-glib-1-2 libxt6 libasound2 \
+    libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 \
+    libxext6 libxfixes3 libxcursor1 libxi6 \
+    fonts-liberation fonts-noto-color-emoji \
+    ca-certificates curl xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/vulpineos
+
+# Copy pre-built Camoufox distribution (must be in dist/camoufox-linux/)
+COPY dist/camoufox-linux/ ./browser/
+# Copy Go binary
+COPY --from=go-builder /vulpineos ./vulpineos
+# Copy settings
+COPY settings/ ./browser/
+# Copy entrypoint
+COPY scripts/entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh ./vulpineos
+
+# Create vault directory
+RUN mkdir -p /root/.vulpineos
+
+ENV DISPLAY=:99
+EXPOSE 8443
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -sf http://localhost:8443/health || exit 1
+
+ENTRYPOINT ["./entrypoint.sh"]

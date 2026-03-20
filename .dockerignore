@@ -1,0 +1,12 @@
+camoufox-*/
+legacy/
+pythonlib/
+tests/
+build-tester/
+service-tester/
+.git/
+.claude/
+patches/
+*.patch
+*.md
+!README.md

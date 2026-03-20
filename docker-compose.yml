@@ -1,0 +1,21 @@
+services:
+  vulpineos:
+    build:
+      context: .
+      dockerfile: Dockerfile.vulpinebox
+    ports:
+      - "8443:8443"
+    environment:
+      - VULPINE_API_KEY=${VULPINE_API_KEY:-changeme}
+    volumes:
+      - vulpine-vault:/root/.vulpineos
+      - vulpine-profiles:/opt/vulpineos/profiles
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+volumes:
+  vulpine-vault:
+  vulpine-profiles:
