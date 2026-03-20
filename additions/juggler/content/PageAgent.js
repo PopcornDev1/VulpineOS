@@ -21,6 +21,139 @@ const obs = Cc["@mozilla.org/observer-service;1"].getService(
 
 const helper = new Helper();
 
+// VulpineOS: Visibility check for injection-proof filtering (Phase 1)
+function isNodeVisuallyHidden(accElement) {
+  const domNode = accElement.DOMNode;
+  if (!domNode || !domNode.ownerDocument)
+    return false;
+  if (domNode.nodeType !== 1)
+    return false;
+  if (domNode.getAttribute('aria-hidden') === 'true')
+    return true;
+  const win = domNode.ownerDocument.defaultView;
+  if (!win)
+    return false;
+  const style = win.getComputedStyle(domNode);
+  if (!style)
+    return false;
+  if (style.display === 'none')
+    return true;
+  if (style.visibility === 'hidden' || style.visibility === 'collapse')
+    return true;
+  if (style.opacity === '0')
+    return true;
+  const rect = domNode.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) {
+    const overflow = style.overflow;
+    if (overflow === 'hidden' || overflow === 'clip' || overflow === 'scroll')
+      return true;
+  }
+  const viewportWidth = win.innerWidth;
+  const viewportHeight = win.innerHeight;
+  if (rect.right < -500 || rect.bottom < -500 ||
+      rect.left > viewportWidth + 500 || rect.top > viewportHeight + 500)
+    return true;
+  const clipPath = style.clipPath;
+  if (clipPath === 'inset(100%)' || clipPath === 'inset(50%)')
+    return true;
+  const clip = style.clip;
+  if (clip && clip !== 'auto') {
+    const values = clip.match(/rect\(\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^)]+)\)/);
+    if (values) {
+      const nums = values.slice(1).map(v => parseFloat(v));
+      if (nums.every(n => n === 0))
+        return true;
+    }
+  }
+  return false;
+}
+
+// VulpineOS: Wait for accessibility tree to finish updating
+async function waitForAXQuiet(docAcc) {
+  let state = {};
+  docAcc.getState(state, {});
+  if ((state.value & Ci.nsIAccessibleStates.STATE_BUSY) == 0)
+    return;
+  let resolve;
+  const promise = new Promise(x => { resolve = x; });
+  let eventObserver = {
+    observe(subject, topic) {
+      if (topic !== "accessible-event")
+        return;
+      let event = subject.QueryInterface(Ci.nsIAccessibleEvent);
+      if (event.eventType !== Ci.nsIAccessibleEvent.EVENT_STATE_CHANGE)
+        return;
+      if (event.accessible !== docAcc)
+        return;
+      Services.obs.removeObserver(this, "accessible-event");
+      resolve();
+    },
+  };
+  Services.obs.addObserver(eventObserver, "accessible-event");
+  return promise;
+}
+
+// VulpineOS: Role code mapping for token-optimized DOM export (Phase 3)
+const ROLE_MAP = {
+  'document': 'doc',
+  'button': 'btn',
+  'pushbutton': 'btn',
+  'link': 'a',
+  'entry': 'inp',
+  'textbox': 'inp',
+  'password text': 'inp',
+  'text leaf': 't',
+  'statictext': 't',
+  'flat text': 't',
+  'image': 'img',
+  'image map': 'img',
+  'check box': 'chk',
+  'radiobutton': 'rad',
+  'radio button': 'rad',
+  'combobox': 'sel',
+  'combobox list': 'sel',
+  'listbox': 'sel',
+  'list': 'ul',
+  'listitem': 'li',
+  'table': 'tbl',
+  'row': 'tr',
+  'cell': 'td',
+  'columnheader': 'th',
+  'rowheader': 'th',
+  'heading': 'h',
+  'navigation': 'nav',
+  'landmark': 'main',
+  'banner': 'banner',
+  'contentinfo': 'footer',
+  'form': 'form',
+  'dialog': 'dlg',
+  'alert': 'alert',
+  'menubar': 'menu',
+  'menupopup': 'menu',
+  'menuitem': 'mi',
+  'pagetab': 'tab',
+  'page tab': 'tab',
+  'pagetablist': 'tabs',
+  'propertypage': 'tabp',
+  'separator': 'hr',
+  'toolbar': 'toolbar',
+  'outline': 'tree',
+  'outlineitem': 'ti',
+  'switch': 'sw',
+  'figure': 'fig',
+  'progressbar': 'prog',
+  'slider': 'slider',
+  'spinbutton': 'spin',
+  'status bar': 'status',
+  'tooltip': 'tip',
+};
+
+const SKIP_ROLES = new Set([
+  'section', 'grouping', 'text container', 'paragraph',
+  'generic', 'none', 'presentation', 'whitespace',
+  'div', 'span', 'block',
+]);
+
 class WorkerData {
   constructor(pageAgent, browserChannel, worker) {
     this._workerRuntime = worker.channel().connect('runtime');
@@ -151,6 +284,7 @@ export class PageAgent {
         dispatchTapEvent: this._dispatchTapEvent.bind(this),
         getContentQuads: this._getContentQuads.bind(this),
         getFullAXTree: this._getFullAXTree.bind(this),
+        getOptimizedDOM: this._getOptimizedDOM.bind(this),
         insertText: this._insertText.bind(this),
         scrollIntoViewIfNeeded: this._scrollIntoViewIfNeeded.bind(this),
         setFileInputFiles: this._setFileInputFiles.bind(this),
@@ -602,105 +736,6 @@ export class PageAgent {
     while (docAcc.document.isUpdatePendingForJugglerAccessibility)
       await new Promise(x => this._frameTree.mainFrame().domWindow().requestAnimationFrame(x));
 
-    async function waitForQuiet() {
-      let state = {};
-      docAcc.getState(state, {});
-      if ((state.value & Ci.nsIAccessibleStates.STATE_BUSY) == 0)
-        return;
-      let resolve, reject;
-      const promise = new Promise((x, y) => {resolve = x, reject = y});
-      let eventObserver = {
-        observe(subject, topic) {
-          if (topic !== "accessible-event") {
-            return;
-          }
-
-          // If event type does not match expected type, skip the event.
-          let event = subject.QueryInterface(Ci.nsIAccessibleEvent);
-          if (event.eventType !== Ci.nsIAccessibleEvent.EVENT_STATE_CHANGE) {
-            return;
-          }
-
-          // If event's accessible does not match expected accessible,
-          // skip the event.
-          if (event.accessible !== docAcc) {
-            return;
-          }
-
-          Services.obs.removeObserver(this, "accessible-event");
-          resolve();
-        },
-      };
-      Services.obs.addObserver(eventObserver, "accessible-event");
-      return promise;
-    }
-    function isNodeVisuallyHidden(accElement) {
-      const domNode = accElement.DOMNode;
-      if (!domNode || !domNode.ownerDocument)
-        return false;
-
-      // Only check Element nodes. Text nodes inherit parent visibility.
-      if (domNode.nodeType !== 1)
-        return false;
-
-      // Check 1: aria-hidden attribute
-      if (domNode.getAttribute('aria-hidden') === 'true')
-        return true;
-
-      const win = domNode.ownerDocument.defaultView;
-      if (!win)
-        return false;
-      const style = win.getComputedStyle(domNode);
-      if (!style)
-        return false;
-
-      // Check 2: display:none
-      if (style.display === 'none')
-        return true;
-
-      // Check 3: visibility:hidden or collapse
-      if (style.visibility === 'hidden' || style.visibility === 'collapse')
-        return true;
-
-      // Check 4: opacity:0
-      if (style.opacity === '0')
-        return true;
-
-      // Check 5 & 6: Zero dimensions or off-screen
-      const rect = domNode.getBoundingClientRect();
-
-      // Zero-dimension with hidden overflow
-      if (rect.width === 0 && rect.height === 0) {
-        const overflow = style.overflow;
-        if (overflow === 'hidden' || overflow === 'clip' || overflow === 'scroll')
-          return true;
-      }
-
-      // Off-screen: entirely outside viewport by a wide margin
-      const viewportWidth = win.innerWidth;
-      const viewportHeight = win.innerHeight;
-      if (rect.right < -500 || rect.bottom < -500 ||
-          rect.left > viewportWidth + 500 || rect.top > viewportHeight + 500)
-        return true;
-
-      // Check 7: clip-path / clip hiding
-      const clipPath = style.clipPath;
-      if (clipPath === 'inset(100%)' || clipPath === 'inset(50%)')
-        return true;
-
-      const clip = style.clip;
-      if (clip && clip !== 'auto') {
-        const values = clip.match(/rect\(\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^)]+)\)/);
-        if (values) {
-          const nums = values.slice(1).map(v => parseFloat(v));
-          if (nums.every(n => n === 0))
-            return true;
-        }
-      }
-
-      return false;
-    }
-
     function buildNode(accElement) {
       let a = {}, b = {};
       accElement.getState(a, b);
@@ -775,10 +810,181 @@ export class PageAgent {
         tree.children = children;
       return tree;
     }
-    await waitForQuiet();
+    await waitForAXQuiet(docAcc);
     return {
       tree: buildNode(docAcc),
       filtered: injectionFilterEnabled,
+    };
+  }
+
+  async _getOptimizedDOM({ maxDepth = 10, maxNodes = 500, maxTextLength = 200 }) {
+    const enabled = Services.prefs.getBoolPref('vulpineos.dom_export.enabled', true);
+    if (!enabled)
+      throw new Error('Optimized DOM export is disabled');
+
+    const injectionFilterEnabled = Services.prefs.getBoolPref(
+      'vulpineos.injection_filter.enabled', true
+    );
+
+    const service = Cc["@mozilla.org/accessibilityService;1"]
+      .getService(Ci.nsIAccessibilityService);
+    const frame = this._frameTree.mainFrame();
+    const domWindow = frame.domWindow();
+    const document = domWindow.document;
+    const docAcc = service.getAccessibleFor(document);
+
+    while (docAcc.document.isUpdatePendingForJugglerAccessibility)
+      await new Promise(x => domWindow.requestAnimationFrame(x));
+    await waitForAXQuiet(docAcc);
+
+    const nodes = [];
+    let truncated = false;
+    let nodeCount = 0;
+
+    function compressRole(role, attributes) {
+      if (role === 'heading') {
+        const level = attributes.level || '1';
+        return 'h' + level;
+      }
+      return ROLE_MAP[role] || null;
+    }
+
+    function extractProps(accElement, stateNames, attributes, role) {
+      const props = {};
+      let hasProps = false;
+
+      if (accElement.value && role !== 'document') {
+        props.v = accElement.value;
+        hasProps = true;
+      }
+      if (role === 'link' && accElement.DOMNode?.href) {
+        props.hr = accElement.DOMNode.href;
+        hasProps = true;
+      }
+      if ((role === 'entry' || role === 'textbox' || role === 'password text') && accElement.DOMNode?.type) {
+        const ty = accElement.DOMNode.type;
+        if (ty !== 'text') { props.ty = ty; hasProps = true; }
+      }
+      if (stateNames['checked']) { props.ch = true; hasProps = true; }
+      if (stateNames['mixed']) { props.ch = 'mixed'; hasProps = true; }
+      if (!stateNames['enabled']) { props.dis = true; hasProps = true; }
+      if (stateNames['expanded']) { props.exp = true; hasProps = true; }
+      else if (stateNames['collapsed']) { props.exp = false; hasProps = true; }
+      if (stateNames['required']) { props.req = true; hasProps = true; }
+      if (stateNames['editable'] && stateNames['readonly']) { props.ro = true; hasProps = true; }
+      if (stateNames['selected']) { props.sel = true; hasProps = true; }
+      if (attributes.haspopup) { props.pop = attributes.haspopup; hasProps = true; }
+      if (accElement.description) { props.desc = accElement.description; hasProps = true; }
+
+      return hasProps ? props : null;
+    }
+
+    function walk(accElement, depth) {
+      if (nodeCount >= maxNodes) {
+        truncated = true;
+        return;
+      }
+      if (depth > maxDepth) {
+        truncated = true;
+        return;
+      }
+
+      if (injectionFilterEnabled && isNodeVisuallyHidden(accElement))
+        return;
+
+      const role = service.getStringRole(accElement.role);
+
+      // Collect children
+      const children = [];
+      for (let child = accElement.firstChild; child; child = child.nextSibling)
+        children.push(child);
+
+      // Skip empty text
+      if ((role === 'text leaf' || role === 'statictext') && !accElement.name?.trim())
+        return;
+
+      // Skip decorative images
+      if (role === 'image' && !accElement.name)
+        return;
+
+      // Get attributes for role compression
+      const attributes = {};
+      if (accElement.attributes) {
+        for (const { key, value } of accElement.attributes.enumerate())
+          attributes[key] = value;
+      }
+
+      const code = compressRole(role, attributes);
+
+      // Skip structural wrappers — promote children
+      if (!code || SKIP_ROLES.has(role)) {
+        for (const child of children)
+          walk(child, depth);
+        return;
+      }
+
+      // Single-child flattening for unnamed wrappers
+      if (children.length === 1 && !accElement.name?.trim() && !accElement.value) {
+        const childRole = service.getStringRole(children[0].role);
+        if (ROLE_MAP[childRole] || childRole === 'heading') {
+          walk(children[0], depth);
+          return;
+        }
+      }
+
+      // Build the node tuple
+      const name = (accElement.name || '').trim();
+      const truncatedName = name.length > maxTextLength
+        ? name.substring(0, maxTextLength) + '...'
+        : name;
+
+      // Get states
+      let a = {}, b = {};
+      accElement.getState(a, b);
+      const stateNames = {};
+      for (const s of service.getStringStates(a.value, b.value))
+        stateNames[s] = true;
+
+      const props = extractProps(accElement, stateNames, attributes, role);
+
+      // Emit node — omit empty trailing fields
+      if (props)
+        nodes.push([depth, code, truncatedName, props]);
+      else if (truncatedName)
+        nodes.push([depth, code, truncatedName]);
+      else
+        nodes.push([depth, code]);
+      nodeCount++;
+
+      // Recurse
+      for (const child of children)
+        walk(child, depth + 1);
+    }
+
+    walk(docAcc, 0);
+
+    // Post-process: merge adjacent text nodes at the same depth
+    const merged = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      if (node[1] === 't' && merged.length > 0) {
+        const prev = merged[merged.length - 1];
+        if (prev[1] === 't' && prev[0] === node[0] && !prev[3] && !node[3]) {
+          prev[2] = (prev[2] || '') + ' ' + (node[2] || '');
+          continue;
+        }
+      }
+      merged.push(node);
+    }
+
+    return {
+      snapshot: {
+        v: 1,
+        title: document.title || '',
+        url: domWindow.location.href || '',
+        nodes: merged,
+      },
+      truncated,
     };
   }
 }

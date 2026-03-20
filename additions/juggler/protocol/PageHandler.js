@@ -676,6 +676,10 @@ export class PageHandler {
     return await this._pageTarget.setActionLock(enabled);
   }
 
+  async ['Page.getOptimizedDOM'](params) {
+    return await this._contentPage.send('getOptimizedDOM', params);
+  }
+
   async ['Page.startScreencast'](options) {
     return await this._pageTarget.startScreencast(options);
   }

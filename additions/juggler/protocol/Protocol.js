@@ -1003,6 +1003,17 @@ const Page = {
         enabled: t.Boolean,
       },
     },
+    'getOptimizedDOM': {
+      params: {
+        maxDepth: t.Optional(t.Number),
+        maxNodes: t.Optional(t.Number),
+        maxTextLength: t.Optional(t.Number),
+      },
+      returns: {
+        snapshot: t.Any,
+        truncated: t.Boolean,
+      },
+    },
   },
 };
 
