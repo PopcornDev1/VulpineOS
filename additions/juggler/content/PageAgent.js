@@ -154,6 +154,14 @@ const ROLE_MAP = {
   'spinbutton': 'spin',
   'status bar': 'status',
   'tooltip': 'tip',
+  'article': 'article',
+  'region': 'region',
+  'complementary': 'aside',
+  'search': 'search',
+  'definition': 'dfn',
+  'note': 'note',
+  'grid': 'grid',
+  'gridcell': 'gcell',
 };
 
 const SKIP_ROLES = new Set([
@@ -844,6 +852,7 @@ export class PageAgent {
           attemptType: 'hidden-content',
           details: `Hidden ${node.role}: "${node.text}"`,
           blocked: true,
+          timestamp: Date.now(),
         });
       }
     }

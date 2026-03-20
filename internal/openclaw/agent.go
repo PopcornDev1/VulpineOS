@@ -135,16 +135,22 @@ func (a *Agent) emitStatusLocked() {
 	}
 }
 
-// Stop kills the agent subprocess.
+// Stop kills the agent subprocess and waits for it to exit.
 func (a *Agent) Stop() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	cmd := a.cmd
+	a.mu.Unlock()
 
-	if a.cmd != nil && a.cmd.Process != nil {
-		a.cmd.Process.Kill()
+	if cmd != nil && cmd.Process != nil {
+		cmd.Process.Kill()
+		// Reap the zombie process; ignore error since Kill causes a non-zero exit.
+		cmd.Wait()
 	}
+
+	a.mu.Lock()
 	a.status.Status = "completed"
 	a.emitStatusLocked()
+	a.mu.Unlock()
 	return nil
 }
 

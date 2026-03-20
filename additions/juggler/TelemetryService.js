@@ -15,11 +15,16 @@ export class TelemetryService {
     this._timer = null;
     this._injectionCount = 0;
     this._detectionRiskScore = 0;
+    // Event loop lag measurement state
+    this._lastEventLoopLagMs = 0;
+    this._lagSamples = [];
+    this._lagSampleTimer = null;
   }
 
   start() {
     if (this._timer)
       return;
+    this._startLagSampling();
     this._tick();
   }
 
@@ -28,6 +33,39 @@ export class TelemetryService {
       clearTimeout(this._timer);
       this._timer = null;
     }
+    if (this._lagSampleTimer) {
+      clearTimeout(this._lagSampleTimer);
+      this._lagSampleTimer = null;
+    }
+  }
+
+  /**
+   * Measure main-thread event loop latency by scheduling a setTimeout(0)
+   * and measuring the actual delay until the callback fires.
+   * This correlates with CPU load — a busy main thread will have higher lag.
+   */
+  _startLagSampling() {
+    const sampleLag = () => {
+      const scheduled = Cu.now();
+      this._lagSampleTimer = setTimeout(() => {
+        const actual = Cu.now();
+        const lagMs = actual - scheduled;
+        this._lagSamples.push(lagMs);
+        // Keep a rolling window of samples (one per ~500ms, keep last 8)
+        if (this._lagSamples.length > 8)
+          this._lagSamples.shift();
+        if (this._timer)
+          sampleLag();
+      }, 0);
+    };
+    sampleLag();
+  }
+
+  _getEventLoopLagMs() {
+    if (this._lagSamples.length === 0)
+      return 0;
+    const sum = this._lagSamples.reduce((a, b) => a + b, 0);
+    return sum / this._lagSamples.length;
   }
 
   reportInjectionAttempt(details) {
@@ -99,7 +137,6 @@ export class TelemetryService {
 
   _collectMetrics() {
     let memoryMB = 0;
-    let cpuPercent = 0;
 
     // Collect memory from memory reporter
     try {
@@ -110,15 +147,13 @@ export class TelemetryService {
       // Memory reporter may not be available
     }
 
-    // CPU estimate from performance metrics
+    // Event loop lag: average delay (ms) of setTimeout(0) callbacks.
+    // Higher lag indicates the main thread is under heavier CPU load.
+    let eventLoopLagMs = 0;
     try {
-      const start = Cu.now();
-      // Simple heuristic: measure main-thread responsiveness
-      // A real implementation would use ChromeUtils.requestPerformanceMetrics()
-      const elapsed = Cu.now() - start;
-      cpuPercent = Math.min(100, elapsed * 10); // rough estimate
+      eventLoopLagMs = this._getEventLoopLagMs();
     } catch (e) {
-      cpuPercent = 0;
+      eventLoopLagMs = 0;
     }
 
     // Count active contexts and pages
@@ -136,7 +171,7 @@ export class TelemetryService {
 
     return {
       memoryMB: Math.round(memoryMB * 10) / 10,
-      cpuPercent: Math.round(cpuPercent * 10) / 10,
+      eventLoopLagMs: Math.round(eventLoopLagMs * 100) / 100,
       detectionRiskScore: Math.round(this._detectionRiskScore * 10) / 10,
       activeContexts,
       activePages,

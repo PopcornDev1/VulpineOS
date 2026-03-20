@@ -91,7 +91,7 @@ func NewApp(k *kernel.Kernel, client *juggler.Client) App {
 			json.Unmarshal(params, &e)
 			eventCh <- shared.TelemetryMsg{
 				MemoryMB:           e.MemoryMB,
-				CPUPercent:         e.CPUPercent,
+				EventLoopLagMs:     e.EventLoopLagMs,
 				DetectionRiskScore: e.DetectionRiskScore,
 				ActiveContexts:     e.ActiveContexts,
 				ActivePages:        e.ActivePages,

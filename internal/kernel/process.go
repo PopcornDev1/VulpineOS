@@ -19,6 +19,7 @@ type Kernel struct {
 	client    *juggler.Client
 	transport *juggler.PipeTransport
 	startedAt time.Time
+	waited    bool // true after cmd.Wait() has been called
 	mu        sync.Mutex
 }
 
@@ -160,7 +161,7 @@ func (k *Kernel) Stop() error {
 		k.client = nil
 	}
 
-	if k.cmd != nil && k.cmd.Process != nil {
+	if k.cmd != nil && k.cmd.Process != nil && !k.waited {
 		// Wait briefly for graceful exit, then kill
 		done := make(chan error, 1)
 		go func() { done <- k.cmd.Wait() }()
@@ -170,6 +171,7 @@ func (k *Kernel) Stop() error {
 			k.cmd.Process.Kill()
 			<-done
 		}
+		k.waited = true
 		k.cmd = nil
 	}
 
@@ -180,11 +182,19 @@ func (k *Kernel) Stop() error {
 func (k *Kernel) Wait() error {
 	k.mu.Lock()
 	cmd := k.cmd
-	k.mu.Unlock()
-	if cmd == nil {
+	if cmd == nil || k.waited {
+		k.mu.Unlock()
 		return nil
 	}
-	return cmd.Wait()
+	k.mu.Unlock()
+
+	err := cmd.Wait()
+
+	k.mu.Lock()
+	k.waited = true
+	k.mu.Unlock()
+
+	return err
 }
 
 // findBinary locates the VulpineOS/Camoufox binary.

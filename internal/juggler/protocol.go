@@ -32,7 +32,7 @@ type DetachedFromTarget struct {
 // TelemetryUpdate is the Browser.telemetryUpdate event payload.
 type TelemetryUpdate struct {
 	MemoryMB           float64 `json:"memoryMB"`
-	CPUPercent         float64 `json:"cpuPercent"`
+	EventLoopLagMs     float64 `json:"eventLoopLagMs"`
 	DetectionRiskScore float64 `json:"detectionRiskScore"`
 	ActiveContexts     int     `json:"activeContexts"`
 	ActivePages        int     `json:"activePages"`

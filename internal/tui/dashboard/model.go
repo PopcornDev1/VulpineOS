@@ -17,7 +17,7 @@ type Model struct {
 	pid            int
 	uptime         time.Duration
 	memoryMB       float64
-	cpuPercent     float64
+	eventLoopLag   float64
 	detectionRisk  float64
 	activeContexts int
 	activePages    int
@@ -37,7 +37,7 @@ func (m Model) Update(msg interface{}) Model {
 		m.uptime = msg.Uptime
 	case shared.TelemetryMsg:
 		m.memoryMB = msg.MemoryMB
-		m.cpuPercent = msg.CPUPercent
+		m.eventLoopLag = msg.EventLoopLagMs
 		m.detectionRisk = msg.DetectionRiskScore
 		m.activeContexts = msg.ActiveContexts
 		m.activePages = msg.ActivePages
@@ -71,7 +71,7 @@ func (m Model) View() string {
 	// Resource meters
 	b.WriteString(renderMeter("MEM", m.memoryMB, 2048, shared.ColorSecondary))
 	b.WriteString("\n")
-	b.WriteString(renderMeter("CPU", m.cpuPercent, 100, shared.ColorSecondary))
+	b.WriteString(renderMeter("LAG", m.eventLoopLag, 50, shared.ColorSecondary))
 	b.WriteString("\n\n")
 
 	// Detection risk

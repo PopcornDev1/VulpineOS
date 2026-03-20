@@ -1,10 +1,12 @@
 package juggler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // EventHandler is called when a Juggler event is received.
@@ -34,8 +36,18 @@ func NewClient(transport Transport) *Client {
 	return c
 }
 
-// Call sends a synchronous RPC request and waits for the response.
+// DefaultCallTimeout is the default timeout for Call().
+const DefaultCallTimeout = 30 * time.Second
+
+// Call sends a synchronous RPC request and waits for the response with a default 30-second timeout.
 func (c *Client) Call(sessionID, method string, params interface{}) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultCallTimeout)
+	defer cancel()
+	return c.CallWithContext(ctx, sessionID, method, params)
+}
+
+// CallWithContext sends a synchronous RPC request and waits for the response, respecting the given context.
+func (c *Client) CallWithContext(ctx context.Context, sessionID, method string, params interface{}) (json.RawMessage, error) {
 	id := int(c.nextID.Add(1))
 
 	var rawParams json.RawMessage
@@ -72,6 +84,11 @@ func (c *Client) Call(sessionID, method string, params interface{}) (json.RawMes
 			return nil, resp.Error
 		}
 		return resp.Result, nil
+	case <-ctx.Done():
+		c.pendingMu.Lock()
+		delete(c.pending, id)
+		c.pendingMu.Unlock()
+		return nil, fmt.Errorf("call %s: %w", method, ctx.Err())
 	case <-c.done:
 		return nil, fmt.Errorf("client closed")
 	}

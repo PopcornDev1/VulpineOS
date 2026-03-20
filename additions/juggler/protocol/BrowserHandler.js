@@ -311,7 +311,7 @@ export class BrowserHandler {
     if (!this._trustWarmService) {
       const {TrustWarmService} = ChromeUtils.importESModule(
         'chrome://juggler/content/TrustWarmService.js');
-      this._trustWarmService = new TrustWarmService(this._targetRegistry, this._dispatcher);
+      this._trustWarmService = new TrustWarmService(this._targetRegistry);
       this._trustWarmService.setStateChangedCallback(state => {
         this._session.emitEvent('Browser.trustWarmingStateChanged', state);
       });

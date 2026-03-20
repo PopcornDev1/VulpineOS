@@ -117,9 +117,8 @@ function generateTrajectory(fromX, fromY, toX, toY) {
 // --- TrustWarmService ---
 
 export class TrustWarmService {
-  constructor(targetRegistry, dispatcher) {
+  constructor(targetRegistry) {
     this._targetRegistry = targetRegistry;
-    this._dispatcher = dispatcher;
     this._state = 'stopped';
     this._sites = DEFAULT_SITES;
     this._browserContextId = undefined;
@@ -359,8 +358,23 @@ export class TrustWarmService {
   _dispatchMouseToWindow(win, type, x, y, button) {
     try {
       const utils = win.windowUtils;
-      if (utils && utils.sendMouseEvent) {
-        utils.sendMouseEvent(type, x, y, button, 1, 0);
+      if (utils && utils.jugglerSendMouseEvent) {
+        utils.jugglerSendMouseEvent(
+          type,
+          x,
+          y,
+          button,
+          1 /* clickCount */,
+          0 /* modifiers */,
+          false /* aIgnoreRootScrollFrame */,
+          0.0 /* pressure */,
+          0 /* inputSource */,
+          true /* isDOMEventSynthesized */,
+          false /* isWidgetEventSynthesized */,
+          0 /* buttons */,
+          utils.DEFAULT_MOUSE_POINTER_ID /* pointerIdentifier */,
+          false /* disablePointerEvent */
+        );
       }
     } catch (e) {
       // Window may have been closed
@@ -371,13 +385,18 @@ export class TrustWarmService {
     try {
       const utils = win.windowUtils;
       if (utils && utils.sendWheelEvent) {
+        const lineOrPageDeltaY = deltaY > 0 ? Math.floor(deltaY) : Math.ceil(deltaY);
         utils.sendWheelEvent(
-          x, y,
-          0, deltaY, 0,        // deltaX, deltaY, deltaZ
-          0,                     // modifiers
-          0, 0,                  // lineOrPageDeltaX, lineOrPageDeltaY
-          0,                     // options
-          0, 0, 0, 0            // overflowDeltaX/Y, lineOrPageDeltaX/Y
+          x,
+          y,
+          0 /* deltaX */,
+          deltaY,
+          0 /* deltaZ */,
+          0 /* deltaMode: DOM_DELTA_PIXEL */,
+          0 /* modifiers */,
+          0 /* lineOrPageDeltaX */,
+          lineOrPageDeltaY,
+          0 /* options */
         );
       }
     } catch (e) {

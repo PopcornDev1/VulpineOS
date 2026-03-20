@@ -70,6 +70,7 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 // BroadcastEvent sends a Juggler event to all connected clients.
+// Clients that fail to receive the message are removed.
 func (s *Server) BroadcastEvent(method string, params json.RawMessage) {
 	msg, _ := json.Marshal(&juggler.Message{
 		Method: method,
@@ -81,10 +82,21 @@ func (s *Server) BroadcastEvent(method string, params json.RawMessage) {
 	}
 
 	s.clientsMu.RLock()
-	defer s.clientsMu.RUnlock()
-
+	var dead []*wsClient
 	for c := range s.clients {
-		c.conn.Write(c.ctx, websocket.MessageText, env)
+		if err := c.conn.Write(c.ctx, websocket.MessageText, env); err != nil {
+			dead = append(dead, c)
+		}
+	}
+	s.clientsMu.RUnlock()
+
+	if len(dead) > 0 {
+		s.clientsMu.Lock()
+		for _, c := range dead {
+			delete(s.clients, c)
+			c.conn.Close(websocket.StatusGoingAway, "write error")
+		}
+		s.clientsMu.Unlock()
 	}
 }
 

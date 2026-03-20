@@ -251,7 +251,7 @@ const Browser = {
     },
     'telemetryUpdate': {
       memoryMB: t.Number,
-      cpuPercent: t.Number,
+      eventLoopLagMs: t.Number,
       detectionRiskScore: t.Number,
       activeContexts: t.Number,
       activePages: t.Number,
@@ -526,7 +526,7 @@ const Browser = {
     'getTelemetry': {
       returns: {
         memoryMB: t.Number,
-        cpuPercent: t.Number,
+        eventLoopLagMs: t.Number,
         detectionRiskScore: t.Number,
         activeContexts: t.Number,
         activePages: t.Number,
@@ -739,6 +739,7 @@ const Page = {
       attemptType: t.String,
       details: t.String,
       blocked: t.Boolean,
+      timestamp: t.Number,
     },
     'frameAttached': {
       frameId: t.String,
@@ -1094,7 +1095,8 @@ const Accessibility = {
         objectId: t.Optional(t.String),
       },
       returns: {
-        tree: axTypes.AXTree
+        tree: axTypes.AXTree,
+        filtered: t.Optional(t.Boolean),
       },
     }
   }

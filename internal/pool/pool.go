@@ -98,9 +98,14 @@ func (p *Pool) Acquire() (*ContextSlot, error) {
 	// Check if we can create a new one
 	p.mu.Lock()
 	if p.total < p.config.MaxActive {
+		// Reserve the slot under the lock to prevent races
+		p.total++
 		p.mu.Unlock()
-		slot, err := p.createSlot()
+		slot, err := p.createSlotNoCount()
 		if err != nil {
+			p.mu.Lock()
+			p.total--
+			p.mu.Unlock()
 			return nil, err
 		}
 		p.mu.Lock()
@@ -174,6 +179,21 @@ func (p *Pool) Close() {
 }
 
 func (p *Pool) createSlot() (*ContextSlot, error) {
+	slot, err := p.createSlotNoCount()
+	if err != nil {
+		return nil, err
+	}
+
+	p.mu.Lock()
+	p.total++
+	p.mu.Unlock()
+
+	return slot, nil
+}
+
+// createSlotNoCount creates a context slot without incrementing the total counter.
+// The caller is responsible for managing the total count.
+func (p *Pool) createSlotNoCount() (*ContextSlot, error) {
 	result, err := p.client.Call("", "Browser.createBrowserContext", map[string]interface{}{
 		"removeOnDetach": true,
 	})
@@ -187,10 +207,6 @@ func (p *Pool) createSlot() (*ContextSlot, error) {
 	if err := json.Unmarshal(result, &ctx); err != nil {
 		return nil, fmt.Errorf("parse context result: %w", err)
 	}
-
-	p.mu.Lock()
-	p.total++
-	p.mu.Unlock()
 
 	return &ContextSlot{
 		ContextID: ctx.BrowserContextID,

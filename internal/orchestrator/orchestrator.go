@@ -202,9 +202,13 @@ func (o *Orchestrator) Status() Status {
 }
 
 // Close shuts down all subsystems.
+// Note: kernel.Stop() is the caller's responsibility and must be called separately.
 func (o *Orchestrator) Close() {
 	o.Agents.Dispose()
 	o.Pool.Close()
+	if o.Client != nil {
+		o.Client.Close()
+	}
 	o.Vault.Close()
 }
 
@@ -219,24 +223,30 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Ci
 		if err := json.Unmarshal([]byte(cc.Cookies), &cookieArray); err != nil {
 			continue
 		}
-		o.Client.Call("", "Browser.setCookies", map[string]interface{}{
+		if _, err := o.Client.Call("", "Browser.setCookies", map[string]interface{}{
 			"browserContextId": contextID,
 			"cookies":          cookieArray,
-		})
+		}); err != nil {
+			log.Printf("orchestrator: warning: failed to set cookies for citizen %s on context %s: %v", citizen.ID, contextID, err)
+		}
 	}
 
 	// Apply locale/timezone if set
 	if citizen.Locale != "" {
-		o.Client.Call("", "Browser.setLocaleOverride", map[string]interface{}{
+		if _, err := o.Client.Call("", "Browser.setLocaleOverride", map[string]interface{}{
 			"browserContextId": contextID,
 			"locale":           citizen.Locale,
-		})
+		}); err != nil {
+			log.Printf("orchestrator: warning: failed to set locale for citizen %s on context %s: %v", citizen.ID, contextID, err)
+		}
 	}
 	if citizen.Timezone != "" {
-		o.Client.Call("", "Browser.setTimezoneOverride", map[string]interface{}{
+		if _, err := o.Client.Call("", "Browser.setTimezoneOverride", map[string]interface{}{
 			"browserContextId": contextID,
 			"timezoneId":       citizen.Timezone,
-		})
+		}); err != nil {
+			log.Printf("orchestrator: warning: failed to set timezone for citizen %s on context %s: %v", citizen.ID, contextID, err)
+		}
 	}
 
 	return nil

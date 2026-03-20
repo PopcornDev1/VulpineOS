@@ -3,6 +3,7 @@ package juggler
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -86,7 +87,7 @@ func (t *PipeTransport) Receive() (*Message, error) {
 }
 
 func (t *PipeTransport) Close() error {
-	t.readFD.Close()
-	t.writeFD.Close()
-	return nil
+	readErr := t.readFD.Close()
+	writeErr := t.writeFD.Close()
+	return errors.Join(readErr, writeErr)
 }
