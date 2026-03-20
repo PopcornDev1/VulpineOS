@@ -25,6 +25,7 @@ export class BrowserHandler {
     this._attachedSessions = new Map();
     this._onclose = onclose;
     this._startCompletePromise = startCompletePromise;
+    this._trustWarmService = null;
   }
 
   async ['Browser.enable']({attachToDefaultContext, userPrefs = []}) {
@@ -75,6 +76,8 @@ export class BrowserHandler {
   }
 
   dispose() {
+    if (this._trustWarmService)
+      this._trustWarmService.dispose();
     helper.removeListeners(this._eventListeners);
     for (const [target, session] of this._attachedSessions)
       this._dispatcher.destroySession(session);
@@ -293,6 +296,43 @@ export class BrowserHandler {
                                 .getService(Components.interfaces.nsIHttpProtocolHandler)
                                 .userAgent;
     return {version: 'Firefox/' + version, userAgent};
+  }
+
+  _ensureTrustWarmService() {
+    if (!this._trustWarmService) {
+      const {TrustWarmService} = ChromeUtils.importESModule(
+        'chrome://juggler/content/TrustWarmService.js');
+      this._trustWarmService = new TrustWarmService(this._targetRegistry, this._dispatcher);
+      this._trustWarmService.setStateChangedCallback(state => {
+        this._session.emitEvent('Browser.trustWarmingStateChanged', state);
+      });
+    }
+    return this._trustWarmService;
+  }
+
+  async ['Browser.startTrustWarming'](config) {
+    await this._ensureTrustWarmService().start(config);
+  }
+
+  async ['Browser.stopTrustWarming']() {
+    if (this._trustWarmService)
+      await this._trustWarmService.stop();
+  }
+
+  async ['Browser.getTrustWarmingStatus']() {
+    if (!this._trustWarmService)
+      return {state: 'stopped', sitesWarmed: 0};
+    return this._trustWarmService.getStatus();
+  }
+
+  async ['Browser.notifyTrustWarmingIdle']() {
+    if (this._trustWarmService)
+      await this._trustWarmService.notifyIdle();
+  }
+
+  async ['Browser.notifyTrustWarmingBusy']() {
+    if (this._trustWarmService)
+      await this._trustWarmService.notifyBusy();
   }
 }
 

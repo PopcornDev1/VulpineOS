@@ -245,6 +245,10 @@ const Browser = {
     'videoRecordingFinished': {
       screencastId: t.String,
     },
+    'trustWarmingStateChanged': {
+      state: t.String,
+      currentSite: t.Optional(t.String),
+    },
   },
 
   methods: {
@@ -483,7 +487,26 @@ const Browser = {
       params: {
         uuid: t.Optional(t.String),
       }
-    }
+    },
+    'startTrustWarming': {
+      params: {
+        browserContextId: t.Optional(t.String),
+        sites: t.Optional(t.Array(t.Any)),
+        interactionIntensity: t.Optional(t.Enum(['light', 'medium', 'heavy'])),
+        cooldownMinutes: t.Optional(t.Number),
+      },
+    },
+    'stopTrustWarming': {},
+    'getTrustWarmingStatus': {
+      returns: {
+        state: t.String,
+        sitesWarmed: t.Number,
+        currentSite: t.Optional(t.String),
+        lastVisit: t.Optional(t.Number),
+      },
+    },
+    'notifyTrustWarmingIdle': {},
+    'notifyTrustWarmingBusy': {},
   },
 };
 
