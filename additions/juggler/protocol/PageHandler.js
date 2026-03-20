@@ -672,6 +672,10 @@ export class PageHandler {
     return await this._pageTarget.setInterceptFileChooserDialog(enabled);
   }
 
+  async ['Page.setActionLock']({ enabled }) {
+    return await this._pageTarget.setActionLock(enabled);
+  }
+
   async ['Page.startScreencast'](options) {
     return await this._pageTarget.startScreencast(options);
   }

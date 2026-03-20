@@ -1,0 +1,88 @@
+diff --git a/docshell/base/nsIDocShell.idl b/docshell/base/nsIDocShell.idl
+--- a/docshell/base/nsIDocShell.idl
++++ b/docshell/base/nsIDocShell.idl
+@@ -762,6 +762,9 @@ interface nsIDocShell : nsIDocShellTreeItem
+
+   void setGeolocationOverride(in nsIDOMGeoPosition position);
+
++  void suspendPage();
++  void resumePage();
++
+   /**
+    * This attempts to save any applicable layout history state (like
+    * scroll position) in the nsISHEntry. This is normally done
+diff --git a/docshell/base/nsDocShell.h b/docshell/base/nsDocShell.h
+--- a/docshell/base/nsDocShell.h
++++ b/docshell/base/nsDocShell.h
+@@ -744,6 +744,7 @@ class nsDocShell final : public nsDocLoader,
+   bool mDisallowBFCache : 1;
++  bool mSuspendedForActionLock : 1;
+   nsString mLanguageOverride;
+   RefPtr<nsGeolocationService> mGeolocationServiceOverride;
+   ReducedMotionOverride mReducedMotionOverride;
+diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
+--- a/docshell/base/nsDocShell.cpp
++++ b/docshell/base/nsDocShell.cpp
+@@ -382,6 +382,7 @@ nsDocShell::nsDocShell(BrowsingContext*
+       mForceActiveState(false),
+       mDisallowBFCache(false),
++      mSuspendedForActionLock(false),
+       mReducedMotionOverride(REDUCED_MOTION_OVERRIDE_NONE),
+       mForcedColorsOverride(FORCED_COLORS_OVERRIDE_NO_OVERRIDE),
+       mContrastOverride(CONTRAST_OVERRIDE_NONE),
+@@ -457,6 +458,46 @@ nsDocShell::SetOverrideHasFocus(bool aEn
+   return NS_OK;
+ }
+
++NS_IMETHODIMP
++nsDocShell::SuspendPage() {
++  if (mSuspendedForActionLock)
++    return NS_OK;
++  mSuspendedForActionLock = true;
++
++  // Freeze refresh driver (stops layout, paint, CSS animations, rAF)
++  if (RefPtr<nsPresContext> pc = GetPresContext()) {
++    pc->RefreshDriver()->Freeze();
++  }
++
++  // Suspend timeouts, intervals, and network event delivery
++  if (nsPIDOMWindowOuter* outer = GetWindow()) {
++    if (nsPIDOMWindowInner* inner = outer->GetCurrentInnerWindow()) {
++      inner->Suspend();
++    }
++  }
++
++  // Suppress event handling (mouse, keyboard, etc.)
++  if (RefPtr<PresShell> presShell = GetPresShell()) {
++    presShell->SuppressEventHandling();
++  }
++
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++nsDocShell::ResumePage() {
++  if (!mSuspendedForActionLock)
++    return NS_OK;
++  mSuspendedForActionLock = false;
++
++  if (RefPtr<PresShell> presShell = GetPresShell()) {
++    presShell->UnsuppressEventHandling();
++  }
++
++  if (nsPIDOMWindowOuter* outer = GetWindow()) {
++    if (nsPIDOMWindowInner* inner = outer->GetCurrentInnerWindow()) {
++      inner->Resume();
++    }
++  }
++
++  if (RefPtr<nsPresContext> pc = GetPresContext()) {
++    pc->RefreshDriver()->Thaw();
++  }
++
++  return NS_OK;
++}
++
+ bool nsDocShell::ShouldOverrideHasFocus() const {
+   return mOverrideHasFocus;
+ }

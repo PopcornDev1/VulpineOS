@@ -679,6 +679,10 @@ export class PageTarget {
     await this._channel.connect('').send('setInterceptFileChooserDialog', enabled).catch(e => {});
   }
 
+  async setActionLock(enabled) {
+    await this._channel.connect('').send('setActionLock', { enabled }).catch(e => {});
+  }
+
   async setViewportSize(viewportSize) {
     this._viewportSize = viewportSize;
     await this.updateViewportSize();

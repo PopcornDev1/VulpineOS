@@ -998,6 +998,11 @@ const Page = {
     },
     'stopScreencast': {
     },
+    'setActionLock': {
+      params: {
+        enabled: t.Boolean,
+      },
+    },
   },
 };
 

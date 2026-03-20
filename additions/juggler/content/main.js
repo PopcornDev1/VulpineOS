@@ -92,6 +92,27 @@ export function initialize(browsingContext, docShell) {
       docShell.fileInputInterceptionEnabled = !!enabled;
     },
 
+    setActionLock({ enabled }) {
+      if (enabled) {
+        // Disable JS execution across all frames
+        for (const frame of data.frameTree.frames()) {
+          const bc = frame._browsingContext;
+          if (bc.currentWindowContext)
+            bc.currentWindowContext.allowJavascript = false;
+        }
+        // Freeze refresh driver, timers, and event handling
+        docShell.suspendPage();
+      } else {
+        // Resume in reverse order
+        docShell.resumePage();
+        for (const frame of data.frameTree.frames()) {
+          const bc = frame._browsingContext;
+          if (bc.currentWindowContext)
+            bc.currentWindowContext.allowJavascript = true;
+        }
+      }
+    },
+
     ensurePermissions() {
       // noop, just a rountrip.
     },
