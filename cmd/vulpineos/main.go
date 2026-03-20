@@ -12,6 +12,7 @@ import (
 
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
+	"vulpineos/internal/mcp"
 	"vulpineos/internal/remote"
 	"vulpineos/internal/tui"
 )
@@ -28,11 +29,16 @@ func main() {
 		tlsCert    = flag.String("tls-cert", "", "TLS certificate file (with --serve)")
 		tlsKey     = flag.String("tls-key", "", "TLS key file (with --serve)")
 		noBrowser  = flag.Bool("no-browser", false, "Start TUI without launching browser (demo mode)")
+		mcpServer  = flag.Bool("mcp-server", false, "Run as MCP stdio server (used by OpenClaw)")
+		mcpConnect = flag.String("mcp-connect", "", "WebSocket URL to connect MCP server to remote kernel")
+		_          = mcpConnect // M4 remote MCP — future use
 	)
 	flag.Parse()
 
 	var err error
 	switch {
+	case *mcpServer:
+		err = runMCPServer(*binaryPath, *headless, *profileDir)
 	case *remoteAddr != "":
 		err = runRemote(*remoteAddr, *apiKey)
 	case *serve:
@@ -45,6 +51,30 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runMCPServer runs as an MCP stdio server for OpenClaw integration.
+// It connects to a running VulpineOS kernel and translates MCP tool calls to Juggler protocol.
+func runMCPServer(binaryPath string, headless bool, profileDir string) error {
+	k := kernel.New()
+	if err := k.Start(kernel.Config{
+		BinaryPath: binaryPath,
+		Headless:   headless,
+		ProfileDir: profileDir,
+	}); err != nil {
+		return fmt.Errorf("start kernel: %w", err)
+	}
+	defer k.Stop()
+
+	client := k.Client()
+	if _, err := client.Call("", "Browser.enable", map[string]interface{}{
+		"attachToDefaultContext": true,
+	}); err != nil {
+		return fmt.Errorf("Browser.enable: %w", err)
+	}
+
+	server := mcp.NewServer(client)
+	return server.Run()
 }
 
 // runLocal starts the kernel and TUI locally.
