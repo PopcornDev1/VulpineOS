@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -331,13 +332,12 @@ func (a App) destroyTarget(sessionID string) tea.Cmd {
 	}
 }
 
-// navigateTarget navigates a page target to a URL.
+// navigateTarget navigates a page target to a URL using Runtime.evaluate.
 func (a App) navigateTarget(sessionID string, url string) tea.Cmd {
 	return func() tea.Msg {
-		// First get the frame ID for the target
-		_, err := a.client.Call(sessionID, "Page.navigate", map[string]interface{}{
-			"url":     url,
-			"frameId": "", // main frame
+		_, err := a.client.Call(sessionID, "Runtime.evaluate", map[string]interface{}{
+			"expression":         fmt.Sprintf("window.location.href = %q", url),
+			"returnByValue":      true,
 		})
 		if err != nil {
 			return statusNotice{text: "Navigate failed: " + err.Error()}

@@ -167,15 +167,16 @@ func handleNavigate(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 		return errorResult(err), nil
 	}
 
-	result, err := client.Call(p.SessionID, "Page.navigate", map[string]interface{}{
-		"url":     p.URL,
-		"frameId": "",
+	// Use Runtime.evaluate to navigate — avoids needing the frameId
+	_, err := client.Call(p.SessionID, "Runtime.evaluate", map[string]interface{}{
+		"expression":    fmt.Sprintf("window.location.href = %q", p.URL),
+		"returnByValue": true,
 	})
 	if err != nil {
 		return errorResult(err), nil
 	}
 
-	return textResult(fmt.Sprintf("Navigated to %s (result: %s)", p.URL, string(result))), nil
+	return textResult(fmt.Sprintf("Navigated to %s", p.URL)), nil
 }
 
 func handleSnapshot(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
