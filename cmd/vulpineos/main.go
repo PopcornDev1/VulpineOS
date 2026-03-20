@@ -94,14 +94,18 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 		defer k.Stop()
 
 		client = k.Client()
+	}
+
+	// Create TUI first so event subscriptions are in place before Browser.enable
+	app := tui.NewApp(k, client)
+
+	if client != nil {
 		if _, err := client.Call("", "Browser.enable", map[string]interface{}{
 			"attachToDefaultContext": true,
 		}); err != nil {
 			return fmt.Errorf("Browser.enable: %w", err)
 		}
 	}
-
-	app := tui.NewApp(k, client)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
