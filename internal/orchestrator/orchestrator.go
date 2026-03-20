@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
@@ -41,7 +42,8 @@ type Orchestrator struct {
 	Agents  *openclaw.Manager
 
 	// Track which agent owns which context slot
-	agentToSlot map[string]*pool.ContextSlot
+	agentToSlot   map[string]*pool.ContextSlot
+	agentToSlotMu sync.Mutex
 }
 
 // New creates an orchestrator with all subsystems.
@@ -105,7 +107,9 @@ func (o *Orchestrator) SpawnCitizen(citizenID, templateID string) (string, error
 		return "", fmt.Errorf("spawn agent: %w", err)
 	}
 
+	o.agentToSlotMu.Lock()
 	o.agentToSlot[agentID] = slot
+	o.agentToSlotMu.Unlock()
 	o.Vault.UpdateCitizenUsage(citizenID)
 
 	log.Printf("orchestrator: spawned citizen agent %s (citizen=%s, context=%s)", agentID, citizen.Label, slot.ContextID)
@@ -147,7 +151,9 @@ func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
 		return "", fmt.Errorf("spawn agent: %w", err)
 	}
 
+	o.agentToSlotMu.Lock()
 	o.agentToSlot[agentID] = slot
+	o.agentToSlotMu.Unlock()
 
 	log.Printf("orchestrator: spawned nomad agent %s (session=%s, context=%s)", agentID, session.ID, slot.ContextID)
 	return agentID, nil
@@ -158,8 +164,13 @@ func (o *Orchestrator) KillAgent(agentID string) error {
 	if err := o.Agents.Kill(agentID); err != nil {
 		return err
 	}
-	if slot, ok := o.agentToSlot[agentID]; ok {
+	o.agentToSlotMu.Lock()
+	slot, ok := o.agentToSlot[agentID]
+	if ok {
 		delete(o.agentToSlot, agentID)
+	}
+	o.agentToSlotMu.Unlock()
+	if ok {
 		o.Pool.Release(slot)
 	}
 	return nil
@@ -235,9 +246,13 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Ci
 func (o *Orchestrator) statusRelay() {
 	for status := range o.Agents.StatusChan() {
 		if status.Status == "completed" || status.Status == "error" {
-			// Auto-release context slot
-			if slot, ok := o.agentToSlot[status.AgentID]; ok {
+			o.agentToSlotMu.Lock()
+			slot, ok := o.agentToSlot[status.AgentID]
+			if ok {
 				delete(o.agentToSlot, status.AgentID)
+			}
+			o.agentToSlotMu.Unlock()
+			if ok {
 				o.Pool.Release(slot)
 			}
 		}

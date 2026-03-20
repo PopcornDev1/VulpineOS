@@ -54,7 +54,7 @@ function isNodeVisuallyHidden(accElement) {
       rect.left > viewportWidth + 500 || rect.top > viewportHeight + 500)
     return true;
   const clipPath = style.clipPath;
-  if (clipPath === 'inset(100%)' || clipPath === 'inset(50%)')
+  if (clipPath === 'inset(100%)')
     return true;
   const clip = style.clip;
   if (clip && clip !== 'auto') {
@@ -68,7 +68,7 @@ function isNodeVisuallyHidden(accElement) {
   return false;
 }
 
-// VulpineOS: Wait for accessibility tree to finish updating
+// VulpineOS: Wait for accessibility tree to finish updating (5s timeout)
 async function waitForAXQuiet(docAcc) {
   let state = {};
   docAcc.getState(state, {});
@@ -90,7 +90,14 @@ async function waitForAXQuiet(docAcc) {
     },
   };
   Services.obs.addObserver(eventObserver, "accessible-event");
-  return promise;
+  // Timeout after 5 seconds to prevent indefinite hang
+  const {setTimeout} = ChromeUtils.importESModule('resource://gre/modules/Timer.sys.mjs');
+  const timeout = setTimeout(() => {
+    try { Services.obs.removeObserver(eventObserver, "accessible-event"); } catch (e) {}
+    resolve();
+  }, 5000);
+  await promise;
+  clearTimeout(timeout);
 }
 
 // VulpineOS: Role code mapping for token-optimized DOM export (Phase 3)
@@ -122,7 +129,8 @@ const ROLE_MAP = {
   'rowheader': 'th',
   'heading': 'h',
   'navigation': 'nav',
-  'landmark': 'main',
+  'landmark': 'region',
+  'main': 'main',
   'banner': 'banner',
   'contentinfo': 'footer',
   'form': 'form',
@@ -736,6 +744,8 @@ export class PageAgent {
     while (docAcc.document.isUpdatePendingForJugglerAccessibility)
       await new Promise(x => this._frameTree.mainFrame().domWindow().requestAnimationFrame(x));
 
+    const strippedNodes = [];
+
     function buildNode(accElement) {
       let a = {}, b = {};
       accElement.getState(a, b);
@@ -819,7 +829,6 @@ export class PageAgent {
         tree.children = children;
       return tree;
     }
-    const strippedNodes = [];
     await waitForAXQuiet(docAcc);
     const result = {
       tree: buildNode(docAcc),

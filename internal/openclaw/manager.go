@@ -109,7 +109,8 @@ func (m *Manager) KillAll() {
 	}
 }
 
-// Dispose kills all agents and closes channels.
+// Dispose kills all agents and closes the status channel.
 func (m *Manager) Dispose() {
 	m.KillAll()
+	close(m.statusCh)
 }

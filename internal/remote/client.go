@@ -5,9 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
-	"sync/atomic"
-
 	"nhooyr.io/websocket"
 
 	"vulpineos/internal/juggler"
@@ -17,13 +14,10 @@ import (
 // It implements the juggler.Transport interface so the TUI can use it
 // identically to a local pipe connection.
 type Client struct {
-	conn    *websocket.Conn
-	ctx     context.Context
-	cancel  context.CancelFunc
-	recvCh  chan *juggler.Message
-	nextID  atomic.Int64
-	pending map[int]chan *juggler.Message
-	mu      sync.Mutex
+	conn   *websocket.Conn
+	ctx    context.Context
+	cancel context.CancelFunc
+	recvCh chan *juggler.Message
 }
 
 // Dial connects to a remote VulpineOS server.
@@ -42,11 +36,10 @@ func Dial(ctx context.Context, url string, apiKey string) (*Client, error) {
 
 	childCtx, cancel := context.WithCancel(ctx)
 	c := &Client{
-		conn:    conn,
-		ctx:     childCtx,
-		cancel:  cancel,
-		recvCh:  make(chan *juggler.Message, 64),
-		pending: make(map[int]chan *juggler.Message),
+		conn:   conn,
+		ctx:    childCtx,
+		cancel: cancel,
+		recvCh: make(chan *juggler.Message, 64),
 	}
 
 	go c.readLoop()

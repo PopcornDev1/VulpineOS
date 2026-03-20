@@ -42,7 +42,8 @@ type Pool struct {
 	mu        sync.Mutex
 	active    map[string]*ContextSlot // contextID -> slot
 	total     int
-	closed    bool
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // New creates a context pool. Call Start() to pre-warm.
@@ -58,6 +59,7 @@ func New(client *juggler.Client, config Config) *Pool {
 		config:    config,
 		available: make(chan *ContextSlot, config.MaxActive),
 		active:    make(map[string]*ContextSlot),
+		done:      make(chan struct{}),
 	}
 }
 
@@ -108,12 +110,16 @@ func (p *Pool) Acquire() (*ContextSlot, error) {
 	}
 	p.mu.Unlock()
 
-	// At capacity — wait for one to be released
-	slot := <-p.available
-	p.mu.Lock()
-	p.active[slot.ContextID] = slot
-	p.mu.Unlock()
-	return slot, nil
+	// At capacity — wait for one to be released or pool to close
+	select {
+	case slot := <-p.available:
+		p.mu.Lock()
+		p.active[slot.ContextID] = slot
+		p.mu.Unlock()
+		return slot, nil
+	case <-p.done:
+		return nil, fmt.Errorf("pool closed")
+	}
 }
 
 // Release returns a context slot to the pool for reuse.
@@ -136,8 +142,10 @@ func (p *Pool) Release(slot *ContextSlot) {
 		slot = newSlot
 	}
 
-	if !p.closed {
-		p.available <- slot
+	select {
+	case p.available <- slot:
+	case <-p.done:
+		p.destroySlot(slot)
 	}
 }
 
@@ -150,9 +158,9 @@ func (p *Pool) Stats() (available, active, total int) {
 
 // Close destroys all contexts and shuts down the pool.
 func (p *Pool) Close() {
-	p.mu.Lock()
-	p.closed = true
-	p.mu.Unlock()
+	p.closeOnce.Do(func() {
+		close(p.done)
+	})
 
 	// Drain available slots
 	for {
