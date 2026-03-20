@@ -137,3 +137,18 @@ type TickMsg struct{}
 type ErrorMsg struct {
 	Err error
 }
+
+// ProxyTestedMsg carries the result of a proxy latency test.
+type ProxyTestedMsg struct {
+	ProxyID string
+	Latency string // "45ms" or "error: ..."
+	ExitIP  string
+}
+
+// ProxyImportedMsg fires after proxies are imported.
+type ProxyImportedMsg struct {
+	Count int
+}
+
+// SettingsClosedMsg fires when the settings panel is closed.
+type SettingsClosedMsg struct{}

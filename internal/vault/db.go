@@ -85,6 +85,14 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 	timestamp  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agent_messages_agent ON agent_messages(agent_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS proxies (
+	id       TEXT PRIMARY KEY,
+	config   TEXT NOT NULL,
+	geo      TEXT DEFAULT '',
+	label    TEXT DEFAULT '',
+	added_at INTEGER NOT NULL
+);
 `
 
 // DB wraps the SQLite vault database.

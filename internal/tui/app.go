@@ -18,6 +18,7 @@ import (
 	"vulpineos/internal/tui/contextlist"
 	"vulpineos/internal/tui/conversation"
 	"vulpineos/internal/tui/poolstats"
+	"vulpineos/internal/tui/settings"
 	"vulpineos/internal/tui/shared"
 	"vulpineos/internal/tui/systeminfo"
 	"vulpineos/internal/vault"
@@ -55,6 +56,7 @@ type App struct {
 	conversation conversation.Model
 	contextList  contextlist.Model
 	poolStats    poolstats.Model
+	settings     settings.Model
 
 	// State
 	selectedAgentID string
@@ -98,6 +100,7 @@ func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchest
 		conversation: conversation.New(),
 		contextList:  contextlist.New(),
 		poolStats:    poolstats.New(),
+		settings:     settings.New(),
 		eventCh:      eventCh,
 	}
 
@@ -272,6 +275,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a.updateChatInput(msg)
 		}
 
+		// Route to settings panel when active
+		if a.settings.IsActive() {
+			var cmd tea.Cmd
+			a.settings, cmd = a.settings.Update(msg)
+			return a, cmd
+		}
+
 		// Normal keybinds
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -351,6 +361,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.rightWidth += 2
 				a.updatePanelSizes()
 			}
+		case "S":
+			a.settings.SetActive(true)
+			a.settings.SetConfig(a.cfg)
+			return a, nil
 		case "c":
 			// Quit TUI to re-run setup
 			return a, tea.Quit
@@ -431,6 +445,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shared.AgentCreatedMsg:
 		a.agentList, _ = a.agentList.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
+
+	case shared.SettingsClosedMsg:
+		a.settings.SetActive(false)
+
+	case shared.ProxyTestedMsg:
+		a.settings, _ = a.settings.Update(msg)
 
 	case statusNotice:
 		a.notice = msg.text
@@ -542,21 +562,25 @@ func (a App) View() string {
 	agentView := a.renderFocusPanel(FocusAgentList, a.agentList.View(), leftWidth, bodyHeight-bodyHeight/2)
 	leftColumn := lipgloss.JoinVertical(lipgloss.Left, sysView, agentView)
 
-	// Center column: conversation (+ input area if in input mode)
+	// Center column: settings panel OR conversation (+ input area if in input mode)
 	var centerContent string
-	switch a.inputMode {
-	case "new-agent-name":
-		centerContent = a.conversation.View() + "\n\n" +
-			shared.TitleStyle.Render("NEW AGENT — NAME") + "\n" +
-			a.nameInput.View() + "\n" +
-			shared.MutedStyle.Render("[Enter] confirm  [Esc] cancel")
-	case "new-agent-task":
-		centerContent = a.conversation.View() + "\n\n" +
-			shared.TitleStyle.Render("NEW AGENT — TASK for "+a.newAgentName) + "\n" +
-			a.taskInput.View() + "\n" +
-			shared.MutedStyle.Render("[Enter] spawn  [Esc] cancel")
-	default:
-		centerContent = a.conversation.View()
+	if a.settings.IsActive() {
+		centerContent = a.settings.View()
+	} else {
+		switch a.inputMode {
+		case "new-agent-name":
+			centerContent = a.conversation.View() + "\n\n" +
+				shared.TitleStyle.Render("NEW AGENT — NAME") + "\n" +
+				a.nameInput.View() + "\n" +
+				shared.MutedStyle.Render("[Enter] confirm  [Esc] cancel")
+		case "new-agent-task":
+			centerContent = a.conversation.View() + "\n\n" +
+				shared.TitleStyle.Render("NEW AGENT — TASK for "+a.newAgentName) + "\n" +
+				a.taskInput.View() + "\n" +
+				shared.MutedStyle.Render("[Enter] spawn  [Esc] cancel")
+		default:
+			centerContent = a.conversation.View()
+		}
 	}
 	centerView := a.renderFocusPanel(FocusConversation, centerContent, centerWidth, bodyHeight)
 
@@ -608,7 +632,7 @@ func (a App) renderStatusBar() string {
 	bar := shared.TitleStyle.Render("VULPINE") +
 		shared.MutedStyle.Render(" │ ") +
 		shared.RunningStyle.Render("● "+mode) +
-		shared.MutedStyle.Render("  n:new  p:pause  r:resume  x:del  Enter:chat  Tab:focus  []:resize  q:quit")
+		shared.MutedStyle.Render("  n:new  p:pause  r:resume  x:del  S:settings  Enter:chat  Tab:focus  []:resize  q:quit")
 
 	return lipgloss.NewStyle().Width(a.width).Render(bar)
 }
@@ -626,6 +650,7 @@ func (a *App) updatePanelSizes() {
 	a.systemInfo.SetWidth(leftWidth)
 	a.agentList.SetWidth(leftWidth)
 	a.conversation.SetSize(centerWidth, bodyHeight)
+	a.settings.SetSize(centerWidth, bodyHeight)
 	a.contextList.SetWidth(rightWidth)
 	a.poolStats.SetWidth(rightWidth)
 }
