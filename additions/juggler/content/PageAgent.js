@@ -583,6 +583,10 @@ export class PageAgent {
   }
 
   async _getFullAXTree({objectId}) {
+    const injectionFilterEnabled = Services.prefs.getBoolPref(
+      'vulpineos.injection_filter.enabled', true
+    );
+
     let unsafeObject = null;
     if (objectId) {
       unsafeObject = this._frameTree.mainFrame().unsafeObject(objectId);
@@ -630,6 +634,73 @@ export class PageAgent {
       Services.obs.addObserver(eventObserver, "accessible-event");
       return promise;
     }
+    function isNodeVisuallyHidden(accElement) {
+      const domNode = accElement.DOMNode;
+      if (!domNode || !domNode.ownerDocument)
+        return false;
+
+      // Only check Element nodes. Text nodes inherit parent visibility.
+      if (domNode.nodeType !== 1)
+        return false;
+
+      // Check 1: aria-hidden attribute
+      if (domNode.getAttribute('aria-hidden') === 'true')
+        return true;
+
+      const win = domNode.ownerDocument.defaultView;
+      if (!win)
+        return false;
+      const style = win.getComputedStyle(domNode);
+      if (!style)
+        return false;
+
+      // Check 2: display:none
+      if (style.display === 'none')
+        return true;
+
+      // Check 3: visibility:hidden or collapse
+      if (style.visibility === 'hidden' || style.visibility === 'collapse')
+        return true;
+
+      // Check 4: opacity:0
+      if (style.opacity === '0')
+        return true;
+
+      // Check 5 & 6: Zero dimensions or off-screen
+      const rect = domNode.getBoundingClientRect();
+
+      // Zero-dimension with hidden overflow
+      if (rect.width === 0 && rect.height === 0) {
+        const overflow = style.overflow;
+        if (overflow === 'hidden' || overflow === 'clip' || overflow === 'scroll')
+          return true;
+      }
+
+      // Off-screen: entirely outside viewport by a wide margin
+      const viewportWidth = win.innerWidth;
+      const viewportHeight = win.innerHeight;
+      if (rect.right < -500 || rect.bottom < -500 ||
+          rect.left > viewportWidth + 500 || rect.top > viewportHeight + 500)
+        return true;
+
+      // Check 7: clip-path / clip hiding
+      const clipPath = style.clipPath;
+      if (clipPath === 'inset(100%)' || clipPath === 'inset(50%)')
+        return true;
+
+      const clip = style.clip;
+      if (clip && clip !== 'auto') {
+        const values = clip.match(/rect\(\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^)]+)\)/);
+        if (values) {
+          const nums = values.slice(1).map(v => parseFloat(v));
+          if (nums.every(n => n === 0))
+            return true;
+        }
+      }
+
+      return false;
+    }
+
     function buildNode(accElement) {
       let a = {}, b = {};
       accElement.getState(a, b);
@@ -696,6 +767,8 @@ export class PageAgent {
       const children = [];
 
       for (let child = accElement.firstChild; child; child = child.nextSibling) {
+        if (injectionFilterEnabled && isNodeVisuallyHidden(child))
+          continue;
         children.push(buildNode(child));
       }
       if (children.length)
@@ -704,7 +777,8 @@ export class PageAgent {
     }
     await waitForQuiet();
     return {
-      tree: buildNode(docAcc)
+      tree: buildNode(docAcc),
+      filtered: injectionFilterEnabled,
     };
   }
 }
