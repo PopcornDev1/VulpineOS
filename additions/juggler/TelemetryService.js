@@ -46,9 +46,9 @@ export class TelemetryService {
    */
   _startLagSampling() {
     const sampleLag = () => {
-      const scheduled = Cu.now();
+      const scheduled = Date.now();
       this._lagSampleTimer = setTimeout(() => {
-        const actual = Cu.now();
+        const actual = Date.now();
         const lagMs = actual - scheduled;
         this._lagSamples.push(lagMs);
         // Keep a rolling window of samples (one per ~500ms, keep last 8)

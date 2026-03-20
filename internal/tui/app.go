@@ -29,6 +29,11 @@ const (
 
 var panelNames = []string{"dashboard", "contexts", "agents", "alerts"}
 
+// statusNotice is a transient message shown in the status bar.
+type statusNotice struct {
+	text string
+}
+
 // App is the root Bubbletea model.
 type App struct {
 	kernel    *kernel.Kernel
@@ -43,6 +48,7 @@ type App struct {
 	alerts    alerts.Model
 	statusbar statusbar.Model
 
+	notice  string // transient status notice
 	eventCh chan tea.Msg
 }
 
@@ -148,6 +154,33 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case PanelAgents:
 				a.agents = a.agents.MoveUp()
 			}
+		case "s":
+			// Spawn a new browser context + page
+			if a.client != nil {
+				cmds = append(cmds, a.spawnContext())
+			} else {
+				a.notice = "No kernel connected"
+			}
+		case "d":
+			// Destroy selected target
+			if a.client != nil {
+				sessionID, _ := a.contexts.SelectedTarget()
+				if sessionID != "" {
+					cmds = append(cmds, a.destroyTarget(sessionID))
+				} else {
+					a.notice = "No target selected"
+				}
+			}
+		case "a":
+			// Navigate selected context to a page (agent placeholder)
+			if a.client != nil {
+				sessionID, _ := a.contexts.SelectedTarget()
+				if sessionID != "" {
+					cmds = append(cmds, a.navigateTarget(sessionID, "https://www.google.com/"))
+				} else {
+					a.notice = "No target selected — press 's' to spawn one first"
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -160,6 +193,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusbar = a.statusbar.SetWidth(msg.Width)
 
 	case shared.TickMsg:
+		a.notice = "" // clear transient notice
 		if a.kernel != nil {
 			a.dashboard = a.dashboard.Update(shared.KernelStatusMsg{
 				Running: a.kernel.Running(),
@@ -189,6 +223,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shared.AgentStatusMsg:
 		a.agents = a.agents.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
+	case statusNotice:
+		a.notice = msg.text
 	}
 
 	return a, tea.Batch(cmds...)
@@ -225,8 +261,11 @@ func (a App) View() string {
 		body = lipgloss.JoinVertical(lipgloss.Left, dashView, rightColumn)
 	}
 
-	// Status bar
+	// Status bar + notice
 	statusView := a.statusbar.View()
+	if a.notice != "" {
+		statusView = shared.WarmingStyle.Render("  "+a.notice) + "\n" + statusView
+	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, body, statusView)
 }
@@ -249,6 +288,62 @@ func (a App) tick() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return shared.TickMsg{}
 	})
+}
+
+// spawnContext creates a new browser context and opens a page in it.
+func (a App) spawnContext() tea.Cmd {
+	return func() tea.Msg {
+		// Create a browser context
+		result, err := a.client.Call("", "Browser.createBrowserContext", map[string]interface{}{
+			"removeOnDetach": true,
+		})
+		if err != nil {
+			return statusNotice{text: "Spawn failed: " + err.Error()}
+		}
+
+		var ctx struct {
+			BrowserContextID string `json:"browserContextId"`
+		}
+		if err := json.Unmarshal(result, &ctx); err != nil {
+			return statusNotice{text: "Parse error: " + err.Error()}
+		}
+
+		// Open a new page in this context
+		_, err = a.client.Call("", "Browser.newPage", map[string]interface{}{
+			"browserContextId": ctx.BrowserContextID,
+		})
+		if err != nil {
+			return statusNotice{text: "New page failed: " + err.Error()}
+		}
+
+		return statusNotice{text: "Context spawned: " + ctx.BrowserContextID[:8]}
+	}
+}
+
+// destroyTarget closes a page target by session ID.
+func (a App) destroyTarget(sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := a.client.Call(sessionID, "Page.close", nil)
+		if err != nil {
+			return statusNotice{text: "Close failed: " + err.Error()}
+		}
+		return statusNotice{text: "Target closed"}
+	}
+}
+
+// navigateTarget navigates a page target to a URL.
+func (a App) navigateTarget(sessionID string, url string) tea.Cmd {
+	return func() tea.Msg {
+		// First get the frame ID for the target
+		_, err := a.client.Call(sessionID, "Page.navigate", map[string]interface{}{
+			"url":     url,
+			"frameId": "", // main frame
+		})
+		if err != nil {
+			return statusNotice{text: "Navigate failed: " + err.Error()}
+		}
+		return statusNotice{text: "Navigating to " + url}
+	}
 }
 
 // Header renders the VulpineOS header.

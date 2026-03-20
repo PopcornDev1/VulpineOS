@@ -60,11 +60,15 @@ export class BrowserHandler {
     for (const target of this._targetRegistry.targets())
       this._onTargetCreated(target);
 
-    // Start telemetry service
-    const {TelemetryService} = ChromeUtils.importESModule(
-      'chrome://juggler/content/TelemetryService.js');
-    this._telemetryService = new TelemetryService(this._targetRegistry, this._session);
-    this._telemetryService.start();
+    // Start telemetry service (non-fatal if it fails)
+    try {
+      const {TelemetryService} = ChromeUtils.importESModule(
+        'chrome://juggler/content/TelemetryService.js');
+      this._telemetryService = new TelemetryService(this._targetRegistry, this._session);
+      this._telemetryService.start();
+    } catch (e) {
+      dump(`Warning: TelemetryService failed to start: ${e.message}\n`);
+    }
   }
 
   async ['Browser.createBrowserContext']({removeOnDetach}) {

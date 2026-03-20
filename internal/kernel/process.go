@@ -18,6 +18,7 @@ type Kernel struct {
 	cmd       *exec.Cmd
 	client    *juggler.Client
 	transport *juggler.PipeTransport
+	logFile   *os.File
 	startedAt time.Time
 	waited    bool // true after cmd.Wait() has been called
 	mu        sync.Mutex
@@ -62,6 +63,7 @@ func (k *Kernel) Start(cfg Config) error {
 	args := []string{
 		"--juggler-pipe",
 		"--no-remote",
+		"--purgecaches", // Force Firefox to re-read omni.ja (needed after patching)
 	}
 	if cfg.Headless {
 		args = append(args, "--headless")
@@ -86,8 +88,18 @@ func (k *Kernel) Start(cfg Config) error {
 	}
 
 	cmd := exec.Command(binary, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Redirect Firefox stdout/stderr to a log file to keep the TUI clean.
+	// If the log file can't be created, fall back to /dev/null.
+	logPath := filepath.Join(os.TempDir(), "vulpineos-kernel.log")
+	if logFile, err := os.Create(logPath); err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		k.logFile = logFile
+	} else {
+		devNull, _ := os.Open(os.DevNull)
+		cmd.Stdout = devNull
+		cmd.Stderr = devNull
+	}
 	// FD 0=stdin, 1=stdout, 2=stderr, 3=juggler-read (from us), 4=juggler-write (to us)
 	cmd.ExtraFiles = []*os.File{toFirefoxRead, fromFirefoxWrite}
 
@@ -175,7 +187,17 @@ func (k *Kernel) Stop() error {
 		k.cmd = nil
 	}
 
+	if k.logFile != nil {
+		k.logFile.Close()
+		k.logFile = nil
+	}
+
 	return nil
+}
+
+// LogPath returns the path to the kernel log file.
+func (k *Kernel) LogPath() string {
+	return filepath.Join(os.TempDir(), "vulpineos-kernel.log")
 }
 
 // Wait blocks until the Firefox process exits.
