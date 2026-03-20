@@ -802,19 +802,44 @@ export class PageAgent {
       const children = [];
 
       for (let child = accElement.firstChild; child; child = child.nextSibling) {
-        if (injectionFilterEnabled && isNodeVisuallyHidden(child))
+        if (injectionFilterEnabled && isNodeVisuallyHidden(child)) {
+          // Report potential injection attempt if the hidden node has text content
+          const hiddenName = child.name?.trim();
+          if (hiddenName && hiddenName.length > 5) {
+            strippedNodes.push({
+              role: service.getStringRole(child.role),
+              text: hiddenName.substring(0, 200),
+            });
+          }
           continue;
+        }
         children.push(buildNode(child));
       }
       if (children.length)
         tree.children = children;
       return tree;
     }
+    const strippedNodes = [];
     await waitForAXQuiet(docAcc);
-    return {
+    const result = {
       tree: buildNode(docAcc),
       filtered: injectionFilterEnabled,
     };
+
+    // Emit injection alerts for stripped nodes with suspicious content
+    if (strippedNodes.length > 0) {
+      const url = document.location?.href || '';
+      for (const node of strippedNodes) {
+        this._browserPage.emit('injectionAttemptDetected', {
+          url,
+          attemptType: 'hidden-content',
+          details: `Hidden ${node.role}: "${node.text}"`,
+          blocked: true,
+        });
+      }
+    }
+
+    return result;
   }
 
   async _getOptimizedDOM({ maxDepth = 10, maxNodes = 500, maxTextLength = 200 }) {

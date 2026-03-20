@@ -26,6 +26,7 @@ export class BrowserHandler {
     this._onclose = onclose;
     this._startCompletePromise = startCompletePromise;
     this._trustWarmService = null;
+    this._telemetryService = null;
   }
 
   async ['Browser.enable']({attachToDefaultContext, userPrefs = []}) {
@@ -58,6 +59,12 @@ export class BrowserHandler {
 
     for (const target of this._targetRegistry.targets())
       this._onTargetCreated(target);
+
+    // Start telemetry service
+    const {TelemetryService} = ChromeUtils.importESModule(
+      'chrome://juggler/content/TelemetryService.js');
+    this._telemetryService = new TelemetryService(this._targetRegistry, this._session);
+    this._telemetryService.start();
   }
 
   async ['Browser.createBrowserContext']({removeOnDetach}) {
@@ -76,6 +83,8 @@ export class BrowserHandler {
   }
 
   dispose() {
+    if (this._telemetryService)
+      this._telemetryService.dispose();
     if (this._trustWarmService)
       this._trustWarmService.dispose();
     helper.removeListeners(this._eventListeners);
@@ -333,6 +342,18 @@ export class BrowserHandler {
   async ['Browser.notifyTrustWarmingBusy']() {
     if (this._trustWarmService)
       await this._trustWarmService.notifyBusy();
+  }
+
+  async ['Browser.getTelemetry']() {
+    if (!this._telemetryService)
+      return {memoryMB: 0, cpuPercent: 0, detectionRiskScore: 0, activeContexts: 0, activePages: 0, timestamp: Date.now()};
+    return this._telemetryService.getTelemetry();
+  }
+
+  async ['Browser.getContextTelemetry']({browserContextId}) {
+    if (!this._telemetryService)
+      return {pageCount: 0, trustWarmingState: 'unknown', detectionEvents: 0, currentUrls: []};
+    return this._telemetryService.getContextTelemetry(browserContextId);
   }
 }
 

@@ -249,6 +249,22 @@ const Browser = {
       state: t.String,
       currentSite: t.Optional(t.String),
     },
+    'telemetryUpdate': {
+      memoryMB: t.Number,
+      cpuPercent: t.Number,
+      detectionRiskScore: t.Number,
+      activeContexts: t.Number,
+      activePages: t.Number,
+      timestamp: t.Number,
+    },
+    'injectionAttemptDetected': {
+      browserContextId: t.Optional(t.String),
+      url: t.String,
+      attemptType: t.String,
+      details: t.String,
+      timestamp: t.Number,
+      blocked: t.Boolean,
+    },
   },
 
   methods: {
@@ -507,6 +523,27 @@ const Browser = {
     },
     'notifyTrustWarmingIdle': {},
     'notifyTrustWarmingBusy': {},
+    'getTelemetry': {
+      returns: {
+        memoryMB: t.Number,
+        cpuPercent: t.Number,
+        detectionRiskScore: t.Number,
+        activeContexts: t.Number,
+        activePages: t.Number,
+        timestamp: t.Number,
+      },
+    },
+    'getContextTelemetry': {
+      params: {
+        browserContextId: t.String,
+      },
+      returns: {
+        pageCount: t.Number,
+        trustWarmingState: t.String,
+        detectionEvents: t.Number,
+        currentUrls: t.Array(t.String),
+      },
+    },
   },
 };
 
@@ -696,6 +733,12 @@ const Page = {
       frameId: t.String,
       message: t.String,
       stack: t.String,
+    },
+    'injectionAttemptDetected': {
+      url: t.String,
+      attemptType: t.String,
+      details: t.String,
+      blocked: t.Boolean,
     },
     'frameAttached': {
       frameId: t.String,

@@ -127,6 +127,7 @@ export class PageHandler {
         pageInputEvent: (event) => this._pageEventSink.emit(event.type, event),
         pageSameDocumentNavigation: emitProtocolEvent('Page.sameDocumentNavigation'),
         pageUncaughtError: emitProtocolEvent('Page.uncaughtError'),
+        injectionAttemptDetected: emitProtocolEvent('Page.injectionAttemptDetected'),
         pageWorkerCreated: this._onWorkerCreated.bind(this),
         pageWorkerDestroyed: this._onWorkerDestroyed.bind(this),
         runtimeConsole: params => {
