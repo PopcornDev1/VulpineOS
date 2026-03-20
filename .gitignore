@@ -78,3 +78,7 @@ proxies.txt
 checks-bundle.js
 .env
 .claude/
+
+# VulpineOS Go binary
+/vulpineos
+/openclaw/
