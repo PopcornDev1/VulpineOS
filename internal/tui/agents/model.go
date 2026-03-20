@@ -58,6 +58,26 @@ func (m Model) Update(msg interface{}) Model {
 	return m
 }
 
+func (m Model) Remove(agentID string) Model {
+	for i, a := range m.agents {
+		if a.agentID == agentID {
+			m.agents = append(m.agents[:i], m.agents[i+1:]...)
+			if m.selected >= len(m.agents) && m.selected > 0 {
+				m.selected--
+			}
+			break
+		}
+	}
+	return m
+}
+
+func (m Model) SelectedAgent() (agentID, contextID string) {
+	if m.selected < len(m.agents) {
+		return m.agents[m.selected].agentID, m.agents[m.selected].contextID
+	}
+	return "", ""
+}
+
 func (m Model) SetWidth(w int) Model {
 	m.width = w
 	return m

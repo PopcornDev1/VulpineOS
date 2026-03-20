@@ -1,0 +1,22 @@
+{
+  "name": "vulpineos",
+  "version": "0.1.0",
+  "description": "VulpineOS — Sovereign Agent Runtime. AI agent security built into the browser engine.",
+  "private": true,
+  "scripts": {
+    "postinstall": "echo 'VulpineOS dependencies installed. OpenClaw is ready.'",
+    "build-go": "go build -o vulpineos ./cmd/vulpineos/",
+    "setup": "go build -o vulpineos ./cmd/vulpineos/ && ./vulpineos --no-browser"
+  },
+  "dependencies": {
+    "openclaw": "latest"
+  },
+  "engines": {
+    "node": ">=22.16.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PopcornDev1/VulpineOS"
+  },
+  "license": "MPL-2.0"
+}

@@ -2,9 +2,13 @@ package openclaw
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"sync"
 
 	"github.com/google/uuid"
+
+	"vulpineos/internal/config"
 )
 
 // Manager manages multiple OpenClaw agent subprocesses.
@@ -62,6 +66,88 @@ func (m *Manager) Spawn(contextID string, sopFile string, extraArgs ...string) (
 	}()
 
 	return id, nil
+}
+
+// SpawnOpenClaw spawns a real OpenClaw agent using the VulpineOS-generated config.
+// It sends a task message to OpenClaw's gateway to start an agent run.
+func (m *Manager) SpawnOpenClaw(task string, agentSkills []config.SkillEntry) (string, error) {
+	// Find OpenClaw binary
+	openclawBin := m.findOpenClaw()
+	if openclawBin == "" {
+		return "", fmt.Errorf("OpenClaw not found. Run ./scripts/bundle-openclaw.sh or install globally: npm install -g openclaw")
+	}
+
+	id := uuid.New().String()[:8]
+
+	// Build per-agent skill dirs if needed
+	agentSkillDir := config.AgentSkillDir(id)
+
+	// OpenClaw args: run with our config, send a task
+	args := []string{
+		"run",
+		"--config", config.OpenClawConfigPath(),
+		"--message", task,
+	}
+
+	// Add per-agent skill directory if there are agent-specific skills
+	if len(agentSkills) > 0 {
+		args = append(args, "--skills-dir", agentSkillDir)
+	}
+
+	agent := newAgent(id, "openclaw", m.statusCh)
+	if err := agent.start(openclawBin, args); err != nil {
+		return "", fmt.Errorf("spawn openclaw: %w", err)
+	}
+
+	m.mu.Lock()
+	m.agents[id] = agent
+	m.mu.Unlock()
+
+	go func() {
+		agent.Wait()
+		m.mu.Lock()
+		delete(m.agents, id)
+		m.mu.Unlock()
+	}()
+
+	return id, nil
+}
+
+// findOpenClaw looks for the OpenClaw binary in common locations.
+func (m *Manager) findOpenClaw() string {
+	// Check repo-level node_modules (from npm install in VulpineOS root)
+	repoLocal := []string{
+		"./node_modules/.bin/openclaw",
+		"./node_modules/openclaw/bin/openclaw.js",
+	}
+	for _, c := range repoLocal {
+		if info, err := os.Stat(c); err == nil && !info.IsDir() {
+			return c
+		}
+	}
+
+	// Check bundled openclaw directory
+	bundled := []string{
+		"./openclaw/start.sh",
+		"./openclaw/node_modules/.bin/openclaw",
+	}
+	for _, c := range bundled {
+		if info, err := os.Stat(c); err == nil && !info.IsDir() {
+			return c
+		}
+	}
+
+	// Check global install
+	if path, err := exec.LookPath("openclaw"); err == nil {
+		return path
+	}
+
+	return ""
+}
+
+// OpenClawInstalled returns true if OpenClaw is available.
+func (m *Manager) OpenClawInstalled() bool {
+	return m.findOpenClaw() != ""
 }
 
 // Kill stops an agent by ID.

@@ -5,11 +5,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
+	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/tui/agents"
 	"vulpineos/internal/tui/alerts"
 	"vulpineos/internal/tui/contexts"
@@ -38,6 +40,7 @@ type statusNotice struct {
 type App struct {
 	kernel    *kernel.Kernel
 	client    *juggler.Client
+	orch      *orchestrator.Orchestrator
 	width     int
 	height    int
 	activePanel int
@@ -48,17 +51,26 @@ type App struct {
 	alerts    alerts.Model
 	statusbar statusbar.Model
 
-	notice  string // transient status notice
-	eventCh chan tea.Msg
+	notice    string // transient status notice
+	inputMode string // "" = normal, "task" = entering agent task
+	taskInput textinput.Model
+	eventCh   chan tea.Msg
 }
 
 // NewApp creates the root TUI model.
-func NewApp(k *kernel.Kernel, client *juggler.Client) App {
+func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchestrator) App {
 	eventCh := make(chan tea.Msg, 64)
+
+	ti := textinput.New()
+	ti.Placeholder = "Describe what the agent should do..."
+	ti.CharLimit = 500
+	ti.Width = 60
 
 	app := App{
 		kernel:    k,
 		client:    client,
+		orch:      orch,
+		taskInput: ti,
 		dashboard: dashboard.New(),
 		contexts:  contexts.New(),
 		agents:    agents.New(),
@@ -167,6 +179,21 @@ func NewApp(k *kernel.Kernel, client *juggler.Client) App {
 		})
 	}
 
+	// Forward agent status updates from orchestrator to TUI
+	if orch != nil {
+		go func() {
+			for status := range orch.Agents.StatusChan() {
+				eventCh <- shared.AgentStatusMsg{
+					AgentID:   status.AgentID,
+					ContextID: status.ContextID,
+					Status:    status.Status,
+					Objective: status.Objective,
+					Tokens:    status.Tokens,
+				}
+			}
+		}()
+	}
+
 	return app
 }
 
@@ -182,6 +209,29 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Handle task input mode
+		if a.inputMode == "task" {
+			switch msg.String() {
+			case "enter":
+				task := strings.TrimSpace(a.taskInput.Value())
+				if task != "" {
+					cmds = append(cmds, a.spawnOpenClawAgent(task))
+				}
+				a.inputMode = ""
+				a.taskInput.Blur()
+				a.taskInput.Reset()
+			case "esc":
+				a.inputMode = ""
+				a.taskInput.Blur()
+				a.taskInput.Reset()
+			default:
+				var cmd tea.Cmd
+				a.taskInput, cmd = a.taskInput.Update(msg)
+				return a, cmd
+			}
+			return a, tea.Batch(cmds...)
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return a, tea.Quit
@@ -223,16 +273,35 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "a":
-			// Navigate selected context to a page (agent placeholder)
+			// Enter task input mode to spawn an OpenClaw agent
+			if a.orch != nil {
+				a.inputMode = "task"
+				a.taskInput.Focus()
+				return a, textinput.Blink
+			} else {
+				a.notice = "No orchestrator — launch with a browser"
+			}
+		case "g":
+			// Navigate selected target to Google (quick test)
 			if a.client != nil {
 				sessionID, _ := a.contexts.SelectedTarget()
 				frameID := a.contexts.SelectedFrameID()
 				if sessionID != "" && frameID != "" {
 					cmds = append(cmds, a.navigateTarget(sessionID, frameID, "https://www.google.com/"))
 				} else if sessionID != "" {
-					a.notice = "Target has no frame yet — try again in a moment"
+					a.notice = "Target has no frame yet — try again"
 				} else {
-					a.notice = "No target selected — press 's' to spawn one first"
+					a.notice = "No target selected"
+				}
+			}
+		case "x":
+			// Kill selected agent
+			if a.orch != nil {
+				agentID, _ := a.agents.SelectedAgent()
+				if agentID != "" {
+					cmds = append(cmds, a.killAgent(agentID))
+				} else {
+					a.notice = "No agent selected"
 				}
 			}
 		}
@@ -287,7 +356,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.contexts = a.contexts.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.AgentStatusMsg:
-		a.agents = a.agents.Update(msg)
+		if msg.Status == "completed" || msg.Status == "error" {
+			// Keep the agent visible for one more render cycle with final status
+			a.agents = a.agents.Update(msg)
+		} else {
+			a.agents = a.agents.Update(msg)
+		}
 		cmds = append(cmds, a.waitForEvent())
 	case statusNotice:
 		a.notice = msg.text
@@ -327,13 +401,29 @@ func (a App) View() string {
 		body = lipgloss.JoinVertical(lipgloss.Left, dashView, rightColumn)
 	}
 
+	// Task input bar (when in input mode)
+	var inputBar string
+	if a.inputMode == "task" {
+		inputBar = shared.ActivePanelStyle.Width(a.width - 4).Render(
+			shared.TitleStyle.Render("AGENT TASK") + "\n" +
+				a.taskInput.View() + "\n" +
+				shared.MutedStyle.Render("[Enter] spawn  [Esc] cancel"),
+		)
+	}
+
 	// Status bar + notice
 	statusView := a.statusbar.View()
 	if a.notice != "" {
 		statusView = shared.WarmingStyle.Render("  "+a.notice) + "\n" + statusView
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, body, statusView)
+	parts := []string{body}
+	if inputBar != "" {
+		parts = append(parts, inputBar)
+	}
+	parts = append(parts, statusView)
+
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 func (a App) renderPanel(panel int, content string, width int) string {
@@ -408,6 +498,27 @@ func (a App) navigateTarget(sessionID, frameID, url string) tea.Cmd {
 			return statusNotice{text: "Navigate failed: " + err.Error()}
 		}
 		return statusNotice{text: "Navigating to " + url}
+	}
+}
+
+// spawnOpenClawAgent spawns a real OpenClaw agent with the given task.
+func (a App) spawnOpenClawAgent(task string) tea.Cmd {
+	return func() tea.Msg {
+		agentID, err := a.orch.Agents.SpawnOpenClaw(task, nil)
+		if err != nil {
+			return statusNotice{text: "Agent failed: " + err.Error()}
+		}
+		return statusNotice{text: "Agent spawned: " + agentID + " — " + task}
+	}
+}
+
+// killAgent kills an agent by ID.
+func (a App) killAgent(agentID string) tea.Cmd {
+	return func() tea.Msg {
+		if err := a.orch.Agents.Kill(agentID); err != nil {
+			return statusNotice{text: "Kill failed: " + err.Error()}
+		}
+		return statusNotice{text: "Agent killed: " + agentID}
 	}
 }
 

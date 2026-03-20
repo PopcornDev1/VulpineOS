@@ -79,6 +79,6 @@ checks-bundle.js
 .env
 .claude/
 
-# VulpineOS Go binary
+# VulpineOS Go binaries
 /vulpineos
 /openclaw/

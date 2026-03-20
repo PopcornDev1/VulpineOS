@@ -73,8 +73,9 @@ func (m Model) View() string {
 		{"j/k", "nav"},
 		{"s", "spawn"},
 		{"a", "agent"},
+		{"x", "kill"},
+		{"g", "go-url"},
 		{"d", "destroy"},
-		{"r", "restart"},
 		{"q", "quit"},
 	}
 

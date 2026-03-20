@@ -7,14 +7,21 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
 	"vulpineos/internal/mcp"
+	"vulpineos/internal/orchestrator"
+	"vulpineos/internal/pool"
 	"vulpineos/internal/remote"
 	"vulpineos/internal/tui"
+	"vulpineos/internal/tui/loading"
+	"vulpineos/internal/tui/setup"
+	"vulpineos/internal/vault"
 )
 
 func main() {
@@ -79,25 +86,105 @@ func runMCPServer(binaryPath string, headless bool, profileDir string) error {
 
 // runLocal starts the kernel and TUI locally.
 func runLocal(binaryPath string, headless bool, profileDir string, noBrowser bool) error {
-	var k *kernel.Kernel
-	var client *juggler.Client
-
-	if !noBrowser {
-		k = kernel.New()
-		if err := k.Start(kernel.Config{
-			BinaryPath: binaryPath,
-			Headless:   headless,
-			ProfileDir: profileDir,
-		}); err != nil {
-			return fmt.Errorf("start kernel: %w", err)
-		}
-		defer k.Stop()
-
-		client = k.Client()
+	// Check if first-time setup is needed
+	cfg, err := config.Load()
+	if err != nil {
+		log.Printf("Warning: could not load config: %v", err)
+		cfg = &config.Config{}
 	}
 
-	// Create TUI first so event subscriptions are in place before Browser.enable
-	app := tui.NewApp(k, client)
+	if cfg.NeedsSetup() {
+		// Run setup wizard
+		setupModel := setup.New()
+		p := tea.NewProgram(setupModel, tea.WithAltScreen())
+		result, err := p.Run()
+		if err != nil {
+			return fmt.Errorf("setup wizard: %w", err)
+		}
+		finalModel := result.(setup.Model)
+		if !finalModel.Done() {
+			return nil // user quit setup
+		}
+		cfg = finalModel.Config()
+		if err := cfg.Save(); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
+
+		// Generate OpenClaw config
+		exe, _ := os.Executable()
+		camoufox := binaryPath
+		if err := cfg.GenerateOpenClawConfig(exe, camoufox); err != nil {
+			log.Printf("Warning: could not generate OpenClaw config: %v", err)
+		}
+	}
+
+	// Store binary path in config if provided
+	if binaryPath != "" && cfg.BinaryPath != binaryPath {
+		cfg.BinaryPath = binaryPath
+		cfg.Save()
+	}
+
+	var k *kernel.Kernel
+	var client *juggler.Client
+	var orch *orchestrator.Orchestrator
+	var v *vault.DB
+	var startErr error
+
+	if !noBrowser {
+		// Show loading spinner while kernel starts
+		loader := loading.New("Launching VulpineOS")
+		loaderProg := tea.NewProgram(loader, tea.WithAltScreen())
+
+		go func() {
+			// Open vault
+			v, _ = vault.Open()
+
+			// Start kernel
+			k = kernel.New()
+			startErr = k.Start(kernel.Config{
+				BinaryPath: binaryPath,
+				Headless:   headless,
+				ProfileDir: profileDir,
+			})
+			if startErr == nil {
+				client = k.Client()
+
+				// Create orchestrator
+				agentBinary := findAgentBinary()
+				if v != nil {
+					orch = orchestrator.New(k, client, v, pool.DefaultConfig(), agentBinary)
+					orch.Start()
+				}
+			}
+
+			loaderProg.Send(loading.DoneMsg{})
+		}()
+
+		result, err := loaderProg.Run()
+		if err != nil {
+			return fmt.Errorf("loading screen: %w", err)
+		}
+		if !result.(loading.Model).Done() {
+			// User quit during loading
+			if k != nil {
+				k.Stop()
+			}
+			return nil
+		}
+		if startErr != nil {
+			return fmt.Errorf("start kernel: %w", startErr)
+		}
+		defer k.Stop()
+		if v != nil {
+			defer v.Close()
+		}
+		if orch != nil {
+			defer orch.Close()
+		}
+	}
+
+	// Create TUI with event subscriptions in place before Browser.enable
+	app := tui.NewApp(k, client, orch)
 
 	if client != nil {
 		if _, err := client.Call("", "Browser.enable", map[string]interface{}{
@@ -107,8 +194,22 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 		}
 	}
 	p := tea.NewProgram(app, tea.WithAltScreen())
-	_, err := p.Run()
-	return err
+	_, runErr := p.Run()
+	return runErr
+}
+
+// findAgentBinary looks for the demo-agent binary in the same directory as vulpineos.
+func findAgentBinary() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "demo-agent"
+	}
+	dir := filepath.Dir(exe)
+	candidate := filepath.Join(dir, "demo-agent")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+	return "demo-agent"
 }
 
 // runRemote connects to a remote VulpineOS server and launches the TUI.
@@ -130,7 +231,7 @@ func runRemote(addr string, apiKey string) error {
 		return fmt.Errorf("Browser.enable (remote): %w", err)
 	}
 
-	app := tui.NewApp(nil, client)
+	app := tui.NewApp(nil, client, nil)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	_, err = p.Run()
 	return err
