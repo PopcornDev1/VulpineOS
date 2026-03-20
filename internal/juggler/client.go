@@ -10,7 +10,8 @@ import (
 )
 
 // EventHandler is called when a Juggler event is received.
-type EventHandler func(params json.RawMessage)
+// sessionID identifies which page session the event belongs to (empty for browser events).
+type EventHandler func(sessionID string, params json.RawMessage)
 
 // Client is a high-level Juggler protocol client.
 type Client struct {
@@ -138,7 +139,7 @@ func (c *Client) readLoop() {
 			handlers := c.handlers[msg.Method]
 			c.handlerMu.RUnlock()
 			for _, h := range handlers {
-				h(msg.Params)
+				h(msg.SessionID, msg.Params)
 			}
 		}
 	}

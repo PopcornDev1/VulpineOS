@@ -44,6 +44,20 @@ type TargetAttachedMsg struct {
 	URL        string
 }
 
+// FrameAttachedMsg fires when a frame is attached to a page.
+type FrameAttachedMsg struct {
+	SessionID     string
+	FrameID       string
+	ParentFrameID string
+}
+
+// ExecContextCreatedMsg fires when an execution context is created.
+type ExecContextCreatedMsg struct {
+	SessionID          string
+	ExecutionContextID string
+	FrameID            string
+}
+
 // TargetDetachedMsg fires when a page target disappears.
 type TargetDetachedMsg struct {
 	SessionID string
@@ -72,6 +86,20 @@ type AlertMsg struct {
 type TrustWarmMsg struct {
 	State       string
 	CurrentSite string
+}
+
+// NavigationMsg fires when a page navigates to a new URL.
+type NavigationMsg struct {
+	SessionID string
+	FrameID   string
+	URL       string
+}
+
+// PageLoadMsg fires when a page fires load or DOMContentLoaded.
+type PageLoadMsg struct {
+	SessionID string
+	FrameID   string
+	Name      string // "load" or "DOMContentLoaded"
 }
 
 // TickMsg is the periodic refresh tick.

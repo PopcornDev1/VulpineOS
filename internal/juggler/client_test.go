@@ -91,7 +91,7 @@ func TestClient_Subscribe_ReceivesEvents(t *testing.T) {
 	defer c.Close()
 
 	received := make(chan json.RawMessage, 1)
-	c.Subscribe("Page.loadFired", func(params json.RawMessage) {
+	c.Subscribe("Page.loadFired", func(_ string, params json.RawMessage) {
 		received <- params
 	})
 

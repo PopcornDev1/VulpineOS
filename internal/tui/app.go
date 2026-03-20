@@ -2,7 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 
@@ -70,7 +69,7 @@ func NewApp(k *kernel.Kernel, client *juggler.Client) App {
 
 	// Subscribe to Juggler events
 	if client != nil {
-		client.Subscribe("Browser.attachedToTarget", func(params json.RawMessage) {
+		client.Subscribe("Browser.attachedToTarget", func(sid string, params json.RawMessage) {
 			var e juggler.AttachedToTarget
 			json.Unmarshal(params, &e)
 			eventCh <- shared.TargetAttachedMsg{
@@ -80,7 +79,7 @@ func NewApp(k *kernel.Kernel, client *juggler.Client) App {
 				URL:       e.TargetInfo.URL,
 			}
 		})
-		client.Subscribe("Browser.detachedFromTarget", func(params json.RawMessage) {
+		client.Subscribe("Browser.detachedFromTarget", func(sid string, params json.RawMessage) {
 			var e juggler.DetachedFromTarget
 			json.Unmarshal(params, &e)
 			eventCh <- shared.TargetDetachedMsg{
@@ -88,12 +87,12 @@ func NewApp(k *kernel.Kernel, client *juggler.Client) App {
 				TargetID:  e.TargetID,
 			}
 		})
-		client.Subscribe("Browser.trustWarmingStateChanged", func(params json.RawMessage) {
+		client.Subscribe("Browser.trustWarmingStateChanged", func(sid string, params json.RawMessage) {
 			var e juggler.TrustWarmingState
 			json.Unmarshal(params, &e)
 			eventCh <- shared.TrustWarmMsg{State: e.State, CurrentSite: e.CurrentSite}
 		})
-		client.Subscribe("Browser.telemetryUpdate", func(params json.RawMessage) {
+		client.Subscribe("Browser.telemetryUpdate", func(sid string, params json.RawMessage) {
 			var e juggler.TelemetryUpdate
 			json.Unmarshal(params, &e)
 			eventCh <- shared.TelemetryMsg{
@@ -104,7 +103,7 @@ func NewApp(k *kernel.Kernel, client *juggler.Client) App {
 				ActivePages:        e.ActivePages,
 			}
 		})
-		client.Subscribe("Browser.injectionAttemptDetected", func(params json.RawMessage) {
+		client.Subscribe("Browser.injectionAttemptDetected", func(sid string, params json.RawMessage) {
 			var e juggler.InjectionAttempt
 			json.Unmarshal(params, &e)
 			eventCh <- shared.AlertMsg{
@@ -113,6 +112,57 @@ func NewApp(k *kernel.Kernel, client *juggler.Client) App {
 				URL:       e.URL,
 				Details:   e.Details,
 				Blocked:   e.Blocked,
+			}
+		})
+		// Page-session events — sessionId identifies which target they belong to
+		client.Subscribe("Page.navigationCommitted", func(sid string, params json.RawMessage) {
+			var e struct {
+				FrameID string `json:"frameId"`
+				URL     string `json:"url"`
+			}
+			json.Unmarshal(params, &e)
+			eventCh <- shared.NavigationMsg{
+				SessionID: sid,
+				FrameID:   e.FrameID,
+				URL:       e.URL,
+			}
+		})
+		client.Subscribe("Page.eventFired", func(sid string, params json.RawMessage) {
+			var e struct {
+				FrameID string `json:"frameId"`
+				Name    string `json:"name"`
+			}
+			json.Unmarshal(params, &e)
+			eventCh <- shared.PageLoadMsg{
+				SessionID: sid,
+				FrameID:   e.FrameID,
+				Name:      e.Name,
+			}
+		})
+		client.Subscribe("Page.frameAttached", func(sid string, params json.RawMessage) {
+			var e struct {
+				FrameID       string `json:"frameId"`
+				ParentFrameID string `json:"parentFrameId"`
+			}
+			json.Unmarshal(params, &e)
+			eventCh <- shared.FrameAttachedMsg{
+				SessionID:     sid,
+				FrameID:       e.FrameID,
+				ParentFrameID: e.ParentFrameID,
+			}
+		})
+		client.Subscribe("Runtime.executionContextCreated", func(sid string, params json.RawMessage) {
+			var e struct {
+				ExecutionContextID string `json:"executionContextId"`
+				AuxData            struct {
+					FrameID string `json:"frameId"`
+				} `json:"auxData"`
+			}
+			json.Unmarshal(params, &e)
+			eventCh <- shared.ExecContextCreatedMsg{
+				SessionID:          sid,
+				ExecutionContextID: e.ExecutionContextID,
+				FrameID:            e.AuxData.FrameID,
 			}
 		})
 	}
@@ -176,8 +226,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Navigate selected context to a page (agent placeholder)
 			if a.client != nil {
 				sessionID, _ := a.contexts.SelectedTarget()
-				if sessionID != "" {
-					cmds = append(cmds, a.navigateTarget(sessionID, "https://www.google.com/"))
+				frameID := a.contexts.SelectedFrameID()
+				if sessionID != "" && frameID != "" {
+					cmds = append(cmds, a.navigateTarget(sessionID, frameID, "https://www.google.com/"))
+				} else if sessionID != "" {
+					a.notice = "Target has no frame yet — try again in a moment"
 				} else {
 					a.notice = "No target selected — press 's' to spawn one first"
 				}
@@ -220,6 +273,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.waitForEvent())
 	case shared.AlertMsg:
 		a.alerts = a.alerts.Update(msg)
+		cmds = append(cmds, a.waitForEvent())
+	case shared.NavigationMsg:
+		a.contexts = a.contexts.Update(msg)
+		cmds = append(cmds, a.waitForEvent())
+	case shared.PageLoadMsg:
+		a.contexts = a.contexts.Update(msg)
+		cmds = append(cmds, a.waitForEvent())
+	case shared.FrameAttachedMsg:
+		a.contexts = a.contexts.Update(msg)
+		cmds = append(cmds, a.waitForEvent())
+	case shared.ExecContextCreatedMsg:
+		a.contexts = a.contexts.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.AgentStatusMsg:
 		a.agents = a.agents.Update(msg)
@@ -332,12 +397,12 @@ func (a App) destroyTarget(sessionID string) tea.Cmd {
 	}
 }
 
-// navigateTarget navigates a page target to a URL using Runtime.evaluate.
-func (a App) navigateTarget(sessionID string, url string) tea.Cmd {
+// navigateTarget navigates a page target to a URL using Page.navigate with the correct frameId.
+func (a App) navigateTarget(sessionID, frameID, url string) tea.Cmd {
 	return func() tea.Msg {
-		_, err := a.client.Call(sessionID, "Runtime.evaluate", map[string]interface{}{
-			"expression":         fmt.Sprintf("window.location.href = %q", url),
-			"returnByValue":      true,
+		_, err := a.client.Call(sessionID, "Page.navigate", map[string]interface{}{
+			"url":     url,
+			"frameId": frameID,
 		})
 		if err != nil {
 			return statusNotice{text: "Navigate failed: " + err.Error()}

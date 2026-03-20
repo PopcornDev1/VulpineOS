@@ -167,7 +167,7 @@ func runServe(binaryPath string, headless bool, profileDir string, port int, api
 		"Browser.detachedFromTarget",
 	} {
 		evt := event
-		client.Subscribe(evt, func(params json.RawMessage) {
+		client.Subscribe(evt, func(_ string, params json.RawMessage) {
 			server.BroadcastEvent(evt, params)
 		})
 	}

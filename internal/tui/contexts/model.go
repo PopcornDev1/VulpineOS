@@ -15,10 +15,13 @@ type Model struct {
 }
 
 type target struct {
-	sessionID string
-	targetID  string
-	contextID string
-	url       string
+	sessionID  string
+	targetID   string
+	contextID  string
+	url        string
+	frameID    string // main frame ID (from Page.frameAttached with no parent)
+	execCtxID  string // execution context ID (from Runtime.executionContextCreated)
+	loading    bool   // true between navigation start and load event
 }
 
 func New() Model {
@@ -34,6 +37,41 @@ func (m Model) Update(msg interface{}) Model {
 			contextID: msg.ContextID,
 			url:       msg.URL,
 		})
+	case shared.FrameAttachedMsg:
+		// Main frame has no parent — store its frameID on the matching target
+		if msg.ParentFrameID == "" {
+			for i, t := range m.targets {
+				if t.sessionID == msg.SessionID {
+					m.targets[i].frameID = msg.FrameID
+					break
+				}
+			}
+		}
+	case shared.ExecContextCreatedMsg:
+		// Store execution context ID for the matching target's main frame
+		for i, t := range m.targets {
+			if t.sessionID == msg.SessionID && (t.frameID == msg.FrameID || t.frameID == "") {
+				m.targets[i].execCtxID = msg.ExecutionContextID
+				break
+			}
+		}
+	case shared.NavigationMsg:
+		for i, t := range m.targets {
+			if t.sessionID == msg.SessionID {
+				m.targets[i].url = msg.URL
+				m.targets[i].loading = true
+				break
+			}
+		}
+	case shared.PageLoadMsg:
+		if msg.Name == "load" {
+			for i, t := range m.targets {
+				if t.sessionID == msg.SessionID {
+					m.targets[i].loading = false
+					break
+				}
+			}
+		}
 	case shared.TargetDetachedMsg:
 		for i, t := range m.targets {
 			if t.targetID == msg.TargetID || t.sessionID == msg.SessionID {
@@ -74,6 +112,22 @@ func (m Model) SelectedTarget() (sessionID, targetID string) {
 	return "", ""
 }
 
+// SelectedFrameID returns the main frame ID of the selected target.
+func (m Model) SelectedFrameID() string {
+	if m.selected < len(m.targets) {
+		return m.targets[m.selected].frameID
+	}
+	return ""
+}
+
+// SelectedExecCtxID returns the execution context ID of the selected target.
+func (m Model) SelectedExecCtxID() string {
+	if m.selected < len(m.targets) {
+		return m.targets[m.selected].execCtxID
+	}
+	return ""
+}
+
 func (m Model) View() string {
 	var b strings.Builder
 
@@ -94,7 +148,12 @@ func (m Model) View() string {
 		if len(url) > 40 {
 			url = url[:37] + "..."
 		}
-		line := fmt.Sprintf("  %-12s %-12s %s",
+		loadIcon := " "
+		if t.loading {
+			loadIcon = shared.WarmingStyle.Render("◌")
+		}
+		line := fmt.Sprintf(" %s %-12s %-12s %s",
+			loadIcon,
 			truncate(t.targetID, 12),
 			truncate(t.contextID, 12),
 			url,
