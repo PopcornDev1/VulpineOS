@@ -60,6 +60,31 @@ CREATE TABLE IF NOT EXISTS nomad_sessions (
 	status       TEXT NOT NULL DEFAULT 'active',
 	result       TEXT DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS agents (
+	id            TEXT PRIMARY KEY,
+	name          TEXT NOT NULL,
+	task          TEXT NOT NULL,
+	fingerprint   TEXT NOT NULL DEFAULT '{}',
+	proxy_config  TEXT DEFAULT '',
+	locale        TEXT DEFAULT '',
+	timezone      TEXT DEFAULT '',
+	status        TEXT NOT NULL DEFAULT 'created',
+	total_tokens  INTEGER DEFAULT 0,
+	created_at    INTEGER NOT NULL,
+	last_active   INTEGER NOT NULL,
+	metadata      TEXT DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+	role       TEXT NOT NULL,
+	content    TEXT NOT NULL,
+	tokens     INTEGER DEFAULT 0,
+	timestamp  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_agent ON agent_messages(agent_id, timestamp);
 `
 
 // DB wraps the SQLite vault database.

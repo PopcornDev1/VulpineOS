@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -150,9 +149,8 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 				client = k.Client()
 
 				// Create orchestrator
-				agentBinary := findAgentBinary()
 				if v != nil {
-					orch = orchestrator.New(k, client, v, pool.DefaultConfig(), agentBinary)
+					orch = orchestrator.New(k, client, v, pool.DefaultConfig(), "openclaw")
 					orch.Start()
 				}
 			}
@@ -184,7 +182,7 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 	}
 
 	// Create TUI with event subscriptions in place before Browser.enable
-	app := tui.NewApp(k, client, orch)
+	app := tui.NewApp(k, client, orch, v, cfg)
 
 	if client != nil {
 		if _, err := client.Call("", "Browser.enable", map[string]interface{}{
@@ -196,20 +194,6 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	_, runErr := p.Run()
 	return runErr
-}
-
-// findAgentBinary looks for the demo-agent binary in the same directory as vulpineos.
-func findAgentBinary() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return "demo-agent"
-	}
-	dir := filepath.Dir(exe)
-	candidate := filepath.Join(dir, "demo-agent")
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate
-	}
-	return "demo-agent"
 }
 
 // runRemote connects to a remote VulpineOS server and launches the TUI.
@@ -231,7 +215,7 @@ func runRemote(addr string, apiKey string) error {
 		return fmt.Errorf("Browser.enable (remote): %w", err)
 	}
 
-	app := tui.NewApp(nil, client, nil)
+	app := tui.NewApp(nil, client, nil, nil, nil)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	_, err = p.Run()
 	return err

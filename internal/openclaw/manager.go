@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -13,10 +14,11 @@ import (
 
 // Manager manages multiple OpenClaw agent subprocesses.
 type Manager struct {
-	agents   map[string]*Agent
-	statusCh chan AgentStatus
-	mu       sync.RWMutex
-	binary   string
+	agents         map[string]*Agent
+	statusCh       chan AgentStatus
+	conversationCh chan ConversationMsg
+	mu             sync.RWMutex
+	binary         string
 }
 
 // NewManager creates a new agent manager.
@@ -25,15 +27,135 @@ func NewManager(binary string) *Manager {
 		binary = "openclaw"
 	}
 	return &Manager{
-		agents:   make(map[string]*Agent),
-		statusCh: make(chan AgentStatus, 64),
-		binary:   binary,
+		agents:         make(map[string]*Agent),
+		statusCh:       make(chan AgentStatus, 64),
+		conversationCh: make(chan ConversationMsg, 64),
+		binary:         binary,
 	}
 }
 
 // StatusChan returns the channel for agent status updates.
 func (m *Manager) StatusChan() <-chan AgentStatus {
 	return m.statusCh
+}
+
+// ConversationChan returns the channel for agent conversation messages.
+func (m *Manager) ConversationChan() <-chan ConversationMsg {
+	return m.conversationCh
+}
+
+// SpawnWithSession creates and starts a new agent with a named session for state persistence.
+func (m *Manager) SpawnWithSession(agentID, task, sessionName, configPath string) (string, error) {
+	openclawBin := m.findOpenClaw()
+	if openclawBin == "" {
+		return "", fmt.Errorf("OpenClaw not found. Run ./scripts/bundle-openclaw.sh or install globally: npm install -g openclaw")
+	}
+
+	args := []string{
+		"run",
+		"--config", configPath,
+		"--session-name", sessionName,
+		"--message", task,
+	}
+
+	agent := newAgent(agentID, "openclaw", m.statusCh)
+	if err := agent.start(openclawBin, args); err != nil {
+		return "", fmt.Errorf("spawn agent with session: %w", err)
+	}
+
+	m.mu.Lock()
+	m.agents[agentID] = agent
+	m.mu.Unlock()
+
+	// Wire agent conversation channel to manager's channel
+	go m.forwardConversation(agent)
+
+	// Auto-cleanup when agent exits
+	go func() {
+		agent.Wait()
+		m.mu.Lock()
+		delete(m.agents, agentID)
+		m.mu.Unlock()
+	}()
+
+	return agentID, nil
+}
+
+// ResumeWithSession resumes an agent from a saved session.
+func (m *Manager) ResumeWithSession(agentID, sessionName, configPath string) (string, error) {
+	openclawBin := m.findOpenClaw()
+	if openclawBin == "" {
+		return "", fmt.Errorf("OpenClaw not found. Run ./scripts/bundle-openclaw.sh or install globally: npm install -g openclaw")
+	}
+
+	args := []string{
+		"run",
+		"--config", configPath,
+		"--session-name", sessionName,
+		"--message", "/resume",
+	}
+
+	agent := newAgent(agentID, "openclaw", m.statusCh)
+	if err := agent.start(openclawBin, args); err != nil {
+		return "", fmt.Errorf("resume agent with session: %w", err)
+	}
+
+	m.mu.Lock()
+	m.agents[agentID] = agent
+	m.mu.Unlock()
+
+	go m.forwardConversation(agent)
+
+	go func() {
+		agent.Wait()
+		m.mu.Lock()
+		delete(m.agents, agentID)
+		m.mu.Unlock()
+	}()
+
+	return agentID, nil
+}
+
+// PauseAgent saves state and stops an agent.
+func (m *Manager) PauseAgent(agentID string) error {
+	m.mu.RLock()
+	agent, ok := m.agents[agentID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("agent %s not found", agentID)
+	}
+
+	if err := agent.SendMessage("/savestate"); err != nil {
+		// Best effort — continue to stop even if send fails
+		_ = err
+	}
+	time.Sleep(1 * time.Second)
+
+	return agent.Stop()
+}
+
+// forwardConversation reads from an agent's conversationCh and sends to the manager's channel.
+func (m *Manager) forwardConversation(agent *Agent) {
+	for msg := range agent.conversationCh {
+		select {
+		case m.conversationCh <- msg:
+		default:
+			// Manager channel full, drop
+		}
+	}
+}
+
+// SendMessage sends a message to a running agent's stdin.
+func (m *Manager) SendMessage(agentID, text string) error {
+	m.mu.RLock()
+	agent, ok := m.agents[agentID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("agent %s not found", agentID)
+	}
+	return agent.SendMessage(text)
 }
 
 // Spawn creates and starts a new agent bound to a browser context.
@@ -195,8 +317,9 @@ func (m *Manager) KillAll() {
 	}
 }
 
-// Dispose kills all agents and closes the status channel.
+// Dispose kills all agents and closes channels.
 func (m *Manager) Dispose() {
 	m.KillAll()
 	close(m.statusCh)
+	close(m.conversationCh)
 }

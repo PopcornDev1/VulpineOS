@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"log"
 	"strings"
 	"time"
 
@@ -9,74 +10,114 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
 	"vulpineos/internal/orchestrator"
-	"vulpineos/internal/tui/agents"
-	"vulpineos/internal/tui/alerts"
-	"vulpineos/internal/tui/contexts"
-	"vulpineos/internal/tui/dashboard"
+	"vulpineos/internal/tui/agentlist"
+	"vulpineos/internal/tui/contextlist"
+	"vulpineos/internal/tui/conversation"
+	"vulpineos/internal/tui/poolstats"
 	"vulpineos/internal/tui/shared"
-	"vulpineos/internal/tui/statusbar"
+	"vulpineos/internal/tui/systeminfo"
+	"vulpineos/internal/vault"
 )
 
-// Panel identifiers.
+// Focus panel identifiers.
 const (
-	PanelDashboard = 0
-	PanelContexts  = 1
-	PanelAgents    = 2
-	PanelAlerts    = 3
-	PanelCount     = 4
+	FocusAgentList    = 0
+	FocusConversation = 1
+	FocusContextList  = 2
+	FocusPanelCount   = 3
 )
-
-var panelNames = []string{"dashboard", "contexts", "agents", "alerts"}
 
 // statusNotice is a transient message shown in the status bar.
 type statusNotice struct {
 	text string
 }
 
-// App is the root Bubbletea model.
+// App is the root Bubbletea model for the 3-column agent workbench.
 type App struct {
-	kernel    *kernel.Kernel
-	client    *juggler.Client
-	orch      *orchestrator.Orchestrator
-	width     int
-	height    int
-	activePanel int
+	kernel *kernel.Kernel
+	client *juggler.Client
+	orch   *orchestrator.Orchestrator
+	vault  *vault.DB
+	cfg    *config.Config
 
-	dashboard dashboard.Model
-	contexts  contexts.Model
-	agents    agents.Model
-	alerts    alerts.Model
-	statusbar statusbar.Model
+	width, height  int
+	leftWidth      int // adjustable left sidebar width
+	rightWidth     int // adjustable right sidebar width
+	focus          int // 0=agentlist, 1=conversation, 2=contextlist
 
-	notice    string // transient status notice
-	inputMode string // "" = normal, "task" = entering agent task
+	// Panels
+	systemInfo   systeminfo.Model
+	agentList    agentlist.Model
+	conversation conversation.Model
+	contextList  contextlist.Model
+	poolStats    poolstats.Model
+
+	// State
+	selectedAgentID string
+	inputMode       string // "" | "new-agent-name" | "new-agent-task" | "chat"
+	newAgentName    string // temp storage during agent creation
+	notice          string
+
+	// Text inputs
+	nameInput textinput.Model
 	taskInput textinput.Model
-	eventCh   chan tea.Msg
+
+	eventCh chan tea.Msg
 }
 
 // NewApp creates the root TUI model.
-func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchestrator) App {
+func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchestrator, v *vault.DB, cfg *config.Config) App {
 	eventCh := make(chan tea.Msg, 64)
 
-	ti := textinput.New()
-	ti.Placeholder = "Describe what the agent should do..."
-	ti.CharLimit = 500
-	ti.Width = 60
+	nameIn := textinput.New()
+	nameIn.Placeholder = "Agent name..."
+	nameIn.CharLimit = 64
+	nameIn.Width = 40
+
+	taskIn := textinput.New()
+	taskIn.Placeholder = "Describe what the agent should do..."
+	taskIn.CharLimit = 500
+	taskIn.Width = 60
 
 	app := App{
-		kernel:    k,
-		client:    client,
-		orch:      orch,
-		taskInput: ti,
-		dashboard: dashboard.New(),
-		contexts:  contexts.New(),
-		agents:    agents.New(),
-		alerts:    alerts.New(),
-		statusbar: statusbar.New().SetMode("local"),
-		eventCh:   eventCh,
+		kernel:       k,
+		client:       client,
+		orch:         orch,
+		vault:        v,
+		cfg:          cfg,
+		leftWidth:    18,
+		rightWidth:   18,
+		nameInput:    nameIn,
+		taskInput:    taskIn,
+		systemInfo:   systeminfo.New(),
+		agentList:    agentlist.New(),
+		conversation: conversation.New(),
+		contextList:  contextlist.New(),
+		poolStats:    poolstats.New(),
+		eventCh:      eventCh,
+	}
+
+	// Load existing agents from vault
+	if v != nil {
+		agents, err := v.ListAgents()
+		if err != nil {
+			log.Printf("tui: failed to load agents from vault: %v", err)
+		} else {
+			app.agentList.SetAgents(agents)
+			// Select first agent if any
+			if len(agents) > 0 {
+				app.selectedAgentID = agents[0].ID
+				app.conversation.SetAgentID(agents[0].ID)
+				msgs, err := v.GetMessages(agents[0].ID)
+				if err == nil {
+					app.conversation.LoadMessages(msgs)
+				}
+			}
+		}
 	}
 
 	// Subscribe to Juggler events
@@ -126,7 +167,6 @@ func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchest
 				Blocked:   e.Blocked,
 			}
 		})
-		// Page-session events — sessionId identifies which target they belong to
 		client.Subscribe("Page.navigationCommitted", func(sid string, params json.RawMessage) {
 			var e struct {
 				FrameID string `json:"frameId"`
@@ -192,6 +232,19 @@ func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchest
 				}
 			}
 		}()
+
+		// Forward conversation messages from orchestrator
+		go func() {
+			for msg := range orch.Agents.ConversationChan() {
+				eventCh <- shared.ConversationEntryMsg{
+					AgentID:   msg.AgentID,
+					Role:      msg.Role,
+					Content:   msg.Content,
+					Tokens:    msg.Tokens,
+					Timestamp: time.Now(),
+				}
+			}
+		}()
 	}
 
 	return app
@@ -209,160 +262,176 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Handle task input mode
-		if a.inputMode == "task" {
-			switch msg.String() {
-			case "enter":
-				task := strings.TrimSpace(a.taskInput.Value())
-				if task != "" {
-					cmds = append(cmds, a.spawnOpenClawAgent(task))
-				}
-				a.inputMode = ""
-				a.taskInput.Blur()
-				a.taskInput.Reset()
-			case "esc":
-				a.inputMode = ""
-				a.taskInput.Blur()
-				a.taskInput.Reset()
-			default:
-				var cmd tea.Cmd
-				a.taskInput, cmd = a.taskInput.Update(msg)
-				return a, cmd
-			}
-			return a, tea.Batch(cmds...)
+		// Handle input modes first
+		switch a.inputMode {
+		case "new-agent-name":
+			return a.updateNameInput(msg)
+		case "new-agent-task":
+			return a.updateTaskInput(msg)
+		case "chat":
+			return a.updateChatInput(msg)
 		}
 
+		// Normal keybinds
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return a, tea.Quit
 		case "tab":
-			a.activePanel = (a.activePanel + 1) % PanelCount
-			a.statusbar = a.statusbar.SetActivePanel(panelNames[a.activePanel])
-		case "shift+tab":
-			a.activePanel = (a.activePanel - 1 + PanelCount) % PanelCount
-			a.statusbar = a.statusbar.SetActivePanel(panelNames[a.activePanel])
+			a.focus = (a.focus + 1) % FocusPanelCount
 		case "j", "down":
-			switch a.activePanel {
-			case PanelContexts:
-				a.contexts = a.contexts.MoveDown()
-			case PanelAgents:
-				a.agents = a.agents.MoveDown()
+			switch a.focus {
+			case FocusAgentList:
+				a.agentList.MoveDown()
+				cmds = append(cmds, a.selectCurrentAgent())
+			case FocusContextList:
+				a.contextList.MoveDown()
 			}
 		case "k", "up":
-			switch a.activePanel {
-			case PanelContexts:
-				a.contexts = a.contexts.MoveUp()
-			case PanelAgents:
-				a.agents = a.agents.MoveUp()
+			switch a.focus {
+			case FocusAgentList:
+				a.agentList.MoveUp()
+				cmds = append(cmds, a.selectCurrentAgent())
+			case FocusContextList:
+				a.contextList.MoveUp()
 			}
-		case "s":
-			// Spawn a new browser context + page
-			if a.client != nil {
-				cmds = append(cmds, a.spawnContext())
-			} else {
-				a.notice = "No kernel connected"
-			}
-		case "d":
-			// Destroy selected target
-			if a.client != nil {
-				sessionID, _ := a.contexts.SelectedTarget()
-				if sessionID != "" {
-					cmds = append(cmds, a.destroyTarget(sessionID))
-				} else {
-					a.notice = "No target selected"
-				}
-			}
-		case "a":
-			// Enter task input mode to spawn an OpenClaw agent
+		case "n":
 			if a.orch != nil {
-				a.inputMode = "task"
-				a.taskInput.Focus()
+				a.inputMode = "new-agent-name"
+				a.nameInput.Focus()
 				return a, textinput.Blink
-			} else {
-				a.notice = "No orchestrator — launch with a browser"
 			}
-		case "g":
-			// Navigate selected target to Google (quick test)
-			if a.client != nil {
-				sessionID, _ := a.contexts.SelectedTarget()
-				frameID := a.contexts.SelectedFrameID()
-				if sessionID != "" && frameID != "" {
-					cmds = append(cmds, a.navigateTarget(sessionID, frameID, "https://www.google.com/"))
-				} else if sessionID != "" {
-					a.notice = "Target has no frame yet — try again"
-				} else {
-					a.notice = "No target selected"
-				}
+			a.notice = "No orchestrator available"
+		case "p":
+			// Pause selected agent
+			if a.orch != nil && a.selectedAgentID != "" {
+				cmds = append(cmds, a.pauseAgent(a.selectedAgentID))
+			}
+		case "r":
+			// Resume selected agent
+			if a.orch != nil && a.selectedAgentID != "" {
+				cmds = append(cmds, a.resumeAgent(a.selectedAgentID))
 			}
 		case "x":
-			// Kill selected agent
-			if a.orch != nil {
-				agentID, _ := a.agents.SelectedAgent()
-				if agentID != "" {
-					cmds = append(cmds, a.killAgent(agentID))
-				} else {
-					a.notice = "No agent selected"
+			// Delete selected agent
+			if a.selectedAgentID != "" {
+				cmds = append(cmds, a.deleteAgent(a.selectedAgentID))
+			}
+		case "enter":
+			switch a.focus {
+			case FocusAgentList:
+				// Focus conversation input
+				if a.selectedAgentID != "" {
+					a.focus = FocusConversation
+					a.inputMode = "chat"
+					cmd := a.conversation.Focus()
+					return a, cmd
 				}
 			}
+		case "esc":
+			a.conversation.Blur()
+			a.inputMode = ""
+			a.focus = FocusAgentList
+		case "[":
+			if a.leftWidth > 12 {
+				a.leftWidth -= 2
+				a.updatePanelSizes()
+			}
+		case "]":
+			if a.leftWidth < 30 {
+				a.leftWidth += 2
+				a.updatePanelSizes()
+			}
+		case "{":
+			if a.rightWidth > 12 {
+				a.rightWidth -= 2
+				a.updatePanelSizes()
+			}
+		case "}":
+			if a.rightWidth < 30 {
+				a.rightWidth += 2
+				a.updatePanelSizes()
+			}
+		case "c":
+			// Quit TUI to re-run setup
+			return a, tea.Quit
 		}
 
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		a.dashboard = a.dashboard.SetWidth(msg.Width)
-		a.contexts = a.contexts.SetWidth(msg.Width)
-		a.agents = a.agents.SetWidth(msg.Width)
-		a.alerts = a.alerts.SetWidth(msg.Width)
-		a.statusbar = a.statusbar.SetWidth(msg.Width)
+		a.updatePanelSizes()
 
 	case shared.TickMsg:
 		a.notice = "" // clear transient notice
 		if a.kernel != nil {
-			a.dashboard = a.dashboard.Update(shared.KernelStatusMsg{
+			ksMsg := shared.KernelStatusMsg{
 				Running: a.kernel.Running(),
 				PID:     a.kernel.PID(),
 				Uptime:  a.kernel.Uptime(),
-			})
-			a.statusbar = a.statusbar.SetConnected(a.kernel.Running())
+			}
+			a.systemInfo, _ = a.systemInfo.Update(ksMsg)
+		}
+		if a.orch != nil {
+			avail, active, total := a.orch.Pool.Stats()
+			a.poolStats.SetStats(avail, active, total)
 		}
 		cmds = append(cmds, a.tick())
 
 	// Juggler events
 	case shared.TargetAttachedMsg:
-		a.contexts = a.contexts.Update(msg)
+		a.contextList, _ = a.contextList.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.TargetDetachedMsg:
-		a.contexts = a.contexts.Update(msg)
-		cmds = append(cmds, a.waitForEvent())
-	case shared.TelemetryMsg:
-		a.dashboard = a.dashboard.Update(msg)
-		cmds = append(cmds, a.waitForEvent())
-	case shared.TrustWarmMsg:
-		a.dashboard = a.dashboard.Update(msg)
-		cmds = append(cmds, a.waitForEvent())
-	case shared.AlertMsg:
-		a.alerts = a.alerts.Update(msg)
+		a.contextList, _ = a.contextList.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.NavigationMsg:
-		a.contexts = a.contexts.Update(msg)
-		cmds = append(cmds, a.waitForEvent())
-	case shared.PageLoadMsg:
-		a.contexts = a.contexts.Update(msg)
+		a.contextList, _ = a.contextList.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.FrameAttachedMsg:
-		a.contexts = a.contexts.Update(msg)
+		a.contextList, _ = a.contextList.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.ExecContextCreatedMsg:
-		a.contexts = a.contexts.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
+	case shared.PageLoadMsg:
+		cmds = append(cmds, a.waitForEvent())
+	case shared.TelemetryMsg:
+		a.systemInfo, _ = a.systemInfo.Update(msg)
+		cmds = append(cmds, a.waitForEvent())
+	case shared.TrustWarmMsg:
+		cmds = append(cmds, a.waitForEvent())
+	case shared.AlertMsg:
+		cmds = append(cmds, a.waitForEvent())
+
 	case shared.AgentStatusMsg:
-		if msg.Status == "completed" || msg.Status == "error" {
-			// Keep the agent visible for one more render cycle with final status
-			a.agents = a.agents.Update(msg)
-		} else {
-			a.agents = a.agents.Update(msg)
+		a.agentList, _ = a.agentList.Update(msg)
+		// Update vault status
+		if a.vault != nil {
+			a.vault.UpdateAgentStatus(msg.AgentID, msg.Status)
+			if msg.Tokens > 0 {
+				a.vault.UpdateAgentTokens(msg.AgentID, msg.Tokens)
+			}
 		}
 		cmds = append(cmds, a.waitForEvent())
+
+	case shared.ConversationEntryMsg:
+		// Save to vault always
+		if a.vault != nil {
+			a.vault.AppendMessage(msg.AgentID, msg.Role, msg.Content, msg.Tokens)
+		}
+		// If matches selected agent, add to conversation panel
+		if msg.AgentID == a.selectedAgentID {
+			a.conversation.AddEntry(msg.Role, msg.Content)
+		}
+		cmds = append(cmds, a.waitForEvent())
+
+	case shared.PoolStatsMsg:
+		a.poolStats, _ = a.poolStats.Update(msg)
+		cmds = append(cmds, a.waitForEvent())
+
+	case shared.AgentCreatedMsg:
+		a.agentList, _ = a.agentList.Update(msg)
+		cmds = append(cmds, a.waitForEvent())
+
 	case statusNotice:
 		a.notice = msg.text
 	}
@@ -370,68 +439,213 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
+// updateNameInput handles keystrokes in "new-agent-name" mode.
+func (a App) updateNameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		name := strings.TrimSpace(a.nameInput.Value())
+		if name != "" {
+			a.newAgentName = name
+			a.inputMode = "new-agent-task"
+			a.nameInput.Blur()
+			a.nameInput.Reset()
+			a.taskInput.Focus()
+			return a, textinput.Blink
+		}
+		return a, nil
+	case "esc":
+		a.inputMode = ""
+		a.newAgentName = ""
+		a.nameInput.Blur()
+		a.nameInput.Reset()
+		return a, nil
+	default:
+		var cmd tea.Cmd
+		a.nameInput, cmd = a.nameInput.Update(msg)
+		return a, cmd
+	}
+}
+
+// updateTaskInput handles keystrokes in "new-agent-task" mode.
+func (a App) updateTaskInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		task := strings.TrimSpace(a.taskInput.Value())
+		if task != "" {
+			cmd := a.createAndSpawnAgent(a.newAgentName, task)
+			a.inputMode = ""
+			a.newAgentName = ""
+			a.taskInput.Blur()
+			a.taskInput.Reset()
+			return a, cmd
+		}
+		return a, nil
+	case "esc":
+		a.inputMode = ""
+		a.newAgentName = ""
+		a.taskInput.Blur()
+		a.taskInput.Reset()
+		return a, nil
+	default:
+		var cmd tea.Cmd
+		a.taskInput, cmd = a.taskInput.Update(msg)
+		return a, cmd
+	}
+}
+
+// updateChatInput handles keystrokes in "chat" mode.
+func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		text := a.conversation.InputValue()
+		if text != "" && a.selectedAgentID != "" {
+			// Add to conversation view
+			a.conversation.AddEntry("user", text)
+			// Save to vault
+			if a.vault != nil {
+				a.vault.AppendMessage(a.selectedAgentID, "user", text, 0)
+			}
+			// Send to agent stdin
+			cmd := a.sendMessageToAgent(a.selectedAgentID, text)
+			return a, cmd
+		}
+		return a, nil
+	case "esc":
+		a.conversation.Blur()
+		a.inputMode = ""
+		a.focus = FocusAgentList
+		return a, nil
+	default:
+		ti := a.conversation.TextInput()
+		var cmd tea.Cmd
+		*ti, cmd = ti.Update(msg)
+		return a, cmd
+	}
+}
+
 func (a App) View() string {
 	if a.width == 0 {
 		return "Loading..."
 	}
 
-	// Layout: left column (dashboard) | right column (contexts + agents + alerts)
-	leftWidth := 36
-	rightWidth := a.width - leftWidth - 5 // borders + padding
-
-	if rightWidth < 30 {
-		rightWidth = a.width - 4
-		leftWidth = 0
+	leftWidth := a.leftWidth
+	rightWidth := a.rightWidth
+	centerWidth := a.width - leftWidth - rightWidth - 6 // borders + spacing
+	if centerWidth < 20 {
+		centerWidth = 20
 	}
 
-	// Left panel
-	dashView := a.renderPanel(PanelDashboard, a.dashboard.View(), leftWidth)
+	bodyHeight := a.height - 2 // status bar
 
-	// Right panels stacked
-	ctxView := a.renderPanel(PanelContexts, a.contexts.View(), rightWidth)
-	agentView := a.renderPanel(PanelAgents, a.agents.View(), rightWidth)
-	alertView := a.renderPanel(PanelAlerts, a.alerts.View(), rightWidth)
+	// Left column: systemInfo on top, agentList below
+	sysView := a.renderPanel(FocusAgentList, a.systemInfo.View(), leftWidth, bodyHeight/2)
+	agentView := a.renderFocusPanel(FocusAgentList, a.agentList.View(), leftWidth, bodyHeight-bodyHeight/2)
+	leftColumn := lipgloss.JoinVertical(lipgloss.Left, sysView, agentView)
 
-	rightColumn := lipgloss.JoinVertical(lipgloss.Left, ctxView, agentView, alertView)
-
-	var body string
-	if leftWidth > 0 {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, dashView, " ", rightColumn)
-	} else {
-		body = lipgloss.JoinVertical(lipgloss.Left, dashView, rightColumn)
+	// Center column: conversation (+ input area if in input mode)
+	var centerContent string
+	switch a.inputMode {
+	case "new-agent-name":
+		centerContent = a.conversation.View() + "\n\n" +
+			shared.TitleStyle.Render("NEW AGENT — NAME") + "\n" +
+			a.nameInput.View() + "\n" +
+			shared.MutedStyle.Render("[Enter] confirm  [Esc] cancel")
+	case "new-agent-task":
+		centerContent = a.conversation.View() + "\n\n" +
+			shared.TitleStyle.Render("NEW AGENT — TASK for "+a.newAgentName) + "\n" +
+			a.taskInput.View() + "\n" +
+			shared.MutedStyle.Render("[Enter] spawn  [Esc] cancel")
+	default:
+		centerContent = a.conversation.View()
 	}
+	centerView := a.renderFocusPanel(FocusConversation, centerContent, centerWidth, bodyHeight)
 
-	// Task input bar (when in input mode)
-	var inputBar string
-	if a.inputMode == "task" {
-		inputBar = shared.ActivePanelStyle.Width(a.width - 4).Render(
-			shared.TitleStyle.Render("AGENT TASK") + "\n" +
-				a.taskInput.View() + "\n" +
-				shared.MutedStyle.Render("[Enter] spawn  [Esc] cancel"),
-		)
-	}
+	// Right column: contextList on top, poolStats below
+	ctxView := a.renderFocusPanel(FocusContextList, a.contextList.View(), rightWidth, bodyHeight-5)
+	poolView := a.renderPanel(FocusContextList, a.poolStats.View(), rightWidth, 5)
+	rightColumn := lipgloss.JoinVertical(lipgloss.Left, ctxView, poolView)
 
-	// Status bar + notice
-	statusView := a.statusbar.View()
+	body := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, centerView, rightColumn)
+
+	// Status bar
+	statusBar := a.renderStatusBar()
+
+	// Notice
 	if a.notice != "" {
-		statusView = shared.WarmingStyle.Render("  "+a.notice) + "\n" + statusView
+		statusBar = shared.WarmingStyle.Render("  "+a.notice) + "\n" + statusBar
 	}
 
-	parts := []string{body}
-	if inputBar != "" {
-		parts = append(parts, inputBar)
-	}
-	parts = append(parts, statusView)
-
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return lipgloss.JoinVertical(lipgloss.Left, body, statusBar)
 }
 
-func (a App) renderPanel(panel int, content string, width int) string {
+// renderPanel renders content in a panel box without focus highlight.
+func (a App) renderPanel(_ int, content string, width, height int) string {
+	return shared.PanelStyle.
+		Width(width).
+		Height(height).
+		Render(content)
+}
+
+// renderFocusPanel renders content in a panel box, highlighted if focused.
+func (a App) renderFocusPanel(panel int, content string, width, height int) string {
 	style := shared.PanelStyle
-	if panel == a.activePanel {
+	if panel == a.focus {
 		style = shared.ActivePanelStyle
 	}
-	return style.Width(width).Render(content)
+	return style.
+		Width(width).
+		Height(height).
+		Render(content)
+}
+
+// renderStatusBar renders the bottom status bar.
+func (a App) renderStatusBar() string {
+	mode := "local"
+	if a.client != nil && a.kernel == nil {
+		mode = "remote"
+	}
+
+	bar := shared.TitleStyle.Render("VULPINE") +
+		shared.MutedStyle.Render(" │ ") +
+		shared.RunningStyle.Render("● "+mode) +
+		shared.MutedStyle.Render("  n:new  p:pause  r:resume  x:del  Enter:chat  Tab:focus  []:resize  q:quit")
+
+	return lipgloss.NewStyle().Width(a.width).Render(bar)
+}
+
+// updatePanelSizes recalculates panel dimensions after a resize.
+func (a *App) updatePanelSizes() {
+	leftWidth := a.leftWidth
+	rightWidth := a.rightWidth
+	centerWidth := a.width - leftWidth - rightWidth - 6
+	if centerWidth < 20 {
+		centerWidth = 20
+	}
+	bodyHeight := a.height - 2
+
+	a.systemInfo.SetWidth(leftWidth)
+	a.agentList.SetWidth(leftWidth)
+	a.conversation.SetSize(centerWidth, bodyHeight)
+	a.contextList.SetWidth(rightWidth)
+	a.poolStats.SetWidth(rightWidth)
+}
+
+// selectCurrentAgent loads the currently highlighted agent's data.
+func (a *App) selectCurrentAgent() tea.Cmd {
+	newID := a.agentList.SelectedAgentID()
+	if newID == a.selectedAgentID || newID == "" {
+		return nil
+	}
+	a.selectedAgentID = newID
+	a.conversation.SetAgentID(newID)
+
+	if a.vault != nil {
+		msgs, err := a.vault.GetMessages(newID)
+		if err == nil {
+			a.conversation.LoadMessages(msgs)
+		}
+	}
+	return nil
 }
 
 func (a App) waitForEvent() tea.Cmd {
@@ -446,79 +660,100 @@ func (a App) tick() tea.Cmd {
 	})
 }
 
-// spawnContext creates a new browser context and opens a page in it.
-func (a App) spawnContext() tea.Cmd {
+// createAndSpawnAgent creates an agent in the vault and spawns it via orchestrator.
+func (a *App) createAndSpawnAgent(name, task string) tea.Cmd {
 	return func() tea.Msg {
-		// Create a browser context
-		result, err := a.client.Call("", "Browser.createBrowserContext", map[string]interface{}{
-			"removeOnDetach": true,
-		})
+		// Generate fingerprint
+		fp, err := vault.GenerateFingerprint(name)
 		if err != nil {
-			return statusNotice{text: "Spawn failed: " + err.Error()}
+			return statusNotice{text: "Fingerprint failed: " + err.Error()}
 		}
 
-		var ctx struct {
-			BrowserContextID string `json:"browserContextId"`
-		}
-		if err := json.Unmarshal(result, &ctx); err != nil {
-			return statusNotice{text: "Parse error: " + err.Error()}
+		if a.vault == nil {
+			return statusNotice{text: "No vault available"}
 		}
 
-		// Open a new page in this context
-		_, err = a.client.Call("", "Browser.newPage", map[string]interface{}{
-			"browserContextId": ctx.BrowserContextID,
-		})
+		// Create in vault
+		agent, err := a.vault.CreateAgent(name, task, fp)
 		if err != nil {
-			return statusNotice{text: "New page failed: " + err.Error()}
+			return statusNotice{text: "Create agent failed: " + err.Error()}
 		}
 
-		return statusNotice{text: "Context spawned: " + ctx.BrowserContextID[:8]}
+		// Save initial task message
+		a.vault.AppendMessage(agent.ID, "user", task, 0)
+
+		// Spawn via orchestrator
+		if a.orch != nil {
+			sessionName := "vulpine-" + agent.ID
+			_, err := a.orch.Agents.SpawnWithSession(agent.ID, task, sessionName, config.OpenClawConfigPath())
+			if err != nil {
+				return statusNotice{text: "Spawn failed: " + err.Error()}
+			}
+		}
+
+		return shared.AgentCreatedMsg{Agent: *agent}
 	}
 }
 
-// destroyTarget closes a page target by session ID.
-func (a App) destroyTarget(sessionID string) tea.Cmd {
+// pauseAgent pauses an agent.
+func (a App) pauseAgent(agentID string) tea.Cmd {
 	return func() tea.Msg {
-		_, err := a.client.Call(sessionID, "Page.close", nil)
-		if err != nil {
-			return statusNotice{text: "Close failed: " + err.Error()}
+		if a.orch == nil {
+			return statusNotice{text: "No orchestrator"}
 		}
-		return statusNotice{text: "Target closed"}
+		if err := a.orch.Agents.PauseAgent(agentID); err != nil {
+			return statusNotice{text: "Pause failed: " + err.Error()}
+		}
+		if a.vault != nil {
+			a.vault.UpdateAgentStatus(agentID, "paused")
+		}
+		return statusNotice{text: "Agent paused: " + agentID}
 	}
 }
 
-// navigateTarget navigates a page target to a URL using Page.navigate with the correct frameId.
-func (a App) navigateTarget(sessionID, frameID, url string) tea.Cmd {
+// resumeAgent resumes an agent from saved session.
+func (a App) resumeAgent(agentID string) tea.Cmd {
 	return func() tea.Msg {
-		_, err := a.client.Call(sessionID, "Page.navigate", map[string]interface{}{
-			"url":     url,
-			"frameId": frameID,
-		})
-		if err != nil {
-			return statusNotice{text: "Navigate failed: " + err.Error()}
+		if a.orch == nil {
+			return statusNotice{text: "No orchestrator"}
 		}
-		return statusNotice{text: "Navigating to " + url}
+		sessionName := "vulpine-" + agentID
+		_, err := a.orch.Agents.ResumeWithSession(agentID, sessionName, config.OpenClawConfigPath())
+		if err != nil {
+			return statusNotice{text: "Resume failed: " + err.Error()}
+		}
+		if a.vault != nil {
+			a.vault.UpdateAgentStatus(agentID, "active")
+		}
+		return statusNotice{text: "Agent resumed: " + agentID}
 	}
 }
 
-// spawnOpenClawAgent spawns a real OpenClaw agent with the given task.
-func (a App) spawnOpenClawAgent(task string) tea.Cmd {
+// deleteAgent removes an agent.
+func (a *App) deleteAgent(agentID string) tea.Cmd {
 	return func() tea.Msg {
-		agentID, err := a.orch.Agents.SpawnOpenClaw(task, nil)
-		if err != nil {
-			return statusNotice{text: "Agent failed: " + err.Error()}
+		// Kill if running
+		if a.orch != nil {
+			a.orch.Agents.Kill(agentID)
 		}
-		return statusNotice{text: "Agent spawned: " + agentID + " — " + task}
+		// Remove from vault
+		if a.vault != nil {
+			a.vault.DeleteAgent(agentID)
+		}
+		return statusNotice{text: "Agent deleted: " + agentID}
 	}
 }
 
-// killAgent kills an agent by ID.
-func (a App) killAgent(agentID string) tea.Cmd {
+// sendMessageToAgent sends a text message to a running agent's stdin.
+func (a App) sendMessageToAgent(agentID, text string) tea.Cmd {
 	return func() tea.Msg {
-		if err := a.orch.Agents.Kill(agentID); err != nil {
-			return statusNotice{text: "Kill failed: " + err.Error()}
+		if a.orch == nil {
+			return statusNotice{text: "No orchestrator"}
 		}
-		return statusNotice{text: "Agent killed: " + agentID}
+		if err := a.orch.Agents.SendMessage(agentID, text); err != nil {
+			return statusNotice{text: "Send failed: " + err.Error()}
+		}
+		return nil
 	}
 }
 

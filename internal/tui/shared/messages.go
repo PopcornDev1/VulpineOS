@@ -2,6 +2,8 @@ package shared
 
 import (
 	"time"
+
+	"vulpineos/internal/vault"
 )
 
 // Custom tea.Msg types for the TUI.
@@ -100,6 +102,32 @@ type PageLoadMsg struct {
 	SessionID string
 	FrameID   string
 	Name      string // "load" or "DOMContentLoaded"
+}
+
+// ConversationEntryMsg is a new message in an agent's conversation.
+type ConversationEntryMsg struct {
+	AgentID   string
+	Role      string
+	Content   string
+	Tokens    int
+	Timestamp time.Time
+}
+
+// AgentSelectedMsg fires when the user selects a different agent.
+type AgentSelectedMsg struct {
+	AgentID string
+}
+
+// AgentCreatedMsg fires when a new agent is created.
+type AgentCreatedMsg struct {
+	Agent vault.Agent
+}
+
+// PoolStatsMsg carries context pool statistics.
+type PoolStatsMsg struct {
+	Available int
+	Active    int
+	Total     int
 }
 
 // TickMsg is the periodic refresh tick.

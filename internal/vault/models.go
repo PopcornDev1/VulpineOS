@@ -55,3 +55,29 @@ type NomadSession struct {
 	Status      string    `json:"status"` // active, completed, failed
 	Result      string    `json:"result"` // JSON blob
 }
+
+// Agent is a persistent AI agent profile.
+type Agent struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Task        string    `json:"task"`
+	Fingerprint string    `json:"fingerprint"`
+	ProxyConfig string    `json:"proxy_config"`
+	Locale      string    `json:"locale"`
+	Timezone    string    `json:"timezone"`
+	Status      string    `json:"status"` // created, active, paused, completed, failed
+	TotalTokens int       `json:"total_tokens"`
+	CreatedAt   time.Time `json:"created_at"`
+	LastActive  time.Time `json:"last_active"`
+	Metadata    string    `json:"metadata"`
+}
+
+// AgentMessage is a single message in an agent's conversation history.
+type AgentMessage struct {
+	ID        int       `json:"id"`
+	AgentID   string    `json:"agent_id"`
+	Role      string    `json:"role"` // user, assistant, system
+	Content   string    `json:"content"`
+	Tokens    int       `json:"tokens"`
+	Timestamp time.Time `json:"timestamp"`
+}
