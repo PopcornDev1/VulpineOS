@@ -807,7 +807,8 @@ func (a App) View() string {
 
 	leftWidth := a.leftWidth
 	rightWidth := a.rightWidth
-	centerWidth := a.width - leftWidth - rightWidth - 6 // borders + spacing
+	// Each panel adds 4 cols (2 border + 2 padding). Three panels = 12 cols overhead.
+	centerWidth := a.width - leftWidth - rightWidth - 12
 	if centerWidth < 20 {
 		centerWidth = 20
 	}
@@ -857,7 +858,7 @@ func (a App) View() string {
 
 		centerContent = convStyle.Width(centerWidth).Height(bodyHeight - 2).Render(convView)
 	}
-	centerView := lipgloss.NewStyle().Width(centerWidth + 2).Render(centerContent)
+	centerView := centerContent
 
 	// Right column: agent detail on top, contexts below
 	rightTop := a.rightSplit
@@ -930,14 +931,14 @@ func (a App) renderStatusBar() string {
 		shared.RunningStyle.Render("* "+mode) +
 		shared.MutedStyle.Render("  n:new  p:pause  r:resume  x:del  S:settings  Enter:chat  Tab:focus  ←→↑↓:resize  q:quit")
 
-	return lipgloss.NewStyle().Width(a.width).Render(bar)
+	return lipgloss.NewStyle().MaxWidth(a.width).Render(bar)
 }
 
 // updatePanelSizes recalculates panel dimensions after a resize.
 func (a *App) updatePanelSizes() {
 	leftWidth := a.leftWidth
 	rightWidth := a.rightWidth
-	centerWidth := a.width - leftWidth - rightWidth - 6
+	centerWidth := a.width - leftWidth - rightWidth - 12
 	if centerWidth < 20 {
 		centerWidth = 20
 	}
