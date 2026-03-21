@@ -9,13 +9,14 @@ import (
 
 // Config holds VulpineOS user configuration.
 type Config struct {
-	Provider      string          `json:"provider"`
-	APIKey        string          `json:"apiKey"`
-	Model         string          `json:"model"`
-	SetupComplete bool            `json:"setupComplete"`
-	BinaryPath    string          `json:"binaryPath,omitempty"`
-	GlobalSkills  []SkillEntry    `json:"globalSkills,omitempty"`  // skills enabled for all agents
-	AgentSkills   map[string][]SkillEntry `json:"agentSkills,omitempty"` // agentID → skills for that agent only
+	Provider        string          `json:"provider"`
+	APIKey          string          `json:"apiKey"`
+	Model           string          `json:"model"`
+	SetupComplete   bool            `json:"setupComplete"`
+	BinaryPath      string          `json:"binaryPath,omitempty"`
+	FoxbridgeCDPURL string          `json:"-"` // runtime-only: set when foxbridge is running
+	GlobalSkills    []SkillEntry    `json:"globalSkills,omitempty"`  // skills enabled for all agents
+	AgentSkills     map[string][]SkillEntry `json:"agentSkills,omitempty"` // agentID → skills for that agent only
 }
 
 // SkillEntry describes a skill configuration.
@@ -334,12 +335,19 @@ func (c *Config) GenerateOpenClawConfig(vulpineosBinary, camoufoxBinary string) 
 		"gateway": map[string]interface{}{
 			"mode": "local",
 		},
-		// Enable browser — OpenClaw uses its native Chromium browser tool
-		// with full ref-based interaction (snapshot, click @ref, type @ref)
-		"browser": map[string]interface{}{
-			"enabled":  true,
-			"headless": true,
-		},
+		// Enable browser — if foxbridge is running, route through Camoufox via CDP proxy.
+		// Otherwise fall back to OpenClaw's built-in Chromium.
+		"browser": func() map[string]interface{} {
+			browserCfg := map[string]interface{}{
+				"enabled":  true,
+				"headless": true,
+			}
+			if c.FoxbridgeCDPURL != "" {
+				// Route through foxbridge → Camoufox instead of Chrome
+				browserCfg["cdpUrl"] = c.FoxbridgeCDPURL
+			}
+			return browserCfg
+		}(),
 		"skills": map[string]interface{}{
 			"entries": skillEntries,
 			"load": map[string]interface{}{

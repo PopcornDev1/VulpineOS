@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"vulpineos/internal/config"
+	"vulpineos/internal/foxbridge"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
 	"vulpineos/internal/mcp"
@@ -137,6 +138,7 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 	var orch *orchestrator.Orchestrator
 	var v *vault.DB
 	var gw *openclaw.Gateway
+	var fb *foxbridge.Process
 	var startErr error
 
 	if !noBrowser {
@@ -165,6 +167,25 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 				}
 			}
 
+			// Try to start foxbridge CDP proxy (routes OpenClaw browser through Camoufox)
+			fb = foxbridge.New()
+			fbErr := fb.Start(foxbridge.Config{
+				CamoufoxBinary: binaryPath,
+				Port:           9222,
+				Headless:       headless,
+				ProfileDir:     profileDir,
+			})
+			if fbErr != nil {
+				log.Printf("foxbridge not available: %v (OpenClaw will use built-in Chrome)", fbErr)
+				fb = nil
+			} else {
+				// Set CDP URL in config so OpenClaw routes through foxbridge
+				cfg.FoxbridgeCDPURL = fb.CDPURL()
+				exe, _ := os.Executable()
+				cfg.GenerateOpenClawConfig(exe, binaryPath)
+				log.Printf("foxbridge active — OpenClaw browser routed through Camoufox at %s", fb.CDPURL())
+			}
+
 			// Start OpenClaw gateway for browser support
 			mgr := openclaw.NewManager("")
 			if mgr.OpenClawInstalled() {
@@ -186,12 +207,18 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 			if k != nil {
 				k.Stop()
 			}
+			if fb != nil {
+				fb.Stop()
+			}
 			return nil
 		}
 		if startErr != nil {
 			return fmt.Errorf("start kernel: %w", startErr)
 		}
 		defer k.Stop()
+		if fb != nil {
+			defer fb.Stop()
+		}
 		if v != nil {
 			defer v.Close()
 		}
