@@ -14,6 +14,7 @@ import (
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
 	"vulpineos/internal/mcp"
+	"vulpineos/internal/openclaw"
 	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/pool"
 	"vulpineos/internal/remote"
@@ -123,10 +124,19 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 		cfg.Save()
 	}
 
+	// Always regenerate openclaw.json to ensure it matches current config
+	if cfg.SetupComplete {
+		exe, _ := os.Executable()
+		if genErr := cfg.GenerateOpenClawConfig(exe, cfg.BinaryPath); genErr != nil {
+			log.Printf("Warning: could not generate OpenClaw config: %v", genErr)
+		}
+	}
+
 	var k *kernel.Kernel
 	var client *juggler.Client
 	var orch *orchestrator.Orchestrator
 	var v *vault.DB
+	var gw *openclaw.Gateway
 	var startErr error
 
 	if !noBrowser {
@@ -155,6 +165,15 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 				}
 			}
 
+			// Start OpenClaw gateway for browser support
+			mgr := openclaw.NewManager("")
+			if mgr.OpenClawInstalled() {
+				gw = openclaw.NewGateway("")
+				if gwErr := gw.Start(); gwErr != nil {
+					log.Printf("Warning: OpenClaw gateway failed to start: %v (browser tools won't work)", gwErr)
+				}
+			}
+
 			loaderProg.Send(loading.DoneMsg{})
 		}()
 
@@ -178,6 +197,9 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 		}
 		if orch != nil {
 			defer orch.Close()
+		}
+		if gw != nil {
+			defer gw.Stop()
 		}
 	}
 

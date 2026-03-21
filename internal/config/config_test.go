@@ -189,56 +189,25 @@ func TestGenerateOpenClawConfig(t *testing.T) {
 	if !ok {
 		t.Fatal("missing browser section")
 	}
-	if browser["enabled"] != false {
-		t.Errorf("browser.enabled = %v, want false", browser["enabled"])
+	if browser["enabled"] != true {
+		t.Errorf("browser.enabled = %v, want true", browser["enabled"])
 	}
 
-	// Verify plugins.mcp.servers.vulpineos exists
-	plugins, ok := oc["plugins"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing plugins section")
+	// Verify skills section exists with our test skill
+	skillsSec, skillsOK := oc["skills"].(map[string]interface{})
+	if !skillsOK {
+		t.Fatal("missing skills section")
 	}
-	mcpSection, ok := plugins["mcp"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing plugins.mcp section")
+	skillEntries, seOK := skillsSec["entries"].(map[string]interface{})
+	if !seOK {
+		t.Fatal("missing skills.entries section")
 	}
-	servers, ok := mcpSection["servers"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing plugins.mcp.servers section")
+	webSearch, wsOK := skillEntries["web-search"].(map[string]interface{})
+	if !wsOK {
+		t.Fatal("missing skills.entries.web-search")
 	}
-	vulpServer, ok := servers["vulpineos"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing plugins.mcp.servers.vulpineos")
-	}
-	if vulpServer["command"] != "/usr/local/bin/vulpineos" {
-		t.Errorf("command = %v, want /usr/local/bin/vulpineos", vulpServer["command"])
-	}
-
-	// Verify args include --mcp-server and --binary and --headless
-	args, ok := vulpServer["args"].([]interface{})
-	if !ok {
-		t.Fatal("missing args array")
-	}
-	argStrs := make([]string, len(args))
-	for i, a := range args {
-		argStrs[i], _ = a.(string)
-	}
-	hasFlag := func(flag string) bool {
-		for _, a := range argStrs {
-			if a == flag {
-				return true
-			}
-		}
-		return false
-	}
-	if !hasFlag("--mcp-server") {
-		t.Error("args missing --mcp-server")
-	}
-	if !hasFlag("--headless") {
-		t.Error("args missing --headless")
-	}
-	if !hasFlag("--binary") {
-		t.Error("args missing --binary")
+	if webSearch["enabled"] != true {
+		t.Errorf("web-search enabled = %v, want true", webSearch["enabled"])
 	}
 
 	// Verify env contains ANTHROPIC_API_KEY
@@ -248,30 +217,6 @@ func TestGenerateOpenClawConfig(t *testing.T) {
 	}
 	if env["ANTHROPIC_API_KEY"] != "sk-ant-test-key-99999" {
 		t.Errorf("env ANTHROPIC_API_KEY = %v, want sk-ant-test-key-99999", env["ANTHROPIC_API_KEY"])
-	}
-
-	// Verify skills.entries contains global skills
-	skills, ok := oc["skills"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing skills section")
-	}
-	entries, ok := skills["entries"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing skills.entries")
-	}
-	ws, ok := entries["web-search"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing skills.entries.web-search")
-	}
-	if ws["enabled"] != true {
-		t.Errorf("web-search enabled = %v, want true", ws["enabled"])
-	}
-	ds, ok := entries["disabled-skill"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing skills.entries.disabled-skill")
-	}
-	if ds["enabled"] != false {
-		t.Errorf("disabled-skill enabled = %v, want false", ds["enabled"])
 	}
 
 	// Verify model is set

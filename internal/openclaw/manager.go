@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -45,22 +46,39 @@ func (m *Manager) ConversationChan() <-chan ConversationMsg {
 }
 
 // SpawnWithSession creates and starts a new agent with a named session for state persistence.
+// Each call spawns a fresh OpenClaw process for one turn of conversation.
+// If a previous process for this agentID is still running, it is stopped first.
 func (m *Manager) SpawnWithSession(agentID, task, sessionName, configPath string) (string, error) {
 	openclawBin := m.findOpenClaw()
 	if openclawBin == "" {
-		return "", fmt.Errorf("OpenClaw not found. Run ./scripts/bundle-openclaw.sh or install globally: npm install -g openclaw")
+		return "", fmt.Errorf("OpenClaw not found. Run 'npm install' in the VulpineOS directory or install globally: npm install -g openclaw")
+	}
+
+	// Stop any previous process for this agent before spawning a new one.
+	// This prevents the old cleanup goroutine from racing with the new agent.
+	m.mu.Lock()
+	if old, ok := m.agents[agentID]; ok {
+		delete(m.agents, agentID)
+		m.mu.Unlock()
+		old.Stop()
+	} else {
+		m.mu.Unlock()
 	}
 
 	args := []string{
-		"run",
-		"--config", configPath,
-		"--session-name", sessionName,
+		"--profile", "vulpine",
+		"agent",
+		"--local",
+		"--session-id", sessionName,
 		"--message", task,
+		"--json",
+		"--timeout", "120",
 	}
 
 	agent := newAgent(agentID, "openclaw", m.statusCh)
+
 	if err := agent.start(openclawBin, args); err != nil {
-		return "", fmt.Errorf("spawn agent with session: %w", err)
+		return "", fmt.Errorf("spawn failed (binary=%s): %w", openclawBin, err)
 	}
 
 	m.mu.Lock()
@@ -70,11 +88,13 @@ func (m *Manager) SpawnWithSession(agentID, task, sessionName, configPath string
 	// Wire agent conversation channel to manager's channel
 	go m.forwardConversation(agent)
 
-	// Auto-cleanup when agent exits
+	// Auto-cleanup when agent exits — only delete if this is still the current agent
 	go func() {
 		agent.Wait()
 		m.mu.Lock()
-		delete(m.agents, agentID)
+		if m.agents[agentID] == agent {
+			delete(m.agents, agentID)
+		}
 		m.mu.Unlock()
 	}()
 
@@ -85,19 +105,33 @@ func (m *Manager) SpawnWithSession(agentID, task, sessionName, configPath string
 func (m *Manager) ResumeWithSession(agentID, sessionName, configPath string) (string, error) {
 	openclawBin := m.findOpenClaw()
 	if openclawBin == "" {
-		return "", fmt.Errorf("OpenClaw not found. Run ./scripts/bundle-openclaw.sh or install globally: npm install -g openclaw")
+		return "", fmt.Errorf("OpenClaw not found. Run 'npm install' in the VulpineOS directory or install globally: npm install -g openclaw")
+	}
+
+	// Stop any previous process for this agent before resuming
+	m.mu.Lock()
+	if old, ok := m.agents[agentID]; ok {
+		delete(m.agents, agentID)
+		m.mu.Unlock()
+		old.Stop()
+	} else {
+		m.mu.Unlock()
 	}
 
 	args := []string{
-		"run",
-		"--config", configPath,
-		"--session-name", sessionName,
+		"--profile", "vulpine",
+		"agent",
+		"--local",
+		"--session-id", sessionName,
 		"--message", "/resume",
+		"--json",
+		"--timeout", "120",
 	}
 
 	agent := newAgent(agentID, "openclaw", m.statusCh)
+
 	if err := agent.start(openclawBin, args); err != nil {
-		return "", fmt.Errorf("resume agent with session: %w", err)
+		return "", fmt.Errorf("resume failed (binary=%s): %w", openclawBin, err)
 	}
 
 	m.mu.Lock()
@@ -106,10 +140,13 @@ func (m *Manager) ResumeWithSession(agentID, sessionName, configPath string) (st
 
 	go m.forwardConversation(agent)
 
+	// Auto-cleanup — only delete if this is still the current agent
 	go func() {
 		agent.Wait()
 		m.mu.Lock()
-		delete(m.agents, agentID)
+		if m.agents[agentID] == agent {
+			delete(m.agents, agentID)
+		}
 		m.mu.Unlock()
 	}()
 
@@ -236,26 +273,48 @@ func (m *Manager) SpawnOpenClaw(task string, agentSkills []config.SkillEntry) (s
 }
 
 // findOpenClaw looks for the OpenClaw binary in common locations.
+// Searches: explicit binary path, exe dir, cwd, parent dirs (for monorepo), global PATH.
 func (m *Manager) findOpenClaw() string {
-	// Check repo-level node_modules (from npm install in VulpineOS root)
-	repoLocal := []string{
-		"./node_modules/.bin/openclaw",
-		"./node_modules/openclaw/bin/openclaw.js",
-	}
-	for _, c := range repoLocal {
-		if info, err := os.Stat(c); err == nil && !info.IsDir() {
-			return c
+	// If binary was explicitly set and exists, use it
+	if m.binary != "" && m.binary != "openclaw" {
+		if info, err := os.Stat(m.binary); err == nil && !info.IsDir() {
+			return m.binary
 		}
 	}
 
-	// Check bundled openclaw directory
-	bundled := []string{
-		"./openclaw/start.sh",
-		"./openclaw/node_modules/.bin/openclaw",
+	// Get the directory containing the vulpineos binary
+	exePath, err := os.Executable()
+	if err != nil {
+		exePath = "."
 	}
-	for _, c := range bundled {
-		if info, err := os.Stat(c); err == nil && !info.IsDir() {
-			return c
+	exeDir := filepath.Dir(exePath)
+
+	// Also check the working directory and its parents (up to 3 levels)
+	cwd, _ := os.Getwd()
+
+	searchDirs := []string{exeDir, cwd}
+	// Walk up from cwd to find node_modules (handles being in subdirectories)
+	dir := cwd
+	for i := 0; i < 5; i++ {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		searchDirs = append(searchDirs, parent)
+		dir = parent
+	}
+
+	for _, d := range searchDirs {
+		candidates := []string{
+			filepath.Join(d, "node_modules", ".bin", "openclaw"),
+			filepath.Join(d, "node_modules", "openclaw", "openclaw.mjs"),
+			filepath.Join(d, "openclaw", "start.sh"),
+		}
+		for _, c := range candidates {
+			if info, err := os.Stat(c); err == nil && !info.IsDir() {
+				abs, _ := filepath.Abs(c)
+				return abs
+			}
 		}
 	}
 

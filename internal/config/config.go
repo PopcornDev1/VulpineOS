@@ -301,13 +301,6 @@ func (c *Config) GenerateOpenClawConfig(vulpineosBinary, camoufoxBinary string) 
 		env[provider.EnvVar] = c.APIKey
 	}
 
-	// MCP server args
-	mcpArgs := []string{"--mcp-server"}
-	if camoufoxBinary != "" {
-		mcpArgs = append(mcpArgs, "--binary", camoufoxBinary)
-	}
-	mcpArgs = append(mcpArgs, "--headless")
-
 	// Build skills entries from global skills config
 	skillEntries := map[string]interface{}{}
 	extraDirs := []string{}
@@ -333,25 +326,24 @@ func (c *Config) GenerateOpenClawConfig(vulpineosBinary, camoufoxBinary string) 
 				"model": map[string]interface{}{
 					"primary": c.Model,
 				},
+				"compaction": map[string]interface{}{
+					"mode": "safeguard",
+				},
 			},
 		},
+		"gateway": map[string]interface{}{
+			"mode": "local",
+		},
+		// Enable browser — OpenClaw uses its native Chromium browser tool
+		// with full ref-based interaction (snapshot, click @ref, type @ref)
 		"browser": map[string]interface{}{
-			"enabled": false,
+			"enabled":  true,
+			"headless": true,
 		},
 		"skills": map[string]interface{}{
 			"entries": skillEntries,
 			"load": map[string]interface{}{
 				"extraDirs": extraDirs,
-			},
-		},
-		"plugins": map[string]interface{}{
-			"mcp": map[string]interface{}{
-				"servers": map[string]interface{}{
-					"vulpineos": map[string]interface{}{
-						"command": vulpineosBinary,
-						"args":    mcpArgs,
-					},
-				},
 			},
 		},
 	}
@@ -361,11 +353,24 @@ func (c *Config) GenerateOpenClawConfig(vulpineosBinary, camoufoxBinary string) 
 		return fmt.Errorf("marshal openclaw config: %w", err)
 	}
 
-	path := filepath.Join(Dir(), "openclaw.json")
+	// Write to the OpenClaw profile directory (~/.openclaw-vulpine/)
+	// This is where `openclaw --profile vulpine` reads config from
+	profileDir := OpenClawProfileDir()
+	if err := os.MkdirAll(profileDir, 0700); err != nil {
+		return fmt.Errorf("create openclaw profile dir: %w", err)
+	}
+
+	path := filepath.Join(profileDir, "openclaw.json")
 	return os.WriteFile(path, data, 0644)
+}
+
+// OpenClawProfileDir returns the OpenClaw profile directory for VulpineOS.
+func OpenClawProfileDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".openclaw-vulpine")
 }
 
 // OpenClawConfigPath returns the path to the generated openclaw.json.
 func OpenClawConfigPath() string {
-	return filepath.Join(Dir(), "openclaw.json")
+	return filepath.Join(OpenClawProfileDir(), "openclaw.json")
 }

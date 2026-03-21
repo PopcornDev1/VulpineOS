@@ -72,7 +72,7 @@ type App struct {
 
 	// State
 	selectedAgentID string
-	inputMode       string // "" | "new-agent-name" | "new-agent-task" | "chat"
+	inputMode       string // "" | "new-agent-name" | "new-agent-desc" | "chat"
 	newAgentName    string // temp storage during agent creation
 	notice          string
 	noticeTTL       int    // number of ticks before notice is cleared
@@ -94,7 +94,7 @@ func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchest
 	nameIn.Width = 40
 
 	taskIn := textinput.New()
-	taskIn.Placeholder = "Describe what the agent should do..."
+	taskIn.Placeholder = "Brief description of this agent's purpose..."
 	taskIn.CharLimit = 500
 	taskIn.Width = 60
 
@@ -143,6 +143,7 @@ func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchest
 			if len(agents) > 0 {
 				app.selectedAgentID = agents[0].ID
 				app.conversation.SetAgentID(agents[0].ID)
+				app.conversation.SetAgentName(agents[0].Name)
 				msgs, err := v.GetMessages(agents[0].ID)
 				if err == nil {
 					app.conversation.LoadMessages(msgs)
@@ -305,8 +306,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch a.inputMode {
 		case "new-agent-name":
 			return a.updateNameInput(msg)
-		case "new-agent-task":
-			return a.updateTaskInput(msg)
+		case "new-agent-desc":
+			return a.updateDescInput(msg)
 		case "chat":
 			return a.updateChatInput(msg)
 		}
@@ -373,12 +374,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			switch a.focus {
 			case FocusAgentList, FocusAgentDetail:
-				// Focus conversation input
-				if a.selectedAgentID != "" {
+				// Focus conversation input — only if agent is awake (has sent first message)
+				if a.selectedAgentID != "" && a.conversation.IsAwake() {
 					a.focus = FocusConversation
 					a.inputMode = "chat"
 					cmd := a.conversation.Focus()
 					return a, cmd
+				} else if a.selectedAgentID != "" {
+					a.notice = "Waiting for agent to wake up..."
+					a.noticeTTL = 2
 				}
 			}
 		case "esc":
@@ -390,14 +394,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case FocusAgentList:
 				if a.leftWidth > 12 { a.leftWidth -= 2; a.updatePanelSizes() }
 			case FocusContextList:
-				if a.rightWidth > 12 { a.rightWidth -= 2; a.updatePanelSizes() }
+				// Left arrow on right panel = expand (pull edge left)
+				if a.rightWidth < 30 { a.rightWidth += 2; a.updatePanelSizes() }
 			}
 		case "right":
 			switch a.focus {
 			case FocusAgentList:
 				if a.leftWidth < 30 { a.leftWidth += 2; a.updatePanelSizes() }
 			case FocusContextList:
-				if a.rightWidth < 30 { a.rightWidth += 2; a.updatePanelSizes() }
+				// Right arrow on right panel = shrink (push edge right)
+				if a.rightWidth > 12 { a.rightWidth -= 2; a.updatePanelSizes() }
 			}
 		case "up":
 			maxH := a.height - 2
@@ -538,6 +544,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Update agent detail if this is the selected agent
 		if msg.AgentID == a.selectedAgentID {
+			if msg.Status == "completed" || msg.Status == "error" {
+				a.conversation.SetThinking(false)
+			}
 			a.refreshAgentDetail(msg.AgentID)
 		}
 		cmds = append(cmds, a.waitForEvent())
@@ -551,8 +560,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.monitor != nil {
 			a.monitor.CheckMessage(msg.AgentID, msg.Content)
 		}
-		// If matches selected agent, add to conversation panel
+		// If matches selected agent, add to conversation panel + clear thinking
 		if msg.AgentID == a.selectedAgentID {
+			a.conversation.SetThinking(false)
 			a.conversation.AddEntry(msg.Role, msg.Content)
 		}
 		cmds = append(cmds, a.waitForEvent())
@@ -566,16 +576,28 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Auto-select the newly created agent
 		a.selectedAgentID = msg.Agent.ID
 		a.conversation.SetAgentID(msg.Agent.ID)
+		a.conversation.SetAgentName(msg.Agent.Name)
+		// Select the new agent, load any messages (includes errors or "starting")
 		if a.vault != nil {
 			msgs, err := a.vault.GetMessages(msg.Agent.ID)
 			if err == nil {
 				a.conversation.LoadMessages(msgs)
 			}
 		}
+		// Show thinking if agent is active (not error)
+		if msg.Agent.Status == "active" {
+			a.conversation.SetThinking(true)
+			cmds = append(cmds, conversation.ThinkingTick())
+			a.notice = "Agent starting — waiting for response..."
+		} else if msg.Agent.Status == "error" {
+			a.conversation.SetThinking(false)
+			a.notice = "Agent created with errors — check conversation"
+		}
 		agentCopy := msg.Agent
 		a.updateAgentDetail(&agentCopy)
-		a.notice = "Agent created: " + msg.Agent.Name
+		a.focus = FocusConversation
 		a.noticeTTL = 3
+		cmds = append(cmds, a.conversation.Focus())
 		cmds = append(cmds, a.waitForEvent())
 
 	case shared.AgentDeletedMsg:
@@ -655,6 +677,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shared.ProxyTestedMsg:
 		a.settings, _ = a.settings.Update(msg)
 
+	case conversation.ThinkingTickMsg:
+		var cmd tea.Cmd
+		a.conversation, cmd = a.conversation.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
 	case statusNotice:
 		a.notice = msg.text
 		a.noticeTTL = 3
@@ -670,7 +699,7 @@ func (a App) updateNameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		name := strings.TrimSpace(a.nameInput.Value())
 		if name != "" {
 			a.newAgentName = name
-			a.inputMode = "new-agent-task"
+			a.inputMode = "new-agent-desc"
 			a.nameInput.Blur()
 			a.nameInput.Reset()
 			a.taskInput.Focus()
@@ -690,20 +719,20 @@ func (a App) updateNameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// updateTaskInput handles keystrokes in "new-agent-task" mode.
-func (a App) updateTaskInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// updateDescInput handles keystrokes in "new-agent-desc" mode.
+func (a App) updateDescInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
-		task := strings.TrimSpace(a.taskInput.Value())
-		if task != "" {
-			cmd := a.createAndSpawnAgent(a.newAgentName, task)
-			a.inputMode = ""
-			a.newAgentName = ""
-			a.taskInput.Blur()
-			a.taskInput.Reset()
-			return a, cmd
+		desc := strings.TrimSpace(a.taskInput.Value())
+		if desc == "" {
+			desc = a.newAgentName // use name as description if empty
 		}
-		return a, nil
+		cmd := a.createAgent(a.newAgentName, desc)
+		a.inputMode = ""
+		a.newAgentName = ""
+		a.taskInput.Blur()
+		a.taskInput.Reset()
+		return a, cmd
 	case "esc":
 		a.inputMode = ""
 		a.newAgentName = ""
@@ -723,15 +752,16 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		text := a.conversation.InputValue()
 		if text != "" && a.selectedAgentID != "" {
-			// Add to conversation view
+			// Add to conversation view + show thinking with animation
 			a.conversation.AddEntry("user", text)
+			a.conversation.SetThinking(true)
 			// Save to vault
 			if a.vault != nil {
 				a.vault.AppendMessage(a.selectedAgentID, "user", text, 0)
 			}
-			// Send to agent stdin
+			// Run one agent turn
 			cmd := a.sendMessageToAgent(a.selectedAgentID, text)
-			return a, cmd
+			return a, tea.Batch(cmd, conversation.ThinkingTick())
 		}
 		return a, nil
 	case "esc":
@@ -790,10 +820,10 @@ func (a App) View() string {
 			detailContent = shared.TitleStyle.Render("NEW AGENT — NAME") + "\n\n" +
 				a.nameInput.View() + "\n\n" +
 				shared.MutedStyle.Render("[Enter] confirm  [Esc] cancel")
-		case "new-agent-task":
-			detailContent = shared.TitleStyle.Render("NEW AGENT — TASK for "+a.newAgentName) + "\n\n" +
+		case "new-agent-desc":
+			detailContent = shared.TitleStyle.Render("NEW AGENT — DESCRIPTION for "+a.newAgentName) + "\n\n" +
 				a.taskInput.View() + "\n\n" +
-				shared.MutedStyle.Render("[Enter] spawn  [Esc] cancel")
+				shared.MutedStyle.Render("[Enter] create  [Esc] cancel")
 		default:
 			detailContent = a.agentDetail.View()
 		}
@@ -946,11 +976,14 @@ func (a *App) selectCurrentAgent() tea.Cmd {
 	a.conversation.SetAgentID(newID)
 
 	if a.vault != nil {
+		agent, err := a.vault.GetAgent(newID)
+		if err == nil {
+			a.conversation.SetAgentName(agent.Name)
+		}
 		msgs, err := a.vault.GetMessages(newID)
 		if err == nil {
 			a.conversation.LoadMessages(msgs)
 		}
-		// Update agent detail
 		a.refreshAgentDetail(newID)
 	}
 	return nil
@@ -968,26 +1001,32 @@ func (a App) tick() tea.Cmd {
 	})
 }
 
-// createAndSpawnAgent creates an agent in the vault and spawns it via orchestrator.
-func (a *App) createAndSpawnAgent(name, task string) tea.Cmd {
+// createAgent creates an agent profile in the vault AND immediately spawns OpenClaw.
+// The agent wakes up and introduces itself — the user doesn't need to send the first message.
+// ALL errors are visible to the user — either as notices (pre-creation) or in the conversation (post-creation).
+func (a *App) createAgent(name, description string) tea.Cmd {
 	return func() tea.Msg {
+		// Pre-creation checks — show errors as notices since there's no agent yet
+		if a.vault == nil {
+			return statusNotice{text: "ERROR: No vault available — cannot create agent"}
+		}
+		if a.orch == nil {
+			return statusNotice{text: "ERROR: No orchestrator — is the browser running?"}
+		}
+
 		// Generate fingerprint
 		fp, err := vault.GenerateFingerprint(name)
 		if err != nil {
-			return statusNotice{text: "Fingerprint failed: " + err.Error()}
+			fp = "{}" // use empty fingerprint as fallback, don't block creation
 		}
 
-		if a.vault == nil {
-			return statusNotice{text: "No vault available"}
-		}
-
-		// Create in vault
-		agent, err := a.vault.CreateAgent(name, task, fp)
+		// Create in vault — this MUST succeed for anything else to work
+		agent, err := a.vault.CreateAgent(name, description, fp)
 		if err != nil {
-			return statusNotice{text: "Create agent failed: " + err.Error()}
+			return statusNotice{text: "ERROR: Failed to create agent: " + err.Error()}
 		}
 
-		// If agent has a proxy assigned, sync fingerprint geo to match proxy exit location
+		// If agent has a proxy assigned, sync fingerprint geo
 		if agent.ProxyConfig != "" {
 			var pc proxy.ProxyConfig
 			if json.Unmarshal([]byte(agent.ProxyConfig), &pc) == nil {
@@ -1002,18 +1041,23 @@ func (a *App) createAndSpawnAgent(name, task string) tea.Cmd {
 			}
 		}
 
-		// Save initial task message
-		a.vault.AppendMessage(agent.ID, "user", task, 0)
-
-		// Spawn via orchestrator
-		if a.orch != nil {
-			sessionName := "vulpine-" + agent.ID
-			_, err := a.orch.Agents.SpawnWithSession(agent.ID, task, sessionName, config.OpenClawConfigPath())
-			if err != nil {
-				return statusNotice{text: "Spawn failed: " + err.Error()}
-			}
+		// Immediately spawn OpenClaw — agent wakes up and introduces itself
+		introMsg := "You are an AI agent named '" + name + "'. Your purpose: " + description + ". Introduce yourself briefly (1-2 sentences) and ask how you can help."
+		sessionName := "vulpine-" + agent.ID
+		_, spawnErr := a.orch.Agents.SpawnWithSession(agent.ID, introMsg, sessionName, config.OpenClawConfigPath())
+		if spawnErr != nil {
+			// Agent is in vault but spawn failed — show it with error status
+			// The user will see the agent in the list with error state + error in conversation
+			agent.Status = "error"
+			a.vault.UpdateAgentStatus(agent.ID, "error")
+			a.vault.AppendMessage(agent.ID, "system", "Failed to start: "+spawnErr.Error(), 0)
+		} else {
+			agent.Status = "active"
+			a.vault.UpdateAgentStatus(agent.ID, "active")
+			a.vault.AppendMessage(agent.ID, "system", "Agent starting...", 0)
 		}
 
+		// ALWAYS return AgentCreatedMsg so the agent shows up in the list
 		return shared.AgentCreatedMsg{Agent: *agent}
 	}
 }
@@ -1068,17 +1112,36 @@ func (a *App) deleteAgent(agentID string) tea.Cmd {
 }
 
 // sendMessageToAgent sends a text message to a running agent's stdin.
+// sendMessageToAgent runs one OpenClaw agent turn with the given message.
+// Each message spawns a new `openclaw agent --local` process using the same session ID
+// for conversation continuity. OpenClaw maintains history per session internally.
 func (a App) sendMessageToAgent(agentID, text string) tea.Cmd {
 	return func() tea.Msg {
 		if a.orch == nil {
-			return statusNotice{text: "No orchestrator"}
-		}
-		if err := a.orch.Agents.SendMessage(agentID, text); err != nil {
-			if strings.Contains(err.Error(), "not found") {
-				return statusNotice{text: "Agent is paused. Press 'r' to resume before chatting."}
+			// Show error in conversation, not just notice
+			return shared.ConversationEntryMsg{
+				AgentID: agentID,
+				Role:    "system",
+				Content: "Error: No orchestrator available. Is the browser running?",
 			}
-			return statusNotice{text: "Send failed: " + err.Error()}
 		}
+
+		// Each message is a new openclaw agent turn with the same session ID
+		sessionName := "vulpine-" + agentID
+		_, spawnErr := a.orch.Agents.SpawnWithSession(agentID, text, sessionName, config.OpenClawConfigPath())
+		if spawnErr != nil {
+			// Show error in conversation so user can see what went wrong
+			return shared.ConversationEntryMsg{
+				AgentID: agentID,
+				Role:    "system",
+				Content: "Error: " + spawnErr.Error(),
+			}
+		}
+
+		if a.vault != nil {
+			a.vault.UpdateAgentStatus(agentID, "active")
+		}
+
 		return nil
 	}
 }

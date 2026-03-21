@@ -1,11 +1,13 @@
 package openclaw
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,8 +29,9 @@ type AgentStatus struct {
 	Tokens    int    `json:"tokens"`    // tokens consumed
 }
 
-// AgentOutput is a JSON-lines message from the agent's stdout.
+// AgentOutput is a JSON message from the agent's stdout.
 type AgentOutput struct {
+	// Standard JSON-lines format (if agent outputs line-by-line)
 	Type      string `json:"type"`      // status, log, result, error
 	Status    string `json:"status"`    // for type=status
 	Objective string `json:"objective"` // for type=status
@@ -36,6 +39,24 @@ type AgentOutput struct {
 	Message   string `json:"message"`   // for type=log or type=error
 	Result    string `json:"result"`    // for type=result
 	Role      string `json:"role"`      // for type=log (user, assistant, etc.)
+
+	// OpenClaw `agent --json` response format
+	Payloads []struct {
+		Text string `json:"text"`
+	} `json:"payloads"`
+	Meta *struct {
+		DurationMs int `json:"durationMs"`
+		AgentMeta  *struct {
+			SessionID string `json:"sessionId"`
+			Provider  string `json:"provider"`
+			Model     string `json:"model"`
+			Usage     *struct {
+				Input  int `json:"input"`
+				Output int `json:"output"`
+				Total  int `json:"total"`
+			} `json:"usage"`
+		} `json:"agentMeta"`
+	} `json:"meta"`
 }
 
 // Agent manages a single OpenClaw subprocess.
@@ -44,12 +65,14 @@ type Agent struct {
 	ContextID      string
 	cmd            *exec.Cmd
 	stdinPipe      io.WriteCloser
+	stderrBuf      *bytes.Buffer // captures stderr for error reporting
 	statusCh       chan AgentStatus
 	conversationCh chan ConversationMsg
 	doneCh         chan struct{}
 	mu             sync.Mutex
 	status         AgentStatus
 	startedAt      time.Time
+	env            map[string]string // extra environment variables for the subprocess
 }
 
 // newAgent creates a new agent instance (not yet started).
@@ -74,6 +97,15 @@ func (a *Agent) start(binary string, args []string) error {
 	defer a.mu.Unlock()
 
 	a.cmd = exec.Command(binary, args...)
+
+	// Apply extra environment variables (e.g. OPENCLAW_CONFIG_PATH)
+	if len(a.env) > 0 {
+		a.cmd.Env = os.Environ()
+		for k, v := range a.env {
+			a.cmd.Env = append(a.cmd.Env, k+"="+v)
+		}
+	}
+
 	stdout, err := a.cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("create stdout pipe: %w", err)
@@ -85,32 +117,75 @@ func (a *Agent) start(binary string, args []string) error {
 	}
 	a.stdinPipe = stdinPipe
 
+	// Capture stderr so we can report errors to the user
+	a.stderrBuf = &bytes.Buffer{}
+	a.cmd.Stderr = a.stderrBuf
+
 	if err := a.cmd.Start(); err != nil {
 		return fmt.Errorf("start agent process: %w", err)
 	}
 
 	a.startedAt = time.Now()
 	a.status.Status = "running"
-	a.emitStatus()
+	a.emitStatusLocked() // already holding a.mu
 
-	// Read JSON-lines from stdout
+	// Read JSON objects from stdout using a streaming decoder.
+	// OpenClaw outputs pretty-printed multi-line JSON, so a line-based
+	// scanner would fail to parse it. json.Decoder handles this correctly.
 	go func() {
 		defer close(a.doneCh)
 		defer close(a.conversationCh)
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 1MB max line
-		for scanner.Scan() {
+
+		decoder := json.NewDecoder(stdout)
+		for decoder.More() {
 			var output AgentOutput
-			if err := json.Unmarshal(scanner.Bytes(), &output); err != nil {
+			if err := decoder.Decode(&output); err != nil {
+				// If we hit a decode error, try to skip past it
+				// by draining to find the next valid JSON
+				if err == io.EOF {
+					break
+				}
 				continue
 			}
 			a.handleOutput(output)
 		}
 
-		// Process exited
+		// Wait for the process to exit so we can inspect the exit code
+		waitErr := a.cmd.Wait()
+
 		a.mu.Lock()
 		if a.status.Status != "completed" && a.status.Status != "error" {
-			a.status.Status = "completed"
+			// Process exited without producing a valid response
+			if waitErr != nil {
+				a.status.Status = "error"
+				// Emit stderr content as an error message to the conversation
+				stderrText := strings.TrimSpace(a.stderrBuf.String())
+				if stderrText != "" {
+					a.emitConversation(ConversationMsg{
+						AgentID: a.ID,
+						Role:    "system",
+						Content: fmt.Sprintf("Agent error (exit %v):\n%s", waitErr, truncate(stderrText, 500)),
+					})
+				} else {
+					a.emitConversation(ConversationMsg{
+						AgentID: a.ID,
+						Role:    "system",
+						Content: fmt.Sprintf("Agent exited with error: %v", waitErr),
+					})
+				}
+			} else {
+				a.status.Status = "completed"
+			}
+		} else if a.status.Status == "error" && a.stderrBuf.Len() > 0 {
+			// Status was already set to error by handleOutput, but add stderr details
+			stderrText := strings.TrimSpace(a.stderrBuf.String())
+			if stderrText != "" {
+				a.emitConversation(ConversationMsg{
+					AgentID: a.ID,
+					Role:    "system",
+					Content: fmt.Sprintf("Agent stderr:\n%s", truncate(stderrText, 500)),
+				})
+			}
 		}
 		a.emitStatusLocked()
 		a.mu.Unlock()
@@ -122,6 +197,25 @@ func (a *Agent) start(binary string, args []string) error {
 func (a *Agent) handleOutput(output AgentOutput) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	// Handle OpenClaw `agent --json` response format (single JSON blob with payloads + meta)
+	if len(output.Payloads) > 0 {
+		for _, p := range output.Payloads {
+			if p.Text != "" {
+				a.emitConversation(ConversationMsg{
+					AgentID: a.ID,
+					Role:    "assistant",
+					Content: p.Text,
+				})
+			}
+		}
+		if output.Meta != nil && output.Meta.AgentMeta != nil && output.Meta.AgentMeta.Usage != nil {
+			a.status.Tokens = output.Meta.AgentMeta.Usage.Total
+		}
+		a.status.Status = "completed"
+		a.emitStatusLocked()
+		return
+	}
 
 	switch output.Type {
 	case "status":
@@ -162,6 +256,14 @@ func (a *Agent) handleOutput(output AgentOutput) {
 		}
 	case "error":
 		a.status.Status = "error"
+		errMsg := output.Message
+		if errMsg != "" {
+			a.emitConversation(ConversationMsg{
+				AgentID: a.ID,
+				Role:    "system",
+				Content: "Agent error: " + errMsg,
+			})
+		}
 	}
 
 	a.emitStatusLocked()
@@ -243,4 +345,12 @@ func (a *Agent) Status() AgentStatus {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.status
+}
+
+// truncate shortens a string to maxLen, adding "..." if truncated.
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
