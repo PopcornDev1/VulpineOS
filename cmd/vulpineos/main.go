@@ -240,7 +240,7 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 			return fmt.Errorf("Browser.enable: %w", err)
 		}
 	}
-	p := tea.NewProgram(app, tea.WithAltScreen())
+	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, runErr := p.Run()
 	return runErr
 }
@@ -265,7 +265,7 @@ func runRemote(addr string, apiKey string) error {
 	}
 
 	app := tui.NewApp(nil, client, nil, nil, nil)
-	p := tea.NewProgram(app, tea.WithAltScreen())
+	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = p.Run()
 	return err
 }
