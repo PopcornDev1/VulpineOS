@@ -1,15 +1,13 @@
 package conversation
 
 import (
-	"fmt"
 	"math/rand"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"regexp"
-
 	"github.com/charmbracelet/lipgloss"
 
 	"vulpineos/internal/tui/shared"
@@ -318,24 +316,78 @@ func (m Model) visibleLines() int {
 	return visible
 }
 
-// getDisplayLines builds display lines from pre-rendered entries. No markdown parsing here.
+// getDisplayLines builds display lines from pre-rendered entries.
 func (m Model) getDisplayLines() []string {
 	var rendered []string
-	for _, e := range m.entries {
-		prefix := m.rolePrefix(e.Role)
+	for i, e := range m.entries {
 		lines := e.renderedLines
 		if len(lines) == 0 {
 			lines = []string{e.Content}
 		}
-		for i, line := range lines {
-			if i == 0 {
-				rendered = append(rendered, prefix+line)
-			} else {
-				rendered = append(rendered, strings.Repeat(" ", 5)+shared.MutedStyle.Render("│ ")+line)
+
+		// Add spacing between messages (not before first)
+		if i > 0 {
+			rendered = append(rendered, "")
+		}
+
+		switch e.Role {
+		case "user":
+			// User messages: ❯ in cyan, like Claude Code
+			marker := shared.KeyStyle.Render("❯ ")
+			for j, line := range lines {
+				if j == 0 {
+					rendered = append(rendered, marker+line)
+				} else {
+					rendered = append(rendered, "  "+line)
+				}
+			}
+		case "assistant":
+			// Agent messages: colored marker based on content type
+			marker := shared.RunningStyle.Render("◆ ") // green for normal
+			if isBrowserAction(e.Content) {
+				marker = shared.WarmingStyle.Render("◆ ") // amber for browser actions
+			}
+			for j, line := range lines {
+				if j == 0 {
+					rendered = append(rendered, marker+line)
+				} else {
+					rendered = append(rendered, "  "+line)
+				}
+			}
+		case "system":
+			// System messages: muted dot
+			marker := shared.MutedStyle.Render("● ")
+			for j, line := range lines {
+				if j == 0 {
+					rendered = append(rendered, marker+line)
+				} else {
+					rendered = append(rendered, "  "+line)
+				}
+			}
+		default:
+			for _, line := range lines {
+				rendered = append(rendered, "  "+line)
 			}
 		}
 	}
 	return rendered
+}
+
+// isBrowserAction checks if a message describes a browser action.
+func isBrowserAction(content string) bool {
+	lower := strings.ToLower(content)
+	actions := []string{
+		"navigat", "click", "screenshot", "scroll",
+		"typing", "type ", "typed", "browser",
+		"page.goto", "page.click", "vulpine_",
+		"opening", "loading", "visited",
+	}
+	for _, a := range actions {
+		if strings.Contains(lower, a) {
+			return true
+		}
+	}
+	return false
 }
 
 // renderLines returns display lines (for scroll calculation).
@@ -356,27 +408,6 @@ func (m *Model) scrollToBottom() {
 	}
 }
 
-// rolePrefix returns a styled role prefix.
-func (m Model) rolePrefix(role string) string {
-	switch role {
-	case "user":
-		return shared.KeyStyle.Render("you ")
-	case "assistant":
-		name := m.agentName
-		if name == "" {
-			name = "agent"
-		}
-		// Truncate name to 10 chars for alignment
-		if len(name) > 10 {
-			name = name[:10]
-		}
-		return shared.RunningStyle.Render(name + " ")
-	case "system":
-		return shared.MutedStyle.Render("sys ")
-	default:
-		return shared.MutedStyle.Render(fmt.Sprintf("%-4s", role))
-	}
-}
 
 // View renders the conversation panel.
 // Messages are bottom-aligned: empty space at top, messages grow upward from the input box.
