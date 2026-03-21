@@ -301,6 +301,8 @@ export class PageAgent {
         getContentQuads: this._getContentQuads.bind(this),
         getFullAXTree: this._getFullAXTree.bind(this),
         getOptimizedDOM: this._getOptimizedDOM.bind(this),
+        resolveRef: this._resolveRef.bind(this),
+        focusByRef: this._focusByRef.bind(this),
         insertText: this._insertText.bind(this),
         scrollIntoViewIfNeeded: this._scrollIntoViewIfNeeded.bind(this),
         setFileInputFiles: this._setFileInputFiles.bind(this),
@@ -884,6 +886,16 @@ export class PageAgent {
     let truncated = false;
     let nodeCount = 0;
 
+    // VulpineOS: Element reference tracking for ref-based actions
+    this._refMap = new Map();
+    const refMap = this._refMap;
+    let refCounter = 0;
+    const INTERACTIVE_ROLES = new Set([
+      'button', 'pushbutton', 'link', 'entry', 'textbox', 'password text',
+      'check box', 'radiobutton', 'radio button', 'combobox', 'combobox list',
+      'listbox', 'menuitem', 'pagetab', 'page tab', 'switch', 'slider', 'spinbutton',
+    ]);
+
     function compressRole(role, attributes) {
       if (role === 'heading') {
         const level = attributes.level || '1';
@@ -990,13 +1002,23 @@ export class PageAgent {
 
       const props = extractProps(accElement, stateNames, attributes, role);
 
+      // VulpineOS: Assign ref to interactive/actionable nodes
+      let ref = null;
+      if (INTERACTIVE_ROLES.has(role) && accElement.DOMNode) {
+        ref = '@' + refCounter++;
+        refMap.set(ref, accElement.DOMNode);
+      }
+
       // Emit node — omit empty trailing fields
-      if (props)
+      if (ref) {
+        nodes.push([depth, code, truncatedName, props || null, ref]);
+      } else if (props) {
         nodes.push([depth, code, truncatedName, props]);
-      else if (truncatedName)
+      } else if (truncatedName) {
         nodes.push([depth, code, truncatedName]);
-      else
+      } else {
         nodes.push([depth, code]);
+      }
       nodeCount++;
 
       // Recurse
@@ -1012,7 +1034,7 @@ export class PageAgent {
       const node = nodes[i];
       if (node[1] === 't' && merged.length > 0) {
         const prev = merged[merged.length - 1];
-        if (prev[1] === 't' && prev[0] === node[0] && !prev[3] && !node[3]) {
+        if (prev[1] === 't' && prev[0] === node[0] && !prev[3] && !node[3] && !prev[4] && !node[4]) {
           prev[2] = (prev[2] || '') + ' ' + (node[2] || '');
           continue;
         }
@@ -1029,6 +1051,32 @@ export class PageAgent {
       },
       truncated,
     };
+  }
+
+  _resolveRef({ ref }) {
+    const el = this._refMap?.get(ref);
+    if (!el)
+      throw new Error('stale ref: ' + ref);
+    if (el.scrollIntoViewIfNeeded)
+      el.scrollIntoViewIfNeeded();
+    else if (el.scrollIntoView)
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+    const rect = el.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    return { x, y, found: true };
+  }
+
+  _focusByRef({ ref }) {
+    const el = this._refMap?.get(ref);
+    if (!el)
+      throw new Error('stale ref: ' + ref);
+    if (el.scrollIntoViewIfNeeded)
+      el.scrollIntoViewIfNeeded();
+    else if (el.scrollIntoView)
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+    el.focus();
+    return { focused: true };
   }
 }
 

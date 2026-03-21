@@ -114,6 +114,43 @@ func tools() []ToolDefinition {
 				Required: []string{"sessionId"},
 			},
 		},
+		{
+			Name:        "vulpine_click_ref",
+			Description: "Click an element by its ref from the optimized DOM snapshot (e.g. @0, @1). Use vulpine_snapshot first to get refs.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"sessionId": {Type: "string", Description: "Target page session ID"},
+					"ref":       {Type: "string", Description: "Element reference from snapshot (e.g. \"@0\", \"@1\")"},
+				},
+				Required: []string{"sessionId", "ref"},
+			},
+		},
+		{
+			Name:        "vulpine_type_ref",
+			Description: "Focus an element by its ref from the optimized DOM snapshot and type text into it.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"sessionId": {Type: "string", Description: "Target page session ID"},
+					"ref":       {Type: "string", Description: "Element reference from snapshot (e.g. \"@0\", \"@1\")"},
+					"text":      {Type: "string", Description: "Text to type into the element"},
+				},
+				Required: []string{"sessionId", "ref", "text"},
+			},
+		},
+		{
+			Name:        "vulpine_hover_ref",
+			Description: "Hover over an element by its ref from the optimized DOM snapshot.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"sessionId": {Type: "string", Description: "Target page session ID"},
+					"ref":       {Type: "string", Description: "Element reference from snapshot (e.g. \"@0\", \"@1\")"},
+				},
+				Required: []string{"sessionId", "ref"},
+			},
+		},
 	}
 }
 
@@ -138,6 +175,12 @@ func handleToolCall(client *juggler.Client, name string, args json.RawMessage) (
 		return handleCloseContext(client, args)
 	case "vulpine_get_ax_tree":
 		return handleGetAXTree(client, args)
+	case "vulpine_click_ref":
+		return handleClickRef(client, args)
+	case "vulpine_type_ref":
+		return handleTypeRef(client, args)
+	case "vulpine_hover_ref":
+		return handleHoverRef(client, args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -375,4 +418,134 @@ func handleGetAXTree(client *juggler.Client, args json.RawMessage) (*ToolCallRes
 	}
 
 	return textResult(string(result)), nil
+}
+
+func handleClickRef(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
+	var p struct {
+		SessionID string `json:"sessionId"`
+		Ref       string `json:"ref"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return errorResult(err), nil
+	}
+
+	// Resolve ref to coordinates
+	result, err := client.Call(p.SessionID, "Page.resolveRef", map[string]interface{}{
+		"ref": p.Ref,
+	})
+	if err != nil {
+		return errorResult(err), nil
+	}
+
+	var resolved struct {
+		X     float64 `json:"x"`
+		Y     float64 `json:"y"`
+		Found bool    `json:"found"`
+	}
+	if err := json.Unmarshal(result, &resolved); err != nil {
+		return errorResult(err), nil
+	}
+	if !resolved.Found {
+		return errorResult(fmt.Errorf("element ref %s not found (stale snapshot?)", p.Ref)), nil
+	}
+
+	// mousedown
+	_, err = client.Call(p.SessionID, "Page.dispatchMouseEvent", map[string]interface{}{
+		"type": "mousedown", "x": resolved.X, "y": resolved.Y,
+		"button": 0, "clickCount": 1, "modifiers": 0, "buttons": 1,
+	})
+	if err != nil {
+		return errorResult(err), nil
+	}
+
+	// mouseup
+	_, err = client.Call(p.SessionID, "Page.dispatchMouseEvent", map[string]interface{}{
+		"type": "mouseup", "x": resolved.X, "y": resolved.Y,
+		"button": 0, "clickCount": 1, "modifiers": 0, "buttons": 0,
+	})
+	if err != nil {
+		return errorResult(err), nil
+	}
+
+	return textResult(fmt.Sprintf("Clicked %s at (%v, %v)", p.Ref, resolved.X, resolved.Y)), nil
+}
+
+func handleTypeRef(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
+	var p struct {
+		SessionID string `json:"sessionId"`
+		Ref       string `json:"ref"`
+		Text      string `json:"text"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return errorResult(err), nil
+	}
+
+	// Focus the element by ref
+	result, err := client.Call(p.SessionID, "Page.focusByRef", map[string]interface{}{
+		"ref": p.Ref,
+	})
+	if err != nil {
+		return errorResult(err), nil
+	}
+
+	var focused struct {
+		Found bool `json:"found"`
+	}
+	if err := json.Unmarshal(result, &focused); err != nil {
+		return errorResult(err), nil
+	}
+	if !focused.Found {
+		return errorResult(fmt.Errorf("element ref %s not found (stale snapshot?)", p.Ref)), nil
+	}
+
+	// Type the text
+	_, err = client.Call(p.SessionID, "Page.insertText", map[string]interface{}{
+		"text": p.Text,
+	})
+	if err != nil {
+		return errorResult(err), nil
+	}
+
+	return textResult(fmt.Sprintf("Typed %d characters into %s", len(p.Text), p.Ref)), nil
+}
+
+func handleHoverRef(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
+	var p struct {
+		SessionID string `json:"sessionId"`
+		Ref       string `json:"ref"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return errorResult(err), nil
+	}
+
+	// Resolve ref to coordinates
+	result, err := client.Call(p.SessionID, "Page.resolveRef", map[string]interface{}{
+		"ref": p.Ref,
+	})
+	if err != nil {
+		return errorResult(err), nil
+	}
+
+	var resolved struct {
+		X     float64 `json:"x"`
+		Y     float64 `json:"y"`
+		Found bool    `json:"found"`
+	}
+	if err := json.Unmarshal(result, &resolved); err != nil {
+		return errorResult(err), nil
+	}
+	if !resolved.Found {
+		return errorResult(fmt.Errorf("element ref %s not found (stale snapshot?)", p.Ref)), nil
+	}
+
+	// mouseMoved
+	_, err = client.Call(p.SessionID, "Page.dispatchMouseEvent", map[string]interface{}{
+		"type": "mouseMoved", "x": resolved.X, "y": resolved.Y,
+		"button": 0, "clickCount": 0, "modifiers": 0, "buttons": 0,
+	})
+	if err != nil {
+		return errorResult(err), nil
+	}
+
+	return textResult(fmt.Sprintf("Hovered %s at (%v, %v)", p.Ref, resolved.X, resolved.Y)), nil
 }

@@ -1081,6 +1081,24 @@ const Page = {
         truncated: t.Boolean,
       },
     },
+    'resolveRef': {
+      params: {
+        ref: t.String,
+      },
+      returns: {
+        x: t.Number,
+        y: t.Number,
+        found: t.Boolean,
+      },
+    },
+    'focusByRef': {
+      params: {
+        ref: t.String,
+      },
+      returns: {
+        focused: t.Boolean,
+      },
+    },
   },
 };
 
