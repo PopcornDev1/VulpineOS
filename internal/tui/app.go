@@ -1074,10 +1074,10 @@ func (a *App) createAgent(name, description string) tea.Cmd {
 			}
 		}
 
-		// Immediately spawn OpenClaw — agent wakes up and introduces itself
+		// Spawn persistent OpenClaw process — stays alive for ongoing chat
 		introMsg := "You are an AI agent named '" + name + "'. Your purpose: " + description + ". Introduce yourself briefly (1-2 sentences) and ask how you can help."
 		sessionName := "vulpine-" + agent.ID
-		_, spawnErr := a.orch.Agents.SpawnWithSession(agent.ID, introMsg, sessionName, config.OpenClawConfigPath())
+		_, spawnErr := a.orch.Agents.SpawnPersistent(agent.ID, introMsg, sessionName)
 		if spawnErr != nil {
 			// Agent is in vault but spawn failed — show it with error status
 			// The user will see the agent in the list with error state + error in conversation
@@ -1144,14 +1144,12 @@ func (a *App) deleteAgent(agentID string) tea.Cmd {
 	}
 }
 
-// sendMessageToAgent sends a text message to a running agent's stdin.
-// sendMessageToAgent runs one OpenClaw agent turn with the given message.
-// Each message spawns a new `openclaw agent --local` process using the same session ID
-// for conversation continuity. OpenClaw maintains history per session internally.
+// sendMessageToAgent sends a message to a persistent agent process.
+// If the process has exited (crashed, API error, etc.), it transparently respawns.
+// The agent's session ID ensures conversation continuity across respawns.
 func (a App) sendMessageToAgent(agentID, text string) tea.Cmd {
 	return func() tea.Msg {
 		if a.orch == nil {
-			// Show error in conversation, not just notice
 			return shared.ConversationEntryMsg{
 				AgentID: agentID,
 				Role:    "system",
@@ -1159,15 +1157,13 @@ func (a App) sendMessageToAgent(agentID, text string) tea.Cmd {
 			}
 		}
 
-		// Each message is a new openclaw agent turn with the same session ID
 		sessionName := "vulpine-" + agentID
-		_, spawnErr := a.orch.Agents.SpawnWithSession(agentID, text, sessionName, config.OpenClawConfigPath())
-		if spawnErr != nil {
-			// Show error in conversation so user can see what went wrong
+		err := a.orch.Agents.SendMessageOrRespawn(agentID, text, sessionName)
+		if err != nil {
 			return shared.ConversationEntryMsg{
 				AgentID: agentID,
 				Role:    "system",
-				Content: "Error: " + spawnErr.Error(),
+				Content: "Error: " + err.Error(),
 			}
 		}
 

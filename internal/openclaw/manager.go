@@ -55,7 +55,6 @@ func (m *Manager) SpawnWithSession(agentID, task, sessionName, configPath string
 	}
 
 	// Stop any previous process for this agent before spawning a new one.
-	// This prevents the old cleanup goroutine from racing with the new agent.
 	m.mu.Lock()
 	if old, ok := m.agents[agentID]; ok {
 		delete(m.agents, agentID)
@@ -99,6 +98,90 @@ func (m *Manager) SpawnWithSession(agentID, task, sessionName, configPath string
 	}()
 
 	return agentID, nil
+}
+
+// SpawnPersistent creates a long-lived agent process that stays alive for ongoing chat.
+// Messages are sent via stdin, responses read from stdout. The process only exits if it
+// crashes or VulpineOS shuts down. If the process dies, SendMessageOrRespawn will restart it.
+func (m *Manager) SpawnPersistent(agentID, initialMessage, sessionName string) (string, error) {
+	openclawBin := m.findOpenClaw()
+	if openclawBin == "" {
+		return "", fmt.Errorf("OpenClaw not found. Run 'npm install' in the VulpineOS directory or install globally: npm install -g openclaw")
+	}
+
+	// Stop any previous process
+	m.mu.Lock()
+	if old, ok := m.agents[agentID]; ok {
+		delete(m.agents, agentID)
+		m.mu.Unlock()
+		old.Stop()
+	} else {
+		m.mu.Unlock()
+	}
+
+	// Launch in interactive mode — no --message flag keeps stdin open
+	args := []string{
+		"--profile", "vulpine",
+		"agent",
+		"--local",
+		"--session-id", sessionName,
+		"--json",
+	}
+
+	agent := newAgent(agentID, "openclaw", m.statusCh)
+
+	if err := agent.start(openclawBin, args); err != nil {
+		return "", fmt.Errorf("spawn failed (binary=%s): %w", openclawBin, err)
+	}
+
+	m.mu.Lock()
+	m.agents[agentID] = agent
+	m.mu.Unlock()
+
+	go m.forwardConversation(agent)
+
+	// Don't auto-delete — agent stays in the map even after exit so we can respawn
+	go func() {
+		agent.Wait()
+		// Mark as exited but keep in map for respawn
+		agent.mu.Lock()
+		if agent.status.Status != "error" {
+			agent.status.Status = "ready"
+		}
+		agent.emitStatusLocked()
+		agent.mu.Unlock()
+	}()
+
+	// Send the initial message
+	if initialMessage != "" {
+		time.Sleep(500 * time.Millisecond) // brief pause for process startup
+		if err := agent.SendMessage(initialMessage); err != nil {
+			return agentID, fmt.Errorf("send initial message: %w", err)
+		}
+	}
+
+	return agentID, nil
+}
+
+// SendMessageOrRespawn sends a message to a running agent. If the process has exited,
+// it respawns transparently and sends the message to the new process.
+func (m *Manager) SendMessageOrRespawn(agentID, text, sessionName string) error {
+	m.mu.RLock()
+	agent, exists := m.agents[agentID]
+	m.mu.RUnlock()
+
+	// Try sending to existing process
+	if exists {
+		err := agent.SendMessage(text)
+		if err == nil {
+			return nil // success — process is alive
+		}
+		// Process died — fall through to respawn
+	}
+
+	// Respawn the agent process
+	_, err := m.SpawnPersistent(agentID, text, sessionName)
+	return err
 }
 
 // ResumeWithSession resumes an agent from a saved session.
