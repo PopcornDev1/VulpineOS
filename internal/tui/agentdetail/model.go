@@ -74,18 +74,18 @@ func (m Model) HasAgent() bool {
 // statusIndicator returns a styled status with icon.
 func statusIndicator(status string) string {
 	switch status {
-	case "active":
-		return shared.RunningStyle.Render("● active")
+	case "active", "running":
+		return shared.WarmingStyle.Render("● working...")
 	case "thinking":
-		return shared.WarmingStyle.Render("◌ thinking")
-	case "completed":
-		return shared.MutedStyle.Render("✓ completed")
-	case "failed":
-		return shared.StoppedStyle.Render("✗ failed")
-	case "created":
-		return shared.WarmingStyle.Render("○ created")
+		return shared.WarmingStyle.Render("◌ thinking...")
+	case "completed", "ready", "":
+		return shared.RunningStyle.Render("● ready")
+	case "failed", "error":
+		return shared.StoppedStyle.Render("● error")
+	case "starting", "created":
+		return shared.WarmingStyle.Render("○ starting...")
 	default:
-		return shared.MutedStyle.Render("· " + status)
+		return shared.RunningStyle.Render("● ready")
 	}
 }
 

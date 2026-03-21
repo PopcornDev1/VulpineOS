@@ -134,16 +134,18 @@ func (m *Model) UpdateStatus(id, status string) {
 // statusIcon returns a styled icon for the given status.
 func statusIcon(status string) string {
 	switch status {
-	case "active":
-		return lipgloss.NewStyle().Foreground(shared.ColorSuccess).Render("●")
+	case "active", "running":
+		return lipgloss.NewStyle().Foreground(shared.ColorWarning).Render("●")
 	case "thinking":
 		return lipgloss.NewStyle().Foreground(shared.ColorWarning).Render("◌")
-	case "completed":
-		return shared.MutedStyle.Render("✓")
-	case "failed":
-		return lipgloss.NewStyle().Foreground(shared.ColorDanger).Render("✗")
+	case "completed", "ready", "":
+		return lipgloss.NewStyle().Foreground(shared.ColorSuccess).Render("●")
+	case "failed", "error":
+		return lipgloss.NewStyle().Foreground(shared.ColorDanger).Render("●")
+	case "starting", "created":
+		return lipgloss.NewStyle().Foreground(shared.ColorWarning).Render("○")
 	default:
-		return shared.MutedStyle.Render("·")
+		return lipgloss.NewStyle().Foreground(shared.ColorSuccess).Render("●")
 	}
 }
 

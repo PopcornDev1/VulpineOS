@@ -75,6 +75,7 @@ type App struct {
 	newAgentName    string // temp storage during agent creation
 	notice          string
 	noticeTTL       int    // number of ticks before notice is cleared
+	confirmDelete   bool   // true when waiting for delete confirmation
 
 	// Text inputs
 	nameInput textinput.Model
@@ -321,6 +322,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 
+		// Cancel delete confirmation on any key except x
+		if a.confirmDelete && msg.String() != "x" {
+			a.confirmDelete = false
+			a.notice = ""
+		}
+
 		// Normal keybinds
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -355,22 +362,28 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.notice = "No orchestrator available"
 			a.noticeTTL = 3
 		case "x":
-			// Delete selected agent
+			// Delete selected agent — ask for confirmation
 			if a.selectedAgentID != "" {
-				cmds = append(cmds, a.deleteAgent(a.selectedAgentID))
+				if a.confirmDelete {
+					// Second press = confirmed
+					a.confirmDelete = false
+					cmds = append(cmds, a.deleteAgent(a.selectedAgentID))
+				} else {
+					a.confirmDelete = true
+					a.notice = "Press x again to delete agent, or any other key to cancel"
+					a.noticeTTL = 5
+				}
 			}
 		case "enter":
 			switch a.focus {
 			case FocusAgentList, FocusAgentDetail, FocusConversation:
-				// Focus conversation input — only if agent is awake (has sent first message)
-				if a.selectedAgentID != "" && a.conversation.IsAwake() {
+				// Focus conversation input — always allow chatting with a selected agent
+				if a.selectedAgentID != "" {
 					a.focus = FocusConversation
 					a.inputMode = "chat"
+					a.conversation.SetAwake(true) // ensure input is enabled
 					cmd := a.conversation.Focus()
 					return a, cmd
-				} else if a.selectedAgentID != "" {
-					a.notice = "Waiting for agent to wake up..."
-					a.noticeTTL = 2
 				}
 			}
 		case "esc":
