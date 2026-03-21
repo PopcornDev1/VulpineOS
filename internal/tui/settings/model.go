@@ -12,13 +12,12 @@ import (
 	"vulpineos/internal/tui/shared"
 )
 
-// Tab identifies which settings tab is active.
-type Tab int
+// Section identifies which settings section has focus for j/k navigation.
+type Section int
 
 const (
-	TabGeneral Tab = 0
-	TabProxies Tab = 1
-	TabSkills  Tab = 2
+	SectionProxies Section = 0
+	SectionSkills  Section = 1
 )
 
 // ProxyItem describes a proxy entry in the settings list.
@@ -40,23 +39,24 @@ type SkillItem struct {
 
 // Model is the Bubbletea model for the settings panel.
 type Model struct {
-	active bool
-	tab    Tab
-	width  int
-	height int
+	active  bool
+	section Section // which section has focus for j/k
+	width   int
+	height  int
+	scroll  int // scroll offset for the full page
 
-	// General tab
+	// General
 	provider  string
 	model     string
 	apiKeySet bool // don't show the actual key, just whether it's set
 
-	// Proxies tab
+	// Proxies
 	proxies     []ProxyItem
 	proxyIdx    int
 	importing   bool // true when paste-input mode active
 	importInput textinput.Model
 
-	// Skills tab
+	// Skills
 	skills   []SkillItem
 	skillIdx int
 }
@@ -69,7 +69,7 @@ func New() Model {
 	ti.Width = 60
 
 	return Model{
-		tab:         TabGeneral,
+		section:     SectionProxies,
 		importInput: ti,
 	}
 }
@@ -154,46 +154,49 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.active = false
 			return m, func() tea.Msg { return shared.SettingsClosedMsg{} }
 
-		case "1":
-			m.tab = TabGeneral
-		case "2":
-			m.tab = TabProxies
-		case "3":
-			m.tab = TabSkills
+		case "tab":
+			// Switch section focus
+			if m.section == SectionProxies {
+				m.section = SectionSkills
+			} else {
+				// Close settings and let app handle Tab cycling
+				m.active = false
+				return m, func() tea.Msg { return shared.SettingsClosedMsg{} }
+			}
 
 		case "j", "down":
-			switch m.tab {
-			case TabProxies:
+			switch m.section {
+			case SectionProxies:
 				if len(m.proxies) > 0 && m.proxyIdx < len(m.proxies)-1 {
 					m.proxyIdx++
 				}
-			case TabSkills:
+			case SectionSkills:
 				if len(m.skills) > 0 && m.skillIdx < len(m.skills)-1 {
 					m.skillIdx++
 				}
 			}
 
 		case "k", "up":
-			switch m.tab {
-			case TabProxies:
+			switch m.section {
+			case SectionProxies:
 				if m.proxyIdx > 0 {
 					m.proxyIdx--
 				}
-			case TabSkills:
+			case SectionSkills:
 				if m.skillIdx > 0 {
 					m.skillIdx--
 				}
 			}
 
 		case "i":
-			if m.tab == TabProxies {
+			if m.section == SectionProxies {
 				m.importing = true
 				m.importInput.Focus()
 				return m, textinput.Blink
 			}
 
 		case "d":
-			if m.tab == TabProxies && len(m.proxies) > 0 {
+			if m.section == SectionProxies && len(m.proxies) > 0 {
 				m.proxies = append(m.proxies[:m.proxyIdx], m.proxies[m.proxyIdx+1:]...)
 				if m.proxyIdx >= len(m.proxies) && m.proxyIdx > 0 {
 					m.proxyIdx--
@@ -201,10 +204,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 
 		case "t":
-			if m.tab == TabProxies && len(m.proxies) > 0 {
+			if m.section == SectionProxies && len(m.proxies) > 0 {
 				proxyID := m.proxies[m.proxyIdx].ID
 				return m, func() tea.Msg {
-					// Placeholder: real proxy testing would happen here
 					return shared.ProxyTestedMsg{
 						ProxyID: proxyID,
 						Latency: "untested",
@@ -213,7 +215,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 
 		case " ":
-			if m.tab == TabSkills && len(m.skills) > 0 {
+			if m.section == SectionSkills && len(m.skills) > 0 {
 				m.skills[m.skillIdx].Enabled = !m.skills[m.skillIdx].Enabled
 			}
 		}
@@ -236,7 +238,6 @@ func (m Model) updateImportInput(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "enter":
 		val := strings.TrimSpace(m.importInput.Value())
 		if val != "" {
-			// Parse and add proxy (simple placeholder)
 			m.proxies = append(m.proxies, ProxyItem{
 				ID:      fmt.Sprintf("proxy-%d", len(m.proxies)+1),
 				Label:   fmt.Sprintf("imported-%d", len(m.proxies)+1),
@@ -261,7 +262,7 @@ func (m Model) updateImportInput(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 }
 
-// View renders the active tab of the settings panel.
+// View renders all settings sections on a single page.
 func (m Model) View() string {
 	if !m.active {
 		return ""
@@ -269,37 +270,39 @@ func (m Model) View() string {
 
 	var b strings.Builder
 
-	// Tab bar
-	tabs := []string{"1:General", "2:Proxies", "3:Skills"}
-	for i, t := range tabs {
-		if Tab(i) == m.tab {
-			b.WriteString(shared.TitleStyle.Render("[" + t + "]"))
-		} else {
-			b.WriteString(shared.MutedStyle.Render(" " + t + " "))
-		}
-		if i < len(tabs)-1 {
-			b.WriteString(shared.MutedStyle.Render("  "))
-		}
-	}
+	b.WriteString(shared.TitleStyle.Render("SETTINGS"))
 	b.WriteString("\n\n")
 
-	switch m.tab {
-	case TabGeneral:
-		b.WriteString(m.viewGeneral())
-	case TabProxies:
-		b.WriteString(m.viewProxies())
-	case TabSkills:
-		b.WriteString(m.viewSkills())
-	}
+	// --- General section ---
+	b.WriteString(m.viewGeneral())
+	b.WriteString("\n")
+
+	// Separator
+	sep := shared.MutedStyle.Render(strings.Repeat("─", m.width-2))
+	b.WriteString(sep)
+	b.WriteString("\n\n")
+
+	// --- Proxies section ---
+	b.WriteString(m.viewProxies())
+	b.WriteString("\n")
+
+	b.WriteString(sep)
+	b.WriteString("\n\n")
+
+	// --- Skills section ---
+	b.WriteString(m.viewSkills())
+
+	b.WriteString("\n\n")
+	b.WriteString(shared.MutedStyle.Render("[Esc] close settings  [Tab] next section"))
 
 	return b.String()
 }
 
-// viewGeneral renders the General settings tab.
+// viewGeneral renders the General settings section.
 func (m Model) viewGeneral() string {
 	var b strings.Builder
 
-	b.WriteString(shared.TitleStyle.Render("SETTINGS — General"))
+	b.WriteString(shared.HeaderStyle.Render("General"))
 	b.WriteString("\n\n")
 
 	providerName := m.provider
@@ -319,21 +322,24 @@ func (m Model) viewGeneral() string {
 	b.WriteString(m.model)
 	b.WriteString("\n")
 	b.WriteString(shared.HeaderStyle.Render("API Key:   "))
-	b.WriteString(lipgloss.NewStyle().Render(strings.Repeat("•", 13) + " "))
+	b.WriteString(lipgloss.NewStyle().Render(strings.Repeat("*", 13) + " "))
 	b.WriteString(keyStatus)
 	b.WriteString("\n\n")
 	b.WriteString(shared.MutedStyle.Render("Press 'c' to reconfigure provider/model"))
-	b.WriteString("\n")
-	b.WriteString(shared.MutedStyle.Render("[Esc] close settings"))
 
 	return b.String()
 }
 
-// viewProxies renders the Proxies settings tab.
+// viewProxies renders the Proxies settings section.
 func (m Model) viewProxies() string {
 	var b strings.Builder
 
-	b.WriteString(shared.TitleStyle.Render(fmt.Sprintf("SETTINGS — Proxies (%d)", len(m.proxies))))
+	sectionTitle := fmt.Sprintf("Proxies (%d)", len(m.proxies))
+	if m.section == SectionProxies {
+		b.WriteString(shared.TitleStyle.Render(sectionTitle))
+	} else {
+		b.WriteString(shared.HeaderStyle.Render(sectionTitle))
+	}
 	b.WriteString("\n\n")
 
 	if len(m.proxies) == 0 {
@@ -342,8 +348,8 @@ func (m Model) viewProxies() string {
 	} else {
 		for i, p := range m.proxies {
 			cursor := "  "
-			if i == m.proxyIdx {
-				cursor = shared.RunningStyle.Render("▸ ")
+			if i == m.proxyIdx && m.section == SectionProxies {
+				cursor = shared.RunningStyle.Render("| ")
 			}
 
 			label := lipgloss.NewStyle().Width(12).Render(p.Label)
@@ -353,7 +359,7 @@ func (m Model) viewProxies() string {
 			latency := p.Latency
 
 			line := fmt.Sprintf("%s%s%s%s%s%s", cursor, label, typ, host, country, latency)
-			if i == m.proxyIdx {
+			if i == m.proxyIdx && m.section == SectionProxies {
 				line = shared.SelectedStyle.Render(line)
 			}
 			b.WriteString(line)
@@ -368,21 +374,23 @@ func (m Model) viewProxies() string {
 		b.WriteString(m.importInput.View())
 		b.WriteString("\n")
 		b.WriteString(shared.MutedStyle.Render("[Enter] add  [Esc] cancel"))
-	} else {
-		b.WriteString("\n")
+	} else if m.section == SectionProxies {
 		b.WriteString(shared.MutedStyle.Render("[i] import  [d] delete  [t] test  [j/k] navigate"))
-		b.WriteString("\n")
-		b.WriteString(shared.MutedStyle.Render("[Esc] close settings"))
 	}
 
 	return b.String()
 }
 
-// viewSkills renders the Skills settings tab.
+// viewSkills renders the Skills settings section.
 func (m Model) viewSkills() string {
 	var b strings.Builder
 
-	b.WriteString(shared.TitleStyle.Render("SETTINGS — Skills"))
+	sectionTitle := "Skills"
+	if m.section == SectionSkills {
+		b.WriteString(shared.TitleStyle.Render(sectionTitle))
+	} else {
+		b.WriteString(shared.HeaderStyle.Render(sectionTitle))
+	}
 	b.WriteString("\n\n")
 
 	if len(m.skills) == 0 {
@@ -391,17 +399,17 @@ func (m Model) viewSkills() string {
 	} else {
 		for i, s := range m.skills {
 			cursor := "  "
-			if i == m.skillIdx {
-				cursor = shared.RunningStyle.Render("▸ ")
+			if i == m.skillIdx && m.section == SectionSkills {
+				cursor = shared.RunningStyle.Render("| ")
 			}
 
 			check := "[ ]"
 			if s.Enabled {
-				check = shared.RunningStyle.Render("[✓]")
+				check = shared.RunningStyle.Render("[+]")
 			}
 
 			line := fmt.Sprintf("%s%s %s", cursor, check, s.Name)
-			if i == m.skillIdx {
+			if i == m.skillIdx && m.section == SectionSkills {
 				line = shared.SelectedStyle.Render(line)
 			}
 			b.WriteString(line)
@@ -409,10 +417,9 @@ func (m Model) viewSkills() string {
 		}
 	}
 
-	b.WriteString("\n")
-	b.WriteString(shared.MutedStyle.Render("[space] toggle  [j/k] navigate"))
-	b.WriteString("\n")
-	b.WriteString(shared.MutedStyle.Render("[Esc] close settings"))
+	if m.section == SectionSkills {
+		b.WriteString(shared.MutedStyle.Render("[space] toggle  [j/k] navigate"))
+	}
 
 	return b.String()
 }

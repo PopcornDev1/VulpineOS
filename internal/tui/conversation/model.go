@@ -144,19 +144,34 @@ func rolePrefix(role string) string {
 func (m Model) View() string {
 	var b strings.Builder
 
-	b.WriteString(shared.TitleStyle.Render("CONVERSATION"))
-	b.WriteString("\n")
-
+	// No agent selected — show prompt
 	if m.agentID == "" {
-		b.WriteString(shared.MutedStyle.Render("  Select an agent to view conversation"))
+		b.WriteString(shared.TitleStyle.Render("CONVERSATION"))
+		b.WriteString("\n\n")
+		b.WriteString(shared.MutedStyle.Render("  Press "))
+		b.WriteString(shared.KeyStyle.Render("n"))
+		b.WriteString(shared.MutedStyle.Render(" to create a new agent"))
+		b.WriteString("\n\n")
+		b.WriteString(shared.MutedStyle.Render("  Or select an agent from the left panel"))
+		b.WriteString("\n")
+		b.WriteString(shared.MutedStyle.Render("  with "))
+		b.WriteString(shared.KeyStyle.Render("j/k"))
+		b.WriteString(shared.MutedStyle.Render(" to view its conversation"))
 		return b.String()
 	}
 
+	b.WriteString(shared.TitleStyle.Render("CONVERSATION"))
+	b.WriteString("\n")
+
 	if len(m.entries) == 0 {
-		b.WriteString(shared.MutedStyle.Render("  (no messages yet)"))
+		b.WriteString(shared.MutedStyle.Render("  Agent created. Waiting for response..."))
+		b.WriteString("\n")
+		b.WriteString(shared.MutedStyle.Render("  Press "))
+		b.WriteString(shared.KeyStyle.Render("Enter"))
+		b.WriteString(shared.MutedStyle.Render(" to chat with this agent"))
 		b.WriteString("\n")
 	} else {
-		visible := m.height - 4
+		visible := m.height - 6 // title + input + padding
 		if visible < 1 {
 			visible = 1
 		}
@@ -185,10 +200,12 @@ func (m Model) View() string {
 		}
 	}
 
-	// Input area
+	// Always show input area at bottom when agent is selected
+	b.WriteString("\n")
 	if m.textInput.Focused() {
-		b.WriteString("\n")
 		b.WriteString(m.textInput.View())
+	} else {
+		b.WriteString(shared.MutedStyle.Render("  > Press Enter to chat..."))
 	}
 
 	return b.String()
