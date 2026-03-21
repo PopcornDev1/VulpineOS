@@ -129,6 +129,46 @@ func (a *Agent) start(binary string, args []string) error {
 	a.status.Status = "running"
 	a.emitStatusLocked() // already holding a.mu
 
+	// Start activity watchdog — warns if agent produces no output for too long
+	activityCh := make(chan struct{}, 1)
+	go func() {
+		timeout := 60 * time.Second
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		warned := false
+		for {
+			select {
+			case <-activityCh:
+				// Agent produced output — reset timer and warning
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(timeout)
+				warned = false
+			case <-timer.C:
+				// No output for 60s
+				if !warned {
+					a.mu.Lock()
+					if a.status.Status == "running" || a.status.Status == "thinking" {
+						a.emitConversation(ConversationMsg{
+							AgentID: a.ID,
+							Role:    "system",
+							Content: "Agent has been inactive for 60s — may be stuck on a browser action. Check if the page is loading or if there's a dialog/captcha blocking.",
+						})
+						warned = true
+					}
+					a.mu.Unlock()
+				}
+				timer.Reset(timeout)
+			case <-a.doneCh:
+				return
+			}
+		}
+	}()
+
 	// Read JSON objects from stdout using a streaming decoder.
 	// OpenClaw outputs pretty-printed multi-line JSON, so a line-based
 	// scanner would fail to parse it. json.Decoder handles this correctly.
@@ -146,6 +186,11 @@ func (a *Agent) start(binary string, args []string) error {
 					break
 				}
 				continue
+			}
+			// Signal activity to watchdog
+			select {
+			case activityCh <- struct{}{}:
+			default:
 			}
 			a.handleOutput(output)
 		}
