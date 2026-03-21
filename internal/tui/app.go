@@ -371,7 +371,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			switch a.focus {
-			case FocusAgentList, FocusAgentDetail:
+			case FocusAgentList, FocusAgentDetail, FocusConversation:
 				// Focus conversation input — only if agent is awake (has sent first message)
 				if a.selectedAgentID != "" && a.conversation.IsAwake() {
 					a.focus = FocusConversation

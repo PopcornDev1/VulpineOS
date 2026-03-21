@@ -267,10 +267,10 @@ func (m Model) Focused() bool {
 
 // visibleLines returns how many rendered lines fit in the message area.
 func (m Model) visibleLines() int {
-	// height minus: 1 title, 1 divider above input, 1 input, 1 divider below input, 1 thinking (reserve)
-	reserved := 4
+	// Layout: title(1) + messages + thinking(0-1) + divider(1) + input(1) + divider(1)
+	reserved := 4 // title + divider above + input + divider below
 	if m.thinking {
-		reserved++
+		reserved++ // thinking indicator between messages and top divider
 	}
 	visible := m.height - reserved
 	if visible < 1 {
@@ -331,13 +331,20 @@ func (m Model) rolePrefix(role string) string {
 }
 
 // View renders the conversation panel.
-// Messages are bottom-aligned: empty space at top, messages grow upward from the input area.
+// Messages are bottom-aligned: empty space at top, messages grow upward from the input box.
+// Input box is framed by dividers above and below.
 func (m Model) View() string {
 	var b strings.Builder
+	totalLines := 0
+
+	dividerWidth := m.width - 2
+	if dividerWidth < 1 {
+		dividerWidth = 1
+	}
+	divider := shared.MutedStyle.Render(strings.Repeat("─", dividerWidth))
 
 	// No agent selected — show centered prompt
 	if m.agentID == "" {
-		// Fill space so prompt is vertically centered
 		for i := 0; i < m.height/2-2; i++ {
 			b.WriteString("\n")
 		}
@@ -353,7 +360,7 @@ func (m Model) View() string {
 		return b.String()
 	}
 
-	// Build the input area
+	// Build the input line
 	var inputArea string
 	if !m.awake && m.thinking {
 		inputArea = shared.MutedStyle.Render("  Chat available after agent responds")
@@ -379,22 +386,18 @@ func (m Model) View() string {
 		thinkingLine = "  " + shimmerText
 	}
 
-	// Calculate available message lines
-	// Layout: title(1) + messages + thinking(0-1) + divider(1) + input(1)
-	reservedLines := 3 // title + divider + input
+	// Calculate available lines for messages
+	// Layout (bottom to top): divider(1) + input(1) + divider(1) + thinking(0-1) + messages + title(1)
+	bottomLines := 3 // divider + input + divider
 	if m.thinking {
-		reservedLines++
+		bottomLines++
 	}
-	visibleMsgLines := m.height - reservedLines
+	visibleMsgLines := m.height - 1 - bottomLines // 1 for title
 	if visibleMsgLines < 1 {
 		visibleMsgLines = 1
 	}
 
-	// Title
-	b.WriteString(shared.TitleStyle.Render("CONVERSATION"))
-	b.WriteString("\n")
-
-	// Render entries with word wrapping
+	// Render all message entries with word wrapping
 	maxWidth := m.width - 8
 	if maxWidth < 10 {
 		maxWidth = 10
@@ -425,7 +428,6 @@ func (m Model) View() string {
 		m.scroll = 0
 	}
 
-	// Determine which lines to show
 	start := m.scroll
 	end := start + visibleMsgLines
 	if end > len(rendered) {
@@ -433,34 +435,54 @@ func (m Model) View() string {
 	}
 	linesWritten := end - start
 
-	// BOTTOM-ALIGN: empty space first, then messages above the input
+	// === BUILD OUTPUT (exactly m.height lines) ===
+
+	// 1. Title
+	b.WriteString(shared.TitleStyle.Render("CONVERSATION"))
+	b.WriteString("\n")
+	totalLines++
+
+	// 2. Empty space (bottom-align messages)
 	emptyLines := visibleMsgLines - linesWritten
 	for i := 0; i < emptyLines; i++ {
 		b.WriteString("\n")
+		totalLines++
 	}
 
-	// Messages
+	// 3. Messages
 	for _, line := range rendered[start:end] {
 		b.WriteString(line)
 		b.WriteString("\n")
+		totalLines++
 	}
 
-	// Thinking indicator (sits between messages and divider)
+	// 4. Thinking indicator (between messages and top divider)
 	if m.thinking {
 		b.WriteString(thinkingLine)
 		b.WriteString("\n")
+		totalLines++
 	}
 
-	// Divider above input
-	dividerWidth := m.width - 2
-	if dividerWidth < 1 {
-		dividerWidth = 1
-	}
-	b.WriteString(shared.MutedStyle.Render(strings.Repeat("─", dividerWidth)))
+	// 5. Divider above input
+	b.WriteString(divider)
 	b.WriteString("\n")
+	totalLines++
 
-	// Input area
+	// 6. Input area
 	b.WriteString(inputArea)
+	b.WriteString("\n")
+	totalLines++
+
+	// 7. Divider below input
+	b.WriteString(divider)
+	totalLines++
+
+	// Safety: if we somehow produced fewer lines than height, pad
+	// (shouldn't happen with correct math, but prevents layout overflow)
+	for totalLines < m.height {
+		b.WriteString("\n")
+		totalLines++
+	}
 
 	return b.String()
 }
