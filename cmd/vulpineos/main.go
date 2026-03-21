@@ -308,8 +308,22 @@ func runServe(binaryPath string, headless bool, profileDir string, port int, api
 
 	log.Printf("VulpineOS kernel running (PID %d)", k.PID())
 
-	if tlsCert != "" && tlsKey != "" {
-		return server.StartTLS(tlsCert, tlsKey)
+	// Resolve TLS certificates
+	certFile, keyFile := tlsCert, tlsKey
+	if certFile == "" || keyFile == "" {
+		// Auto-generate self-signed certs
+		auto, autoKey, err := remote.GenerateSelfSignedCert()
+		if err != nil {
+			return fmt.Errorf("auto-generate TLS cert: %w", err)
+		}
+		certFile, keyFile = auto, autoKey
+		log.Printf("Using auto-generated self-signed TLS certificate")
 	}
-	return server.Start()
+
+	fp, err := remote.CertFingerprint(certFile)
+	if err == nil {
+		log.Printf("TLS cert fingerprint: %s", fp)
+	}
+
+	return server.StartTLS(certFile, keyFile)
 }
