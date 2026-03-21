@@ -118,6 +118,11 @@ type AgentSelectedMsg struct {
 	AgentID string
 }
 
+// AgentDeletedMsg fires when an agent has been deleted from vault.
+type AgentDeletedMsg struct {
+	AgentID string
+}
+
 // AgentCreatedMsg fires when a new agent is created.
 type AgentCreatedMsg struct {
 	Agent vault.Agent
