@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
 	"vulpineos/internal/tui/shared"
@@ -279,7 +280,7 @@ func (m Model) visibleLines() int {
 	return visible
 }
 
-// renderLines returns all entries as word-wrapped rendered lines (without ANSI — for counting).
+// renderLines returns all entries as rendered lines (for counting/scroll calculation).
 func (m Model) renderLines() []string {
 	maxWidth := m.width - 8
 	if maxWidth < 10 {
@@ -287,8 +288,8 @@ func (m Model) renderLines() []string {
 	}
 	var lines []string
 	for _, e := range m.entries {
-		wrapped := wordWrap(e.Content, maxWidth)
-		for i := range wrapped {
+		contentLines := renderMarkdown(e.Content, maxWidth)
+		for i := range contentLines {
 			lines = append(lines, fmt.Sprintf("%s:%d", e.Role, i))
 		}
 	}
@@ -397,7 +398,7 @@ func (m Model) View() string {
 		visibleMsgLines = 1
 	}
 
-	// Render all message entries with word wrapping
+	// Render all message entries with markdown support
 	maxWidth := m.width - 8
 	if maxWidth < 10 {
 		maxWidth = 10
@@ -406,12 +407,12 @@ func (m Model) View() string {
 	var rendered []string
 	for _, e := range m.entries {
 		prefix := m.rolePrefix(e.Role)
-		lines := wordWrap(e.Content, maxWidth)
-		for i, line := range lines {
+		contentLines := renderMarkdown(e.Content, maxWidth)
+		for i, line := range contentLines {
 			if i == 0 {
 				rendered = append(rendered, prefix+line)
 			} else {
-				rendered = append(rendered, strings.Repeat(" ", 5)+shared.MutedStyle.Render("| ")+line)
+				rendered = append(rendered, strings.Repeat(" ", 5)+shared.MutedStyle.Render("│ ")+line)
 			}
 		}
 	}
@@ -520,6 +521,36 @@ func renderShimmer(text string, offset int) string {
 		}
 	}
 	return result.String()
+}
+
+// renderMarkdown renders markdown text into terminal-styled lines.
+// Falls back to plain word wrap if glamour fails.
+func renderMarkdown(text string, maxWidth int) []string {
+	// Try glamour markdown rendering
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(maxWidth),
+	)
+	if err == nil {
+		out, err := r.Render(text)
+		if err == nil {
+			// Split into lines and trim trailing empty lines
+			out = strings.TrimRight(out, "\n ")
+			lines := strings.Split(out, "\n")
+			// Remove leading/trailing empty lines glamour adds
+			for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+				lines = lines[1:]
+			}
+			for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+				lines = lines[:len(lines)-1]
+			}
+			if len(lines) > 0 {
+				return lines
+			}
+		}
+	}
+	// Fallback: plain word wrap
+	return wordWrap(text, maxWidth)
 }
 
 // wordWrap breaks text into lines of at most maxWidth characters,
