@@ -862,7 +862,7 @@ export class PageAgent {
     return result;
   }
 
-  async _getOptimizedDOM({ maxDepth = 10, maxNodes = 500, maxTextLength = 200 }) {
+  async _getOptimizedDOM({ maxDepth = 10, maxNodes = 500, maxTextLength = 200, viewportOnly = false }) {
     const enabled = Services.prefs.getBoolPref('vulpineos.dom_export.enabled', true);
     if (!enabled)
       throw new Error('Optimized DOM export is disabled');
@@ -885,6 +885,10 @@ export class PageAgent {
     const nodes = [];
     let truncated = false;
     let nodeCount = 0;
+
+    // Viewport dimensions for viewportOnly mode
+    const vpWidth = viewportOnly ? domWindow.innerWidth : 0;
+    const vpHeight = viewportOnly ? domWindow.innerHeight : 0;
 
     // VulpineOS: Element reference tracking for ref-based actions
     this._refMap = new Map();
@@ -946,6 +950,17 @@ export class PageAgent {
 
       if (injectionFilterEnabled && isNodeVisuallyHidden(accElement))
         return;
+
+      // Viewport-only mode: skip elements outside the visible viewport
+      if (viewportOnly && accElement.DOMNode && accElement.DOMNode.getBoundingClientRect) {
+        const rect = accElement.DOMNode.getBoundingClientRect();
+        // Skip if entirely below viewport or entirely above, or entirely off-screen horizontally
+        if (rect.bottom < 0 || rect.top > vpHeight || rect.right < 0 || rect.left > vpWidth) {
+          // Still recurse children — a container may be off-screen but children visible
+          // (e.g., sticky headers inside scrollable containers)
+          return;
+        }
+      }
 
       const role = service.getStringRole(accElement.role);
 

@@ -1075,6 +1075,7 @@ const Page = {
         maxDepth: t.Optional(t.Number),
         maxNodes: t.Optional(t.Number),
         maxTextLength: t.Optional(t.Number),
+        viewportOnly: t.Optional(t.Boolean),
       },
       returns: {
         snapshot: t.Any,

@@ -32,6 +32,7 @@ func tools() []ToolDefinition {
 					"maxDepth":      {Type: "number", Description: "Max tree depth (default 10)"},
 					"maxNodes":      {Type: "number", Description: "Max nodes to return (default 500)"},
 					"maxTextLength": {Type: "number", Description: "Max text per node (default 200)"},
+					"viewportOnly":  {Type: "boolean", Description: "Only return elements visible in the viewport (default false)"},
 				},
 				Required: []string{"sessionId"},
 			},
@@ -228,6 +229,7 @@ func handleSnapshot(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 		MaxDepth      int    `json:"maxDepth"`
 		MaxNodes      int    `json:"maxNodes"`
 		MaxTextLength int    `json:"maxTextLength"`
+		ViewportOnly  bool   `json:"viewportOnly"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return errorResult(err), nil
@@ -242,6 +244,9 @@ func handleSnapshot(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 	}
 	if p.MaxTextLength > 0 {
 		params["maxTextLength"] = p.MaxTextLength
+	}
+	if p.ViewportOnly {
+		params["viewportOnly"] = true
 	}
 
 	result, err := client.Call(p.SessionID, "Page.getOptimizedDOM", params)
