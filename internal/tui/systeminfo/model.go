@@ -21,6 +21,9 @@ type Model struct {
 	detectionRisk  float64
 	activeContexts int
 	activePages    int
+	poolAvailable  int
+	poolActive     int
+	poolTotal      int
 	width          int
 }
 
@@ -54,6 +57,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.detectionRisk = msg.DetectionRiskScore
 		m.activeContexts = msg.ActiveContexts
 		m.activePages = msg.ActivePages
+	case shared.PoolStatsMsg:
+		m.poolAvailable = msg.Available
+		m.poolActive = msg.Active
+		m.poolTotal = msg.Total
 	}
 	return m, nil
 }
@@ -85,6 +92,13 @@ func meterBar(value, max float64, label string) string {
 	return fmt.Sprintf("%s %s", barStyled, label)
 }
 
+// SetPoolStats directly updates pool statistics.
+func (m *Model) SetPoolStats(available, active, total int) {
+	m.poolAvailable = available
+	m.poolActive = active
+	m.poolTotal = total
+}
+
 // View renders the system info panel.
 func (m Model) View() string {
 	var b strings.Builder
@@ -113,9 +127,9 @@ func (m Model) View() string {
 	b.WriteString(fmt.Sprintf("RISK %s\n", meterBar(m.detectionRisk, 100, fmt.Sprintf("%.0f", m.detectionRisk))))
 	b.WriteString("\n")
 
-	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Ctx: %d", m.activeContexts)))
+	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Pool: %d/%d/%d", m.poolAvailable, m.poolActive, m.poolTotal)))
 	b.WriteString("\n")
-	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Pages: %d", m.activePages)))
+	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Ctx: %d Pg: %d", m.activeContexts, m.activePages)))
 
 	return b.String()
 }

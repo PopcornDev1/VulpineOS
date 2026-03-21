@@ -32,8 +32,8 @@ import (
 // Focus panel identifiers.
 const (
 	FocusAgentList    = 0
-	FocusAgentDetail  = 1
-	FocusConversation = 2
+	FocusConversation = 1
+	FocusAgentDetail  = 2
 	FocusContextList  = 3
 	FocusSettings     = 4
 	FocusNormalCount  = 4 // number of panels in normal Tab cycle (excludes settings)
@@ -56,10 +56,9 @@ type App struct {
 	width, height  int
 	leftWidth      int // adjustable left sidebar width
 	rightWidth     int // adjustable right sidebar width
-	centerSplit    int // height of detail box in center (conversation gets remainder)
 	leftSplit      int // height of system info in left (agent list gets remainder)
-	rightSplit     int // height of contexts in right (pool stats gets remainder)
-	focus          int // 0=agentlist, 1=conversation, 2=contextlist, 3=settings
+	rightSplit     int // height of agent detail in right (contexts gets remainder)
+	focus          int // 0=agentlist, 1=conversation, 2=agentdetail, 3=contexts
 
 	// Panels
 	systemInfo   systeminfo.Model
@@ -109,9 +108,8 @@ func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchest
 		monitor:      mon,
 		leftWidth:    18,
 		rightWidth:   18,
-		centerSplit:  10, // detail box height (smaller default)
-		leftSplit:    12, // system info height
-		rightSplit:   0,  // 0 = auto (bodyHeight - 6)
+		leftSplit:    13, // system info height (includes pool stats now)
+		rightSplit:   10, // agent detail height in right column
 		nameInput:    nameIn,
 		taskInput:    taskIn,
 		systemInfo:   systeminfo.New(),
@@ -330,7 +328,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.gracefulShutdown()
 			return a, tea.Quit
 		case "tab":
-			// Cycle: AgentList → AgentDetail → Conversation → ContextList → AgentList
+			// Cycle: AgentList → Conversation → AgentDetail → ContextList → AgentList
 			a.focus = (a.focus + 1) % FocusNormalCount
 		case "j":
 			switch a.focus {
@@ -411,13 +409,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case FocusAgentList:
 				if a.leftSplit > minSplit { a.leftSplit--; a.updatePanelSizes() }
 			case FocusAgentDetail:
-				// Shrink detail → grow conversation
-				if a.centerSplit > minSplit { a.centerSplit--; a.updatePanelSizes() }
-			case FocusConversation:
-				// Grow conversation → shrink detail
-				if a.centerSplit > minSplit { a.centerSplit--; a.updatePanelSizes() }
+				// Shrink detail → grow contexts
+				if a.rightSplit > minSplit { a.rightSplit--; a.updatePanelSizes() }
 			case FocusContextList:
-				if a.rightSplit > 0 && a.rightSplit < maxH-minSplit { a.rightSplit++; a.updatePanelSizes() }
+				// Grow contexts → shrink detail
+				if a.rightSplit > minSplit { a.rightSplit--; a.updatePanelSizes() }
+			case FocusConversation:
+				// pass pgup/pgdn to conversation instead
+				_ = maxH
 			}
 		case "down":
 			maxH := a.height - 2
@@ -425,13 +424,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case FocusAgentList:
 				if a.leftSplit < maxH-minSplit { a.leftSplit++; a.updatePanelSizes() }
 			case FocusAgentDetail:
-				// Grow detail → shrink conversation
-				if a.centerSplit < maxH*maxSplitRatio/100 { a.centerSplit++; a.updatePanelSizes() }
-			case FocusConversation:
-				// Shrink conversation → grow detail
-				if a.centerSplit < maxH*maxSplitRatio/100 { a.centerSplit++; a.updatePanelSizes() }
+				// Grow detail → shrink contexts
+				if a.rightSplit < maxH*maxSplitRatio/100 { a.rightSplit++; a.updatePanelSizes() }
 			case FocusContextList:
-				if a.rightSplit > minSplit { a.rightSplit--; a.updatePanelSizes() }
+				// Shrink contexts → grow detail
+				if a.rightSplit < maxH*maxSplitRatio/100 { a.rightSplit++; a.updatePanelSizes() }
+			case FocusConversation:
+				_ = maxH
 			}
 		case "S":
 			a.focus = FocusSettings
@@ -505,6 +504,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.orch != nil {
 			avail, active, total := a.orch.Pool.Stats()
 			a.poolStats.SetStats(avail, active, total)
+			a.systemInfo.SetPoolStats(avail, active, total)
 		}
 		cmds = append(cmds, a.tick())
 
@@ -677,6 +677,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shared.ProxyTestedMsg:
 		a.settings, _ = a.settings.Update(msg)
 
+	case tea.MouseMsg:
+		// Forward mouse events to conversation for scroll
+		if a.focus == FocusConversation || a.inputMode == "chat" {
+			var cmd tea.Cmd
+			a.conversation, cmd = a.conversation.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+
 	case conversation.ThinkingTickMsg:
 		var cmd tea.Cmd
 		a.conversation, cmd = a.conversation.Update(msg)
@@ -769,6 +779,11 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.inputMode = ""
 		a.focus = FocusAgentList
 		return a, nil
+	case "pgup", "pgdown":
+		// Forward scroll keys to conversation
+		var cmd tea.Cmd
+		a.conversation, cmd = a.conversation.Update(msg)
+		return a, cmd
 	default:
 		ti := a.conversation.TextInput()
 		var cmd tea.Cmd
@@ -798,8 +813,7 @@ func (a App) View() string {
 
 	bodyHeight := a.height - 2 // status bar
 
-	// Left column: systemInfo on top, agentList below
-	// Each panel adds 2 lines of border, so total used = leftTop + leftBottom + 4
+	// Left column: systemInfo (with pool stats) on top, agentList below
 	leftTop := a.leftSplit
 	leftBottom := bodyHeight - leftTop - 4 // subtract borders
 	if leftBottom < 3 { leftBottom = 3; leftTop = bodyHeight - leftBottom - 4 }
@@ -808,55 +822,41 @@ func (a App) View() string {
 	agentView := a.renderFocusPanel(FocusAgentList, a.agentList.View(), leftWidth, leftBottom)
 	leftColumn := lipgloss.JoinVertical(lipgloss.Left, sysView, agentView)
 
-	// Center column: settings panel OR (agent detail + conversation)
+	// Center column: settings panel OR full-height conversation
 	var centerContent string
 	if a.focus == FocusSettings && a.settings.IsActive() {
 		centerContent = a.settings.View()
 	} else {
-		// Top: agent detail area (centerSplit height)
-		var detailContent string
+		// Check if we need to show agent creation inputs overlaid on conversation
+		var convView string
 		switch a.inputMode {
 		case "new-agent-name":
-			detailContent = shared.TitleStyle.Render("NEW AGENT — NAME") + "\n\n" +
+			convView = shared.TitleStyle.Render("NEW AGENT — NAME") + "\n\n" +
 				a.nameInput.View() + "\n\n" +
 				shared.MutedStyle.Render("[Enter] confirm  [Esc] cancel")
 		case "new-agent-desc":
-			detailContent = shared.TitleStyle.Render("NEW AGENT — DESCRIPTION for "+a.newAgentName) + "\n\n" +
+			convView = shared.TitleStyle.Render("NEW AGENT — DESCRIPTION for "+a.newAgentName) + "\n\n" +
 				a.taskInput.View() + "\n\n" +
 				shared.MutedStyle.Render("[Enter] create  [Esc] cancel")
 		default:
-			detailContent = a.agentDetail.View()
+			convView = a.conversation.View()
 		}
 
-		// Split center into two height-constrained sections with independent focus highlighting
-		detailH := a.centerSplit
-		convH := bodyHeight - detailH - 5
-		if convH < 3 { convH = 3 }
-		if detailH < 3 { detailH = 3 }
-
-		// Detail box: highlighted when FocusAgentDetail
-		detailStyle := shared.PanelStyle
-		if a.focus == FocusAgentDetail { detailStyle = shared.ActivePanelStyle }
-		detailBox := detailStyle.Width(centerWidth).Height(detailH).Render(detailContent)
-
-		// Conversation box: highlighted when FocusConversation
+		// Full-height conversation panel
 		convStyle := shared.PanelStyle
 		if a.focus == FocusConversation { convStyle = shared.ActivePanelStyle }
-		convBox := convStyle.Width(centerWidth).Height(convH).Render(a.conversation.View())
-
-		centerContent = lipgloss.JoinVertical(lipgloss.Left, detailBox, convBox)
+		centerContent = convStyle.Width(centerWidth).Height(bodyHeight - 2).Render(convView)
 	}
 	centerView := lipgloss.NewStyle().Width(centerWidth + 2).MaxHeight(bodyHeight).Render(centerContent)
 
-	// Right column: contextList on top, poolStats below
+	// Right column: agent detail on top, contexts below
 	rightTop := a.rightSplit
-	if rightTop <= 0 { rightTop = bodyHeight - 10 } // auto: contexts gets most space
 	rightBottom := bodyHeight - rightTop - 4 // subtract borders
 	if rightBottom < 3 { rightBottom = 3; rightTop = bodyHeight - rightBottom - 4 }
 	if rightTop < 3 { rightTop = 3 }
-	ctxView := a.renderFocusPanel(FocusContextList, a.contextList.View(), rightWidth, rightTop)
-	poolView := a.renderPanel(FocusContextList, a.poolStats.View(), rightWidth, rightBottom)
-	rightColumn := lipgloss.JoinVertical(lipgloss.Left, ctxView, poolView)
+	detailView := a.renderFocusPanel(FocusAgentDetail, a.agentDetail.View(), rightWidth, rightTop)
+	ctxView := a.renderFocusPanel(FocusContextList, a.contextList.View(), rightWidth, rightBottom)
+	rightColumn := lipgloss.JoinVertical(lipgloss.Left, detailView, ctxView)
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, centerView, rightColumn)
 
@@ -915,14 +915,16 @@ func (a *App) updatePanelSizes() {
 		centerWidth = 20
 	}
 	bodyHeight := a.height - 2
-	convHeight := bodyHeight - a.centerSplit - 4
+
+	// Center is full-height conversation (minus panel border)
+	convHeight := bodyHeight - 2
 	if convHeight < minSplit {
 		convHeight = minSplit
 	}
 
 	a.systemInfo.SetWidth(leftWidth)
 	a.agentList.SetWidth(leftWidth)
-	a.agentDetail.SetSize(centerWidth, a.centerSplit)
+	a.agentDetail.SetSize(rightWidth, a.rightSplit)
 	a.conversation.SetSize(centerWidth, convHeight)
 	a.settings.SetSize(centerWidth, bodyHeight)
 	a.contextList.SetWidth(rightWidth)

@@ -68,7 +68,8 @@ type Model struct {
 	textInput     textinput.Model
 	width         int
 	height        int
-	scroll        int
+	scroll        int  // scroll offset in rendered lines (not entries)
+	autoScroll    bool // whether to auto-scroll to bottom on new messages
 	spinnerFrame  int    // current spinner animation frame
 	phraseIdx     int    // current thinking phrase index
 	shimmerOffset int    // shimmer position for the gradient effect
@@ -112,9 +113,10 @@ func New() Model {
 	ti.CharLimit = 1000
 	ti.Width = 60
 	return Model{
-		textInput: ti,
-		width:     40,
-		height:    20,
+		textInput:  ti,
+		width:      40,
+		height:     20,
+		autoScroll: true,
 	}
 }
 
@@ -135,7 +137,7 @@ func (m Model) Init() tea.Cmd {
 
 // Update handles messages.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
-	switch msg.(type) {
+	switch msg := msg.(type) {
 	case ThinkingTickMsg:
 		if m.thinking {
 			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
@@ -152,6 +154,50 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, ThinkingTick()
 		}
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "pgup":
+			m.scroll -= m.visibleLines() / 2
+			if m.scroll < 0 {
+				m.scroll = 0
+			}
+			m.autoScroll = false
+			return m, nil
+		case "pgdown":
+			m.scroll += m.visibleLines() / 2
+			total := len(m.renderLines())
+			maxScroll := total - m.visibleLines()
+			if maxScroll < 0 {
+				maxScroll = 0
+			}
+			if m.scroll >= maxScroll {
+				m.scroll = maxScroll
+				m.autoScroll = true
+			}
+			return m, nil
+		}
+	case tea.MouseMsg:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.scroll -= 3
+			if m.scroll < 0 {
+				m.scroll = 0
+			}
+			m.autoScroll = false
+			return m, nil
+		case tea.MouseButtonWheelDown:
+			m.scroll += 3
+			total := len(m.renderLines())
+			maxScroll := total - m.visibleLines()
+			if maxScroll < 0 {
+				maxScroll = 0
+			}
+			if m.scroll >= maxScroll {
+				m.scroll = maxScroll
+				m.autoScroll = true
+			}
+			return m, nil
+		}
 	}
 	return m, nil
 }
@@ -161,6 +207,7 @@ func (m *Model) SetAgentID(id string) {
 	m.agentID = id
 	m.entries = nil
 	m.scroll = 0
+	m.autoScroll = true
 	m.awake = false
 }
 
@@ -218,13 +265,40 @@ func (m Model) Focused() bool {
 	return m.textInput.Focused()
 }
 
-func (m *Model) scrollToBottom() {
-	visible := m.height - 4 // title + input + padding
+// visibleLines returns how many rendered lines fit in the message area.
+func (m Model) visibleLines() int {
+	// height minus: 1 title line, 1 blank after title, 1 blank before input, 1 input line, 1 thinking line (reserve)
+	visible := m.height - 5
 	if visible < 1 {
 		visible = 1
 	}
-	if len(m.entries) > visible {
-		m.scroll = len(m.entries) - visible
+	return visible
+}
+
+// renderLines returns all entries as word-wrapped rendered lines (without ANSI — for counting).
+func (m Model) renderLines() []string {
+	maxWidth := m.width - 8
+	if maxWidth < 10 {
+		maxWidth = 10
+	}
+	var lines []string
+	for _, e := range m.entries {
+		wrapped := wordWrap(e.Content, maxWidth)
+		for i := range wrapped {
+			lines = append(lines, fmt.Sprintf("%s:%d", e.Role, i))
+		}
+	}
+	return lines
+}
+
+func (m *Model) scrollToBottom() {
+	if !m.autoScroll {
+		return
+	}
+	total := len(m.renderLines())
+	visible := m.visibleLines()
+	if total > visible {
+		m.scroll = total - visible
 	} else {
 		m.scroll = 0
 	}
@@ -275,15 +349,51 @@ func (m Model) View() string {
 	b.WriteString(shared.TitleStyle.Render("CONVERSATION"))
 	b.WriteString("\n")
 
+	// Build the input area first so we know its height
+	var inputArea string
+	if !m.awake && m.thinking {
+		inputArea = shared.MutedStyle.Render("  Chat available after agent responds")
+	} else if m.textInput.Focused() {
+		inputArea = m.textInput.View()
+	} else if m.awake {
+		inputArea = shared.MutedStyle.Render("  > Press Enter to chat...")
+	} else {
+		inputArea = shared.MutedStyle.Render("  > Agent not active")
+	}
+
+	// Build thinking indicator
+	var thinkingLine string
+	if m.thinking {
+		spinner := spinnerFrames[m.spinnerFrame%len(spinnerFrames)]
+		var phrase string
+		if !m.awake {
+			phrase = wakingPhrases[m.phraseIdx%len(wakingPhrases)]
+		} else {
+			phrase = thinkingPhrases[m.phraseIdx%len(thinkingPhrases)]
+		}
+		shimmerText := renderShimmer(spinner+" "+phrase+"...", m.shimmerOffset)
+		thinkingLine = "  " + shimmerText
+	}
+
+	// Calculate how many lines are available for messages
+	// Layout: title(1) + messages + thinking(0-1) + blank(1) + input(1)
+	reservedLines := 3 // title + blank before input + input
+	if m.thinking {
+		reservedLines++ // thinking indicator
+	}
+	visibleMsgLines := m.height - reservedLines
+	if visibleMsgLines < 1 {
+		visibleMsgLines = 1
+	}
+
 	if len(m.entries) == 0 && !m.thinking {
 		b.WriteString(shared.MutedStyle.Render("  No messages yet"))
 		b.WriteString("\n")
-	} else {
-		visible := m.height - 6
-		if visible < 1 {
-			visible = 1
+		// Fill remaining space so input stays at bottom
+		for i := 1; i < visibleMsgLines; i++ {
+			b.WriteString("\n")
 		}
-
+	} else {
 		// Render entries with word wrapping
 		maxWidth := m.width - 8
 		if maxWidth < 10 {
@@ -293,61 +403,54 @@ func (m Model) View() string {
 		var rendered []string
 		for _, e := range m.entries {
 			prefix := m.rolePrefix(e.Role)
-			// Word wrap long content
 			lines := wordWrap(e.Content, maxWidth)
 			for i, line := range lines {
 				if i == 0 {
 					rendered = append(rendered, prefix+line)
 				} else {
-					// Indent continuation lines
-					rendered = append(rendered, strings.Repeat(" ", 5)+shared.MutedStyle.Render("│ ")+line)
+					rendered = append(rendered, strings.Repeat(" ", 5)+shared.MutedStyle.Render("| ")+line)
 				}
 			}
 		}
 
-		// Scrolling
+		// Clamp scroll
+		maxScroll := len(rendered) - visibleMsgLines
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if m.scroll > maxScroll {
+			m.scroll = maxScroll
+		}
+		if m.scroll < 0 {
+			m.scroll = 0
+		}
+
 		start := m.scroll
-		end := start + visible
+		end := start + visibleMsgLines
 		if end > len(rendered) {
 			end = len(rendered)
-		}
-		if start < 0 {
-			start = 0
 		}
 
 		for _, line := range rendered[start:end] {
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
+
+		// Pad remaining space so input stays at bottom
+		linesWritten := end - start
+		for i := linesWritten; i < visibleMsgLines; i++ {
+			b.WriteString("\n")
+		}
 	}
 
-	// Animated thinking/waking indicator
+	// Thinking indicator
 	if m.thinking {
-		spinner := spinnerFrames[m.spinnerFrame%len(spinnerFrames)]
-		var phrase string
-		if !m.awake {
-			phrase = wakingPhrases[m.phraseIdx%len(wakingPhrases)]
-		} else {
-			phrase = thinkingPhrases[m.phraseIdx%len(thinkingPhrases)]
-		}
-		// Shimmer effect: gradient across the text using purple shades
-		shimmerText := renderShimmer(spinner+" "+phrase+"...", m.shimmerOffset)
-		b.WriteString("  " + shimmerText)
+		b.WriteString(thinkingLine)
 		b.WriteString("\n")
 	}
 
-	// Input area
-	b.WriteString("\n")
-	if !m.awake && m.thinking {
-		// Agent hasn't spoken yet — lock the chat
-		b.WriteString(shared.MutedStyle.Render("  Chat available after agent responds"))
-	} else if m.textInput.Focused() {
-		b.WriteString(m.textInput.View())
-	} else if m.awake {
-		b.WriteString(shared.MutedStyle.Render("  > Press Enter to chat..."))
-	} else {
-		b.WriteString(shared.MutedStyle.Render("  > Agent not active"))
-	}
+	// Input area — always at the bottom
+	b.WriteString(inputArea)
 
 	return b.String()
 }
