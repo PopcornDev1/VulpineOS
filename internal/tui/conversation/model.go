@@ -8,7 +8,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
+	"regexp"
+
 	"github.com/charmbracelet/lipgloss"
 
 	"vulpineos/internal/tui/shared"
@@ -159,6 +160,25 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "up":
+			m.scroll--
+			if m.scroll < 0 {
+				m.scroll = 0
+			}
+			m.autoScroll = false
+			return m, nil
+		case "down":
+			m.scroll++
+			total := len(m.renderLines())
+			maxScroll := total - m.visibleLines()
+			if maxScroll < 0 {
+				maxScroll = 0
+			}
+			if m.scroll >= maxScroll {
+				m.scroll = maxScroll
+				m.autoScroll = true
+			}
+			return m, nil
 		case "pgup":
 			m.scroll -= m.visibleLines() / 2
 			if m.scroll < 0 {
@@ -524,34 +544,48 @@ func renderShimmer(text string, offset int) string {
 	return result.String()
 }
 
-// renderMarkdown renders markdown text into terminal-styled lines.
-// Falls back to plain word wrap if glamour fails.
+var (
+	reBold   = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reItalic = regexp.MustCompile(`\*(.+?)\*`)
+	reCode   = regexp.MustCompile("`([^`]+)`")
+)
+
+// renderMarkdown applies lightweight inline markdown styling and word wraps.
+// Handles **bold**, *italic*, `code` — no heavy library needed.
 func renderMarkdown(text string, maxWidth int) []string {
-	// Try glamour markdown rendering
-	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(maxWidth),
-	)
-	if err == nil {
-		out, err := r.Render(text)
-		if err == nil {
-			// Split into lines and trim trailing empty lines
-			out = strings.TrimRight(out, "\n ")
-			lines := strings.Split(out, "\n")
-			// Remove leading/trailing empty lines glamour adds
-			for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
-				lines = lines[1:]
-			}
-			for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-				lines = lines[:len(lines)-1]
-			}
-			if len(lines) > 0 {
-				return lines
-			}
-		}
+	boldStyle := lipgloss.NewStyle().Bold(true)
+	italicStyle := lipgloss.NewStyle().Italic(true)
+	codeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA"))
+
+	// Process each paragraph (double newline separated)
+	var allLines []string
+	paragraphs := strings.Split(text, "\n")
+	for _, para := range paragraphs {
+		para = strings.TrimRight(para, " ")
+
+		// Apply inline styles (order matters: bold before italic to handle ** vs *)
+		styled := reBold.ReplaceAllStringFunc(para, func(m string) string {
+			inner := m[2 : len(m)-2]
+			return boldStyle.Render(inner)
+		})
+		styled = reCode.ReplaceAllStringFunc(styled, func(m string) string {
+			inner := m[1 : len(m)-1]
+			return codeStyle.Render(inner)
+		})
+		styled = reItalic.ReplaceAllStringFunc(styled, func(m string) string {
+			inner := m[1 : len(m)-1]
+			return italicStyle.Render(inner)
+		})
+
+		// Word wrap the styled text
+		wrapped := wordWrap(styled, maxWidth)
+		allLines = append(allLines, wrapped...)
 	}
-	// Fallback: plain word wrap
-	return wordWrap(text, maxWidth)
+
+	if len(allLines) == 0 {
+		return []string{""}
+	}
+	return allLines
 }
 
 // wordWrap breaks text into lines of at most maxWidth characters,

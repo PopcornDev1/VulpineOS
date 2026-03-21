@@ -409,14 +409,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case FocusAgentList:
 				if a.leftSplit > minSplit { a.leftSplit--; a.updatePanelSizes() }
 			case FocusAgentDetail:
-				// Shrink detail → grow contexts
 				if a.rightSplit > minSplit { a.rightSplit--; a.updatePanelSizes() }
 			case FocusContextList:
-				// Grow contexts → shrink detail
 				if a.rightSplit > minSplit { a.rightSplit--; a.updatePanelSizes() }
 			case FocusConversation:
-				// pass pgup/pgdn to conversation instead
 				_ = maxH
+				var cmd tea.Cmd
+				a.conversation, cmd = a.conversation.Update(msg)
+				return a, cmd
 			}
 		case "down":
 			maxH := a.height - 2
@@ -424,13 +424,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case FocusAgentList:
 				if a.leftSplit < maxH-minSplit { a.leftSplit++; a.updatePanelSizes() }
 			case FocusAgentDetail:
-				// Grow detail → shrink contexts
 				if a.rightSplit < maxH*maxSplitRatio/100 { a.rightSplit++; a.updatePanelSizes() }
 			case FocusContextList:
-				// Shrink contexts → grow detail
 				if a.rightSplit < maxH*maxSplitRatio/100 { a.rightSplit++; a.updatePanelSizes() }
 			case FocusConversation:
 				_ = maxH
+				var cmd tea.Cmd
+				a.conversation, cmd = a.conversation.Update(msg)
+				return a, cmd
 			}
 		case "S":
 			a.focus = FocusSettings
@@ -779,7 +780,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.inputMode = ""
 		a.focus = FocusAgentList
 		return a, nil
-	case "pgup", "pgdown":
+	case "pgup", "pgdown", "up", "down":
 		// Forward scroll keys to conversation
 		var cmd tea.Cmd
 		a.conversation, cmd = a.conversation.Update(msg)
