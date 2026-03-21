@@ -55,8 +55,9 @@ func ThinkingTick() tea.Cmd {
 
 // Entry is a single message displayed in the conversation.
 type Entry struct {
-	Role    string
-	Content string
+	Role          string
+	Content       string
+	renderedLines []string // pre-rendered markdown lines (set on add)
 }
 
 // Model holds the conversation panel state.
@@ -75,6 +76,7 @@ type Model struct {
 	phraseIdx     int    // current thinking phrase index
 	shimmerOffset int    // shimmer position for the gradient effect
 	phraseTicks   int    // ticks since last phrase change
+
 }
 
 // SetAgentName sets the display name for the agent.
@@ -219,10 +221,18 @@ func (m Model) AgentID() string {
 
 // LoadMessages loads conversation history from vault messages.
 func (m *Model) LoadMessages(msgs []vault.AgentMessage) {
+	maxWidth := m.width - 8
+	if maxWidth < 10 {
+		maxWidth = 10
+	}
 	m.entries = make([]Entry, 0, len(msgs))
 	m.awake = false
 	for _, msg := range msgs {
-		m.entries = append(m.entries, Entry{Role: msg.Role, Content: msg.Content})
+		m.entries = append(m.entries, Entry{
+			Role:          msg.Role,
+			Content:       msg.Content,
+			renderedLines: renderMarkdown(msg.Content, maxWidth),
+		})
 		if msg.Role == "assistant" {
 			m.awake = true
 		}
@@ -232,7 +242,15 @@ func (m *Model) LoadMessages(msgs []vault.AgentMessage) {
 
 // AddEntry adds a new conversation entry.
 func (m *Model) AddEntry(role, content string) {
-	m.entries = append(m.entries, Entry{Role: role, Content: content})
+	maxWidth := m.width - 8
+	if maxWidth < 10 {
+		maxWidth = 10
+	}
+	m.entries = append(m.entries, Entry{
+		Role:          role,
+		Content:       content,
+		renderedLines: renderMarkdown(content, maxWidth),
+	})
 	if role == "assistant" {
 		m.awake = true
 	}
@@ -280,20 +298,29 @@ func (m Model) visibleLines() int {
 	return visible
 }
 
-// renderLines returns all entries as rendered lines (for counting/scroll calculation).
-func (m Model) renderLines() []string {
-	maxWidth := m.width - 8
-	if maxWidth < 10 {
-		maxWidth = 10
-	}
-	var lines []string
+// getDisplayLines builds display lines from pre-rendered entries. No markdown parsing here.
+func (m Model) getDisplayLines() []string {
+	var rendered []string
 	for _, e := range m.entries {
-		contentLines := renderMarkdown(e.Content, maxWidth)
-		for i := range contentLines {
-			lines = append(lines, fmt.Sprintf("%s:%d", e.Role, i))
+		prefix := m.rolePrefix(e.Role)
+		lines := e.renderedLines
+		if len(lines) == 0 {
+			lines = []string{e.Content}
+		}
+		for i, line := range lines {
+			if i == 0 {
+				rendered = append(rendered, prefix+line)
+			} else {
+				rendered = append(rendered, strings.Repeat(" ", 5)+shared.MutedStyle.Render("│ ")+line)
+			}
 		}
 	}
-	return lines
+	return rendered
+}
+
+// renderLines returns display lines (for scroll calculation).
+func (m Model) renderLines() []string {
+	return m.getDisplayLines()
 }
 
 func (m *Model) scrollToBottom() {
@@ -397,24 +424,8 @@ func (m Model) View() string {
 		visibleMsgLines = 1
 	}
 
-	// Render all message entries with markdown support
-	maxWidth := m.width - 8
-	if maxWidth < 10 {
-		maxWidth = 10
-	}
-
-	var rendered []string
-	for _, e := range m.entries {
-		prefix := m.rolePrefix(e.Role)
-		contentLines := renderMarkdown(e.Content, maxWidth)
-		for i, line := range contentLines {
-			if i == 0 {
-				rendered = append(rendered, prefix+line)
-			} else {
-				rendered = append(rendered, strings.Repeat(" ", 5)+shared.MutedStyle.Render("│ ")+line)
-			}
-		}
-	}
+	// Get display lines from pre-rendered entries (no markdown parsing in render path)
+	rendered := m.getDisplayLines()
 
 	// Clamp scroll
 	maxScroll := len(rendered) - visibleMsgLines
