@@ -267,8 +267,12 @@ func (m Model) Focused() bool {
 
 // visibleLines returns how many rendered lines fit in the message area.
 func (m Model) visibleLines() int {
-	// height minus: 1 title line, 1 blank after title, 1 blank before input, 1 input line, 1 thinking line (reserve)
-	visible := m.height - 5
+	// height minus: 1 title, 1 divider above input, 1 input, 1 divider below input, 1 thinking (reserve)
+	reserved := 4
+	if m.thinking {
+		reserved++
+	}
+	visible := m.height - reserved
 	if visible < 1 {
 		visible = 1
 	}
@@ -327,13 +331,16 @@ func (m Model) rolePrefix(role string) string {
 }
 
 // View renders the conversation panel.
+// Messages are bottom-aligned: empty space at top, messages grow upward from the input area.
 func (m Model) View() string {
 	var b strings.Builder
 
-	// No agent selected — show prompt
+	// No agent selected — show centered prompt
 	if m.agentID == "" {
-		b.WriteString(shared.TitleStyle.Render("CONVERSATION"))
-		b.WriteString("\n\n")
+		// Fill space so prompt is vertically centered
+		for i := 0; i < m.height/2-2; i++ {
+			b.WriteString("\n")
+		}
 		b.WriteString(shared.MutedStyle.Render("  Press "))
 		b.WriteString(shared.KeyStyle.Render("n"))
 		b.WriteString(shared.MutedStyle.Render(" to create a new agent"))
@@ -346,10 +353,7 @@ func (m Model) View() string {
 		return b.String()
 	}
 
-	b.WriteString(shared.TitleStyle.Render("CONVERSATION"))
-	b.WriteString("\n")
-
-	// Build the input area first so we know its height
+	// Build the input area
 	var inputArea string
 	if !m.awake && m.thinking {
 		inputArea = shared.MutedStyle.Render("  Chat available after agent responds")
@@ -375,81 +379,87 @@ func (m Model) View() string {
 		thinkingLine = "  " + shimmerText
 	}
 
-	// Calculate how many lines are available for messages
-	// Layout: title(1) + messages + thinking(0-1) + blank(1) + input(1)
-	reservedLines := 3 // title + blank before input + input
+	// Calculate available message lines
+	// Layout: title(1) + messages + thinking(0-1) + divider(1) + input(1)
+	reservedLines := 3 // title + divider + input
 	if m.thinking {
-		reservedLines++ // thinking indicator
+		reservedLines++
 	}
 	visibleMsgLines := m.height - reservedLines
 	if visibleMsgLines < 1 {
 		visibleMsgLines = 1
 	}
 
-	if len(m.entries) == 0 && !m.thinking {
-		b.WriteString(shared.MutedStyle.Render("  No messages yet"))
-		b.WriteString("\n")
-		// Fill remaining space so input stays at bottom
-		for i := 1; i < visibleMsgLines; i++ {
-			b.WriteString("\n")
-		}
-	} else {
-		// Render entries with word wrapping
-		maxWidth := m.width - 8
-		if maxWidth < 10 {
-			maxWidth = 10
-		}
+	// Title
+	b.WriteString(shared.TitleStyle.Render("CONVERSATION"))
+	b.WriteString("\n")
 
-		var rendered []string
-		for _, e := range m.entries {
-			prefix := m.rolePrefix(e.Role)
-			lines := wordWrap(e.Content, maxWidth)
-			for i, line := range lines {
-				if i == 0 {
-					rendered = append(rendered, prefix+line)
-				} else {
-					rendered = append(rendered, strings.Repeat(" ", 5)+shared.MutedStyle.Render("| ")+line)
-				}
+	// Render entries with word wrapping
+	maxWidth := m.width - 8
+	if maxWidth < 10 {
+		maxWidth = 10
+	}
+
+	var rendered []string
+	for _, e := range m.entries {
+		prefix := m.rolePrefix(e.Role)
+		lines := wordWrap(e.Content, maxWidth)
+		for i, line := range lines {
+			if i == 0 {
+				rendered = append(rendered, prefix+line)
+			} else {
+				rendered = append(rendered, strings.Repeat(" ", 5)+shared.MutedStyle.Render("| ")+line)
 			}
-		}
-
-		// Clamp scroll
-		maxScroll := len(rendered) - visibleMsgLines
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-		if m.scroll > maxScroll {
-			m.scroll = maxScroll
-		}
-		if m.scroll < 0 {
-			m.scroll = 0
-		}
-
-		start := m.scroll
-		end := start + visibleMsgLines
-		if end > len(rendered) {
-			end = len(rendered)
-		}
-
-		for _, line := range rendered[start:end] {
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-
-		// Pad remaining space so input stays at bottom
-		linesWritten := end - start
-		for i := linesWritten; i < visibleMsgLines; i++ {
-			b.WriteString("\n")
 		}
 	}
 
-	// Thinking indicator
+	// Clamp scroll
+	maxScroll := len(rendered) - visibleMsgLines
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.scroll > maxScroll {
+		m.scroll = maxScroll
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
+
+	// Determine which lines to show
+	start := m.scroll
+	end := start + visibleMsgLines
+	if end > len(rendered) {
+		end = len(rendered)
+	}
+	linesWritten := end - start
+
+	// BOTTOM-ALIGN: empty space first, then messages above the input
+	emptyLines := visibleMsgLines - linesWritten
+	for i := 0; i < emptyLines; i++ {
+		b.WriteString("\n")
+	}
+
+	// Messages
+	for _, line := range rendered[start:end] {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+
+	// Thinking indicator (sits between messages and divider)
 	if m.thinking {
 		b.WriteString(thinkingLine)
 		b.WriteString("\n")
 	}
 
-	// Input area — always at the bottom
+	// Divider above input
+	dividerWidth := m.width - 2
+	if dividerWidth < 1 {
+		dividerWidth = 1
+	}
+	b.WriteString(shared.MutedStyle.Render(strings.Repeat("─", dividerWidth)))
+	b.WriteString("\n")
+
+	// Input area
 	b.WriteString(inputArea)
 
 	return b.String()
