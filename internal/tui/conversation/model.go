@@ -336,7 +336,6 @@ func (m Model) rolePrefix(role string) string {
 // Input box is framed by dividers above and below.
 func (m Model) View() string {
 	var b strings.Builder
-	totalLines := 0
 
 	dividerWidth := m.width - 2
 	if dividerWidth < 1 {
@@ -434,56 +433,47 @@ func (m Model) View() string {
 	if end > len(rendered) {
 		end = len(rendered)
 	}
-	linesWritten := end - start
+	visibleSlice := rendered[start:end]
+	// Hard-truncate to visibleMsgLines (safety against markdown expanding lines)
+	if len(visibleSlice) > visibleMsgLines {
+		visibleSlice = visibleSlice[:visibleMsgLines]
+	}
+	linesWritten := len(visibleSlice)
 
-	// === BUILD OUTPUT (exactly m.height lines) ===
+	// === BUILD OUTPUT ===
 
 	// 1. Title
 	b.WriteString(shared.TitleStyle.Render("CONVERSATION"))
 	b.WriteString("\n")
-	totalLines++
 
 	// 2. Empty space (bottom-align messages)
 	emptyLines := visibleMsgLines - linesWritten
 	for i := 0; i < emptyLines; i++ {
 		b.WriteString("\n")
-		totalLines++
 	}
 
 	// 3. Messages
-	for _, line := range rendered[start:end] {
+	for _, line := range visibleSlice {
 		b.WriteString(line)
 		b.WriteString("\n")
-		totalLines++
 	}
 
-	// 4. Thinking indicator (between messages and top divider)
+	// 4. Thinking indicator
 	if m.thinking {
 		b.WriteString(thinkingLine)
 		b.WriteString("\n")
-		totalLines++
 	}
 
 	// 5. Divider above input
 	b.WriteString(divider)
 	b.WriteString("\n")
-	totalLines++
 
 	// 6. Input area
 	b.WriteString(inputArea)
 	b.WriteString("\n")
-	totalLines++
 
 	// 7. Divider below input
 	b.WriteString(divider)
-	totalLines++
-
-	// Safety: if we somehow produced fewer lines than height, pad
-	// (shouldn't happen with correct math, but prevents layout overflow)
-	for totalLines < m.height {
-		b.WriteString("\n")
-		totalLines++
-	}
 
 	return b.String()
 }

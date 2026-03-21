@@ -845,7 +845,7 @@ func (a App) View() string {
 		// Full-height conversation panel — use MaxHeight to hard-clamp and prevent overflow
 		convStyle := shared.PanelStyle
 		if a.focus == FocusConversation { convStyle = shared.ActivePanelStyle }
-		centerContent = convStyle.Width(centerWidth).Height(bodyHeight - 2).MaxHeight(bodyHeight).Render(convView)
+		centerContent = convStyle.Width(centerWidth).Height(bodyHeight - 2).Render(convView)
 	}
 	centerView := lipgloss.NewStyle().Width(centerWidth + 2).MaxHeight(bodyHeight).Render(centerContent)
 
@@ -868,9 +868,7 @@ func (a App) View() string {
 		statusBar = a.renderStatusBar()
 	}
 
-	// Hard-clamp total output to terminal height
-	result := lipgloss.JoinVertical(lipgloss.Left, body, statusBar)
-	return lipgloss.NewStyle().MaxHeight(a.height).MaxWidth(a.width).Render(result)
+	return lipgloss.JoinVertical(lipgloss.Left, body, statusBar)
 }
 
 // renderPanel renders content in a panel box without focus highlight.
