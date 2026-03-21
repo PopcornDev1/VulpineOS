@@ -1074,10 +1074,10 @@ func (a *App) createAgent(name, description string) tea.Cmd {
 			}
 		}
 
-		// Spawn persistent OpenClaw process — stays alive for ongoing chat
+		// Spawn first turn — agent introduces itself
 		introMsg := "You are an AI agent named '" + name + "'. Your purpose: " + description + ". Introduce yourself briefly (1-2 sentences) and ask how you can help."
 		sessionName := "vulpine-" + agent.ID
-		_, spawnErr := a.orch.Agents.SpawnPersistent(agent.ID, introMsg, sessionName)
+		_, spawnErr := a.orch.Agents.SpawnWithSession(agent.ID, introMsg, sessionName, config.OpenClawConfigPath())
 		if spawnErr != nil {
 			// Agent is in vault but spawn failed — show it with error status
 			// The user will see the agent in the list with error state + error in conversation
@@ -1144,9 +1144,10 @@ func (a *App) deleteAgent(agentID string) tea.Cmd {
 	}
 }
 
-// sendMessageToAgent sends a message to a persistent agent process.
-// If the process has exited (crashed, API error, etc.), it transparently respawns.
-// The agent's session ID ensures conversation continuity across respawns.
+// sendMessageToAgent spawns an OpenClaw process for one turn of conversation.
+// Stateless per-turn like Claude Code: spawn → load session → respond → exit.
+// OpenClaw's --session-id handles history and compaction automatically.
+// Zero memory between messages. No idle processes.
 func (a App) sendMessageToAgent(agentID, text string) tea.Cmd {
 	return func() tea.Msg {
 		if a.orch == nil {
@@ -1158,7 +1159,7 @@ func (a App) sendMessageToAgent(agentID, text string) tea.Cmd {
 		}
 
 		sessionName := "vulpine-" + agentID
-		err := a.orch.Agents.SendMessageOrRespawn(agentID, text, sessionName)
+		_, err := a.orch.Agents.SpawnWithSession(agentID, text, sessionName, config.OpenClawConfigPath())
 		if err != nil {
 			return shared.ConversationEntryMsg{
 				AgentID: agentID,
