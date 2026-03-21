@@ -2,7 +2,9 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -13,7 +15,9 @@ import (
 	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
+	"vulpineos/internal/monitor"
 	"vulpineos/internal/orchestrator"
+	"vulpineos/internal/proxy"
 	"vulpineos/internal/tui/agentdetail"
 	"vulpineos/internal/tui/agentlist"
 	"vulpineos/internal/tui/contextlist"
@@ -41,11 +45,12 @@ type statusNotice struct {
 
 // App is the root Bubbletea model for the 3-column agent workbench.
 type App struct {
-	kernel *kernel.Kernel
-	client *juggler.Client
-	orch   *orchestrator.Orchestrator
-	vault  *vault.DB
-	cfg    *config.Config
+	kernel  *kernel.Kernel
+	client  *juggler.Client
+	orch    *orchestrator.Orchestrator
+	vault   *vault.DB
+	cfg     *config.Config
+	monitor *monitor.Monitor
 
 	width, height  int
 	leftWidth      int // adjustable left sidebar width
@@ -89,12 +94,15 @@ func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchest
 	taskIn.CharLimit = 500
 	taskIn.Width = 60
 
+	mon := monitor.New()
+
 	app := App{
 		kernel:       k,
 		client:       client,
 		orch:         orch,
 		vault:        v,
 		cfg:          cfg,
+		monitor:      mon,
 		leftWidth:    18,
 		rightWidth:   18,
 		nameInput:    nameIn,
@@ -264,6 +272,13 @@ func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchest
 		}()
 	}
 
+	// Forward rate limit monitor alerts to TUI
+	go func() {
+		for alert := range mon.AlertChan() {
+			eventCh <- statusNotice{text: fmt.Sprintf("WARNING %s: %s on agent %s", alert.Type, alert.Details, alert.AgentID)}
+		}
+	}()
+
 	return app
 }
 
@@ -425,7 +440,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		case "c":
-			// Quit TUI to re-run setup
+			// Mark config as needing setup, then quit — next launch shows wizard
+			if a.cfg != nil {
+				a.cfg.SetupComplete = false
+				a.cfg.Save()
+			}
+			a.gracefulShutdown()
 			return a, tea.Quit
 		}
 
@@ -501,6 +521,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.vault != nil {
 			a.vault.AppendMessage(msg.AgentID, msg.Role, msg.Content, msg.Tokens)
 		}
+		// Check for rate limit / captcha / block patterns
+		if a.monitor != nil {
+			a.monitor.CheckMessage(msg.AgentID, msg.Content)
+		}
 		// If matches selected agent, add to conversation panel
 		if msg.AgentID == a.selectedAgentID {
 			a.conversation.AddEntry(msg.Role, msg.Content)
@@ -532,6 +556,50 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.focus == FocusSettings {
 			a.focus = FocusAgentList
 		}
+
+	case shared.ProxyAddMsg:
+		pc, err := proxy.ParseProxyURL(msg.URL)
+		if err != nil {
+			a.notice = "Invalid proxy: " + err.Error()
+			a.noticeTTL = 3
+		} else {
+			configJSON, _ := json.Marshal(pc)
+			if a.vault != nil {
+				a.vault.AddProxy(string(configJSON), "", msg.URL)
+			}
+			a.notice = "Proxy added: " + pc.String()
+			a.noticeTTL = 3
+		}
+		a.reloadSettingsProxies()
+
+	case shared.ProxyDeleteMsg:
+		if a.vault != nil {
+			a.vault.DeleteProxy(msg.ProxyID)
+		}
+		a.notice = "Proxy deleted"
+		a.noticeTTL = 3
+		a.reloadSettingsProxies()
+
+	case shared.SkillToggleMsg:
+		if a.cfg != nil {
+			if msg.Enabled {
+				a.cfg.AddGlobalSkill(msg.Name, nil)
+			} else {
+				a.cfg.RemoveGlobalSkill(msg.Name)
+			}
+			a.cfg.Save()
+			exe, _ := os.Executable()
+			a.cfg.GenerateOpenClawConfig(exe, a.cfg.BinaryPath)
+			state := "disabled"
+			if msg.Enabled {
+				state = "enabled"
+			}
+			a.notice = "Skill " + msg.Name + " " + state
+			a.noticeTTL = 3
+		}
+
+	case shared.ProxyTestRequestMsg:
+		cmds = append(cmds, a.testProxy(msg.ProxyID, msg.Config))
 
 	case shared.ProxyTestedMsg:
 		a.settings, _ = a.settings.Update(msg)
@@ -833,6 +901,21 @@ func (a *App) createAndSpawnAgent(name, task string) tea.Cmd {
 			return statusNotice{text: "Create agent failed: " + err.Error()}
 		}
 
+		// If agent has a proxy assigned, sync fingerprint geo to match proxy exit location
+		if agent.ProxyConfig != "" {
+			var pc proxy.ProxyConfig
+			if json.Unmarshal([]byte(agent.ProxyConfig), &pc) == nil {
+				geo, geoErr := proxy.ResolveGeo(pc)
+				if geoErr == nil {
+					synced, syncErr := proxy.SyncFingerprintToProxy(agent.Fingerprint, geo)
+					if syncErr == nil {
+						agent.Fingerprint = synced
+						a.vault.UpdateAgentFingerprint(agent.ID, synced)
+					}
+				}
+			}
+		}
+
 		// Save initial task message
 		a.vault.AppendMessage(agent.ID, "user", task, 0)
 
@@ -911,6 +994,71 @@ func (a App) sendMessageToAgent(agentID, text string) tea.Cmd {
 			return statusNotice{text: "Send failed: " + err.Error()}
 		}
 		return nil
+	}
+}
+
+// reloadSettingsProxies loads proxies from vault into the settings panel.
+func (a *App) reloadSettingsProxies() {
+	if a.vault == nil {
+		return
+	}
+	storedProxies, err := a.vault.ListProxies()
+	if err != nil {
+		return
+	}
+	items := make([]settings.ProxyItem, len(storedProxies))
+	for i, sp := range storedProxies {
+		items[i] = settings.ProxyItem{
+			ID:      sp.ID,
+			Label:   sp.Label,
+			Latency: "untested",
+		}
+		var pc struct {
+			Type string `json:"type"`
+			Host string `json:"host"`
+			Port int    `json:"port"`
+		}
+		if json.Unmarshal([]byte(sp.Config), &pc) == nil {
+			items[i].Type = pc.Type
+			items[i].Host = pc.Host
+			items[i].Port = pc.Port
+		}
+		var geo struct {
+			Country string `json:"country"`
+		}
+		if json.Unmarshal([]byte(sp.Geo), &geo) == nil {
+			items[i].Country = geo.Country
+		}
+	}
+	a.settings.SetProxies(items)
+}
+
+// testProxy spawns a goroutine to test proxy latency and resolve geo.
+func (a App) testProxy(proxyID, configJSON string) tea.Cmd {
+	return func() tea.Msg {
+		var pc proxy.ProxyConfig
+		if err := json.Unmarshal([]byte(configJSON), &pc); err != nil {
+			return shared.ProxyTestedMsg{ProxyID: proxyID, Latency: "error: invalid config"}
+		}
+		latency, err := proxy.TestProxy(pc)
+		if err != nil {
+			return shared.ProxyTestedMsg{ProxyID: proxyID, Latency: "error: " + err.Error()}
+		}
+		result := shared.ProxyTestedMsg{
+			ProxyID: proxyID,
+			Latency: fmt.Sprintf("%dms", latency),
+		}
+		// Also resolve geo
+		geo, err := proxy.ResolveGeo(pc)
+		if err == nil {
+			result.ExitIP = geo.IP
+			// Update vault with geo info
+			if a.vault != nil {
+				geoJSON, _ := json.Marshal(geo)
+				a.vault.UpdateProxyGeo(proxyID, string(geoJSON))
+			}
+		}
+		return result
 	}
 }
 

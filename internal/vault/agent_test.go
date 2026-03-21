@@ -334,6 +334,57 @@ func TestGenerateFingerprintValidJSON(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentFingerprint(t *testing.T) {
+	db := openTestDB(t)
+
+	originalFP := `{"navigator.userAgent":"Mozilla/5.0 Original","screen.width":1920}`
+	agent, err := db.CreateAgent("FPBot", "task", originalFP)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	// Verify original fingerprint
+	got, err := db.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fingerprint != originalFP {
+		t.Errorf("initial fingerprint mismatch")
+	}
+
+	// Update fingerprint
+	newFP := `{"navigator.userAgent":"Mozilla/5.0 Updated","screen.width":2560,"geolocation:latitude":40.7}`
+	if err := db.UpdateAgentFingerprint(agent.ID, newFP); err != nil {
+		t.Fatalf("update fingerprint: %v", err)
+	}
+
+	// Verify updated fingerprint
+	got, err = db.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fingerprint != newFP {
+		t.Errorf("fingerprint = %q, want %q", got.Fingerprint, newFP)
+	}
+
+	// Verify fingerprint is valid JSON
+	var fp map[string]interface{}
+	if err := json.Unmarshal([]byte(got.Fingerprint), &fp); err != nil {
+		t.Fatalf("updated fingerprint not valid JSON: %v", err)
+	}
+	if fp["screen.width"] != float64(2560) {
+		t.Errorf("screen.width = %v, want 2560", fp["screen.width"])
+	}
+
+	// Other fields should be unchanged
+	if got.Name != "FPBot" {
+		t.Errorf("name changed unexpectedly to %q", got.Name)
+	}
+	if got.Task != "task" {
+		t.Errorf("task changed unexpectedly to %q", got.Task)
+	}
+}
+
 func TestFingerprintSummary(t *testing.T) {
 	fp, err := GenerateFingerprint("summary-test")
 	if err != nil {

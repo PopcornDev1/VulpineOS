@@ -152,3 +152,25 @@ type ProxyImportedMsg struct {
 
 // SettingsClosedMsg fires when the settings panel is closed.
 type SettingsClosedMsg struct{}
+
+// ProxyAddMsg requests adding a proxy to the vault.
+type ProxyAddMsg struct {
+	URL string // raw proxy URL to parse and save
+}
+
+// ProxyDeleteMsg requests deleting a proxy from the vault.
+type ProxyDeleteMsg struct {
+	ProxyID string
+}
+
+// SkillToggleMsg requests toggling a global skill.
+type SkillToggleMsg struct {
+	Name    string
+	Enabled bool
+}
+
+// ProxyTestRequestMsg requests testing a proxy's latency and geo.
+type ProxyTestRequestMsg struct {
+	ProxyID string
+	Config  string // JSON ProxyConfig
+}

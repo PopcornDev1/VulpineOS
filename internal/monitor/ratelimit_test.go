@@ -129,6 +129,68 @@ func TestCheckMessage_NoMatch(t *testing.T) {
 	}
 }
 
+func TestMonitorAlertChannelReceivesAlerts(t *testing.T) {
+	m := New()
+	defer m.Dispose()
+
+	// Send a rate limit message
+	m.CheckMessage("integration-agent", "Server returned 429 too many requests")
+
+	// Verify alert received on AlertChan within 1 second
+	select {
+	case a := <-m.AlertChan():
+		if a.AgentID != "integration-agent" {
+			t.Errorf("agentID = %s, want integration-agent", a.AgentID)
+		}
+		if a.Type != AlertRateLimit {
+			t.Errorf("type = %v, want %v", a.Type, AlertRateLimit)
+		}
+		if a.Details == "" {
+			t.Error("expected non-empty details")
+		}
+		if a.Timestamp.IsZero() {
+			t.Error("expected non-zero timestamp")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected alert on AlertChan within 1 second")
+	}
+
+	// Now test captcha detection through the same channel
+	m.CheckMessage("integration-agent", "Please complete the captcha challenge")
+
+	select {
+	case a := <-m.AlertChan():
+		if a.Type != AlertCaptcha {
+			t.Errorf("type = %v, want %v", a.Type, AlertCaptcha)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected captcha alert on AlertChan within 1 second")
+	}
+
+	// IP block requires 2 hits for same agent
+	m.CheckMessage("block-agent", "Access blocked by firewall")
+	// First hit: no alert expected
+	select {
+	case <-m.AlertChan():
+		t.Fatal("should not receive ip_block alert after first match")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	m.CheckMessage("block-agent", "Your request was forbidden")
+	// Second hit: alert expected
+	select {
+	case a := <-m.AlertChan():
+		if a.Type != AlertIPBlock {
+			t.Errorf("type = %v, want %v", a.Type, AlertIPBlock)
+		}
+		if a.AgentID != "block-agent" {
+			t.Errorf("agentID = %s, want block-agent", a.AgentID)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected ip_block alert after 2nd match")
+	}
+}
+
 func TestDispose(t *testing.T) {
 	m := New()
 	m.Dispose()

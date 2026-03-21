@@ -120,6 +120,15 @@ func (db *DB) UpdateAgentStatus(id, status string) error {
 	return err
 }
 
+// UpdateAgentFingerprint updates the fingerprint JSON for an agent.
+func (db *DB) UpdateAgentFingerprint(id, fingerprint string) error {
+	_, err := db.conn.Exec(
+		`UPDATE agents SET fingerprint = ? WHERE id = ?`,
+		fingerprint, id,
+	)
+	return err
+}
+
 // UpdateAgentTokens sets the total_tokens for an agent.
 func (db *DB) UpdateAgentTokens(id string, tokens int) error {
 	_, err := db.conn.Exec(

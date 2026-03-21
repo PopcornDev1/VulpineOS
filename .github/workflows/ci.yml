@@ -24,8 +24,27 @@ jobs:
       - name: Build
         run: go build ./...
 
-      - name: Test
-        run: go test -race ./... -v
+      - name: Binary size check
+        run: |
+          go build -o vulpineos ./cmd/vulpineos/
+          size=$(stat -c%s vulpineos 2>/dev/null || stat -f%z vulpineos)
+          echo "Binary size: $size bytes ($(echo "scale=1; $size/1048576" | bc)MB)"
+          # Fail if binary exceeds 25MB
+          if [ "$size" -gt 26214400 ]; then
+            echo "ERROR: Binary too large (>25MB)"
+            exit 1
+          fi
+
+      - name: Test with race detector
+        run: go test -race ./... -v -count=1
+
+      - name: Test count check
+        run: |
+          count=$(go test ./... -v -count=1 2>&1 | grep -c "^--- PASS")
+          echo "Total tests passing: $count"
+          if [ "$count" -lt 60 ]; then
+            echo "WARNING: Test count dropped below 60 (was 66+)"
+          fi
 
   js-lint:
     name: JS syntax check
@@ -41,11 +60,25 @@ jobs:
       - name: Check JS syntax
         run: |
           exit_code=0
+          count=0
           for f in $(find additions/juggler -name '*.js' -type f); do
+            count=$((count + 1))
             if ! node -c "$f" 2>/dev/null; then
               echo "Syntax error in $f"
               node -c "$f" || true
               exit_code=1
             fi
           done
+          echo "Checked $count JS files"
           exit $exit_code
+
+      - name: Check patch files exist
+        run: |
+          required_patches="patches/action-lock.patch"
+          for p in $required_patches; do
+            if [ ! -f "$p" ]; then
+              echo "ERROR: Missing required patch: $p"
+              exit 1
+            fi
+          done
+          echo "All required patches present"

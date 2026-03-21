@@ -197,19 +197,17 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 		case "d":
 			if m.section == SectionProxies && len(m.proxies) > 0 {
-				m.proxies = append(m.proxies[:m.proxyIdx], m.proxies[m.proxyIdx+1:]...)
-				if m.proxyIdx >= len(m.proxies) && m.proxyIdx > 0 {
-					m.proxyIdx--
-				}
+				proxyID := m.proxies[m.proxyIdx].ID
+				return m, func() tea.Msg { return shared.ProxyDeleteMsg{ProxyID: proxyID} }
 			}
 
 		case "t":
 			if m.section == SectionProxies && len(m.proxies) > 0 {
-				proxyID := m.proxies[m.proxyIdx].ID
+				p := m.proxies[m.proxyIdx]
 				return m, func() tea.Msg {
-					return shared.ProxyTestedMsg{
-						ProxyID: proxyID,
-						Latency: "untested",
+					return shared.ProxyTestRequestMsg{
+						ProxyID: p.ID,
+						Config:  fmt.Sprintf(`{"type":"%s","host":"%s","port":%d}`, p.Type, p.Host, p.Port),
 					}
 				}
 			}
@@ -217,6 +215,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case " ":
 			if m.section == SectionSkills && len(m.skills) > 0 {
 				m.skills[m.skillIdx].Enabled = !m.skills[m.skillIdx].Enabled
+				s := m.skills[m.skillIdx]
+				return m, func() tea.Msg {
+					return shared.SkillToggleMsg{Name: s.Name, Enabled: s.Enabled}
+				}
 			}
 		}
 
@@ -237,18 +239,12 @@ func (m Model) updateImportInput(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		val := strings.TrimSpace(m.importInput.Value())
-		if val != "" {
-			m.proxies = append(m.proxies, ProxyItem{
-				ID:      fmt.Sprintf("proxy-%d", len(m.proxies)+1),
-				Label:   fmt.Sprintf("imported-%d", len(m.proxies)+1),
-				Type:    "http",
-				Host:    val,
-				Latency: "untested",
-			})
-		}
 		m.importing = false
 		m.importInput.Blur()
 		m.importInput.Reset()
+		if val != "" {
+			return m, func() tea.Msg { return shared.ProxyAddMsg{URL: val} }
+		}
 		return m, nil
 	case "esc":
 		m.importing = false
