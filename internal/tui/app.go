@@ -842,12 +842,21 @@ func (a App) View() string {
 			convView = a.conversation.View()
 		}
 
-		// Full-height conversation panel — use MaxHeight to hard-clamp and prevent overflow
+		// Full-height conversation panel
 		convStyle := shared.PanelStyle
 		if a.focus == FocusConversation { convStyle = shared.ActivePanelStyle }
+
+		// Hard-truncate conversation content to prevent overflow
+		maxContentLines := bodyHeight - 2 // subtract panel borders
+		convLines := strings.Split(convView, "\n")
+		if len(convLines) > maxContentLines {
+			convLines = convLines[:maxContentLines]
+			convView = strings.Join(convLines, "\n")
+		}
+
 		centerContent = convStyle.Width(centerWidth).Height(bodyHeight - 2).Render(convView)
 	}
-	centerView := lipgloss.NewStyle().Width(centerWidth + 2).MaxHeight(bodyHeight).Render(centerContent)
+	centerView := lipgloss.NewStyle().Width(centerWidth + 2).Render(centerContent)
 
 	// Right column: agent detail on top, contexts below
 	rightTop := a.rightSplit
@@ -857,6 +866,16 @@ func (a App) View() string {
 	detailView := a.renderFocusPanel(FocusAgentDetail, a.agentDetail.View(), rightWidth, rightTop)
 	ctxView := a.renderFocusPanel(FocusContextList, a.contextList.View(), rightWidth, rightBottom)
 	rightColumn := lipgloss.JoinVertical(lipgloss.Left, detailView, ctxView)
+
+	// Hard-truncate each column to bodyHeight lines
+	leftLines := strings.Split(leftColumn, "\n")
+	if len(leftLines) > bodyHeight {
+		leftColumn = strings.Join(leftLines[:bodyHeight], "\n")
+	}
+	rightLines := strings.Split(rightColumn, "\n")
+	if len(rightLines) > bodyHeight {
+		rightColumn = strings.Join(rightLines[:bodyHeight], "\n")
+	}
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, centerView, rightColumn)
 
@@ -868,7 +887,14 @@ func (a App) View() string {
 		statusBar = a.renderStatusBar()
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, body, statusBar)
+	output := lipgloss.JoinVertical(lipgloss.Left, body, statusBar)
+
+	// Final safety: hard-truncate to terminal height
+	outputLines := strings.Split(output, "\n")
+	if len(outputLines) > a.height {
+		output = strings.Join(outputLines[:a.height], "\n")
+	}
+	return output
 }
 
 // renderPanel renders content in a panel box without focus highlight.
