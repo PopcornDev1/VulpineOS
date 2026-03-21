@@ -10,16 +10,17 @@ import (
 
 // Model shows the selected agent's details and controls in the top-center area.
 type Model struct {
-	agentID     string
-	agentName   string
-	agentTask   string
-	agentStatus string
-	tokens      int
-	fingerprint string // summary line
-	proxyInfo   string // summary line
-	createdAt   time.Time
-	width       int
-	height      int
+	agentID        string
+	agentName      string
+	agentTask      string
+	agentStatus    string
+	tokens         int
+	fingerprint    string // summary line
+	proxyInfo      string // summary line
+	browserContext string // active browser context info
+	createdAt      time.Time
+	width          int
+	height         int
 }
 
 // New creates a new agent detail panel.
@@ -42,6 +43,11 @@ func (m *Model) SetAgent(id, name, task, status string, tokens int, fpSummary, p
 	m.createdAt = createdAt
 }
 
+// SetBrowserContext sets the active browser context info for the agent.
+func (m *Model) SetBrowserContext(info string) {
+	m.browserContext = info
+}
+
 // Clear resets the panel to no agent selected.
 func (m *Model) Clear() {
 	m.agentID = ""
@@ -51,6 +57,7 @@ func (m *Model) Clear() {
 	m.tokens = 0
 	m.fingerprint = ""
 	m.proxyInfo = ""
+	m.browserContext = ""
 }
 
 // SetSize sets the render dimensions.
@@ -73,8 +80,6 @@ func statusIndicator(status string) string {
 		return shared.WarmingStyle.Render("◌ thinking")
 	case "completed":
 		return shared.MutedStyle.Render("✓ completed")
-	case "paused":
-		return shared.KeyStyle.Render("⏸ paused")
 	case "failed":
 		return shared.StoppedStyle.Render("✗ failed")
 	case "created":
@@ -176,9 +181,20 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Line 6: Controls
+	// Line 6: Browser context
+	if m.browserContext != "" {
+		b.WriteString("Browser: ")
+		b.WriteString(shared.RunningStyle.Render(m.browserContext))
+		b.WriteString("\n")
+	} else if m.agentStatus == "active" || m.agentStatus == "thinking" {
+		b.WriteString("Browser: ")
+		b.WriteString(shared.MutedStyle.Render("no context"))
+		b.WriteString("\n")
+	}
+
+	// Controls
 	b.WriteString("\n")
-	b.WriteString(shared.MutedStyle.Render("[p] pause  [r] resume  [x] delete"))
+	b.WriteString(shared.MutedStyle.Render("[Enter] chat  [x] delete"))
 
 	return b.String()
 }

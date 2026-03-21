@@ -140,8 +140,6 @@ func statusIcon(status string) string {
 		return lipgloss.NewStyle().Foreground(shared.ColorWarning).Render("◌")
 	case "completed":
 		return shared.MutedStyle.Render("✓")
-	case "paused":
-		return lipgloss.NewStyle().Foreground(shared.ColorSecondary).Render("⏸")
 	case "failed":
 		return lipgloss.NewStyle().Foreground(shared.ColorDanger).Render("✗")
 	default:

@@ -354,16 +354,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			a.notice = "No orchestrator available"
 			a.noticeTTL = 3
-		case "p":
-			// Pause selected agent
-			if a.orch != nil && a.selectedAgentID != "" {
-				cmds = append(cmds, a.pauseAgent(a.selectedAgentID))
-			}
-		case "r":
-			// Resume selected agent
-			if a.orch != nil && a.selectedAgentID != "" {
-				cmds = append(cmds, a.resumeAgent(a.selectedAgentID))
-			}
 		case "x":
 			// Delete selected agent
 			if a.selectedAgentID != "" {
@@ -929,7 +919,7 @@ func (a App) renderStatusBar() string {
 	bar := shared.TitleStyle.Render("VULPINE") +
 		shared.MutedStyle.Render(" | ") +
 		shared.RunningStyle.Render("* "+mode) +
-		shared.MutedStyle.Render("  n:new  p:pause  r:resume  x:del  S:settings  Enter:chat  Tab:focus  ←→↑↓:resize  q:quit")
+		shared.MutedStyle.Render("  n:new  x:del  S:settings  Enter:chat  Tab:focus  ↑↓:scroll  ←→:resize  q:quit")
 
 	return lipgloss.NewStyle().MaxWidth(a.width).Render(bar)
 }

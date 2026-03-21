@@ -332,13 +332,15 @@ func (m Model) getDisplayLines() []string {
 
 		switch e.Role {
 		case "user":
-			// User messages: ❯ in cyan, like Claude Code
-			marker := shared.KeyStyle.Render("❯ ")
+			// User messages: white arrow, subtle background box
+			userBg := lipgloss.NewStyle().Background(lipgloss.Color("#374151")).Foreground(lipgloss.Color("#FFFFFF"))
+			arrow := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true).Render("❯ ")
 			for j, line := range lines {
+				styledLine := userBg.Render(" " + line + " ")
 				if j == 0 {
-					rendered = append(rendered, marker+line)
+					rendered = append(rendered, arrow+styledLine)
 				} else {
-					rendered = append(rendered, "  "+line)
+					rendered = append(rendered, "  "+styledLine)
 				}
 			}
 		case "assistant":
