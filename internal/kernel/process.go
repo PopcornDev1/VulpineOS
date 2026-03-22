@@ -21,6 +21,8 @@ type Kernel struct {
 	logFile   *os.File
 	startedAt time.Time
 	waited    bool // true after cmd.Wait() has been called
+	window    *WindowController
+	headless  bool
 	mu        sync.Mutex
 }
 
@@ -123,6 +125,17 @@ func (k *Kernel) Start(cfg Config) error {
 	k.client = client
 	k.transport = transport
 	k.startedAt = time.Now()
+	k.headless = cfg.Headless
+
+	// Create window controller for non-headless mode
+	if !cfg.Headless {
+		k.window = NewWindowController(cmd.Process.Pid)
+		// Auto-hide the browser window after a brief startup delay
+		go func() {
+			time.Sleep(2 * time.Second)
+			k.window.Hide()
+		}()
+	}
 
 	return nil
 }
@@ -132,6 +145,18 @@ func (k *Kernel) Client() *juggler.Client {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return k.client
+}
+
+// Window returns the window controller (nil if headless).
+func (k *Kernel) Window() *WindowController {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.window
+}
+
+// IsHeadless returns whether the kernel is running in headless mode.
+func (k *Kernel) IsHeadless() bool {
+	return k.headless
 }
 
 // PID returns the Firefox process ID, or 0 if not running.

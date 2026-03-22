@@ -376,12 +376,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "v":
-			// View: open current context URL in system browser
-			_, targetID := a.contextList.SelectedTarget()
-			if targetID != "" {
+			// View: toggle browser window visibility
+			if a.kernel != nil && a.kernel.Window() != nil {
+				visible := a.kernel.Window().Toggle()
+				if visible {
+					a.notice = "Browser window shown — press v to hide"
+				} else {
+					a.notice = "Browser window hidden"
+				}
+				a.noticeTTL = 3
+			} else if a.kernel != nil && a.kernel.IsHeadless() {
+				a.notice = "Cannot show browser in headless mode — run without --headless"
+				a.noticeTTL = 4
+			} else {
+				// Fallback: open URL in system browser
 				url := a.contextList.SelectedURL()
 				if url != "" && url != "about:blank" {
-					exec.Command("open", url).Start() // macOS; TODO: cross-platform
+					exec.Command("open", url).Start()
 					a.notice = "Opened " + url
 					a.noticeTTL = 3
 				}
