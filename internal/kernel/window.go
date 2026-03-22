@@ -3,15 +3,17 @@ package kernel
 import (
 	"os/exec"
 	"runtime"
+	"strconv"
 	"sync"
+	"time"
 )
 
 // WindowController manages browser window visibility.
-// On macOS, uses osascript to show/hide the Camoufox window.
 type WindowController struct {
-	visible bool
-	pid     int
-	mu      sync.Mutex
+	visible   bool
+	pid       int
+	processName string // resolved macOS process name
+	mu        sync.Mutex
 }
 
 // NewWindowController creates a window controller for the given browser PID.
@@ -56,38 +58,76 @@ func (w *WindowController) Hide() {
 	w.visible = false
 }
 
-func (w *WindowController) show() {
-	if runtime.GOOS == "darwin" {
-		// Activate the Camoufox/Firefox app and bring to front
-		exec.Command("osascript", "-e", `
-			tell application "System Events"
-				set frontmost of every process whose unix id is `+itoa(w.pid)+` to true
-			end tell
-		`).Run()
+// HideWhenReady waits for the browser window to appear, then hides it.
+func (w *WindowController) HideWhenReady() {
+	if runtime.GOOS != "darwin" {
+		return
 	}
-	// Linux: could use wmctrl or xdotool
-	// Windows: could use PowerShell
+
+	// Poll until the process has a window, then hide it
+	for i := 0; i < 30; i++ { // up to 15 seconds
+		time.Sleep(500 * time.Millisecond)
+		name := w.resolveProcessName()
+		if name != "" {
+			w.mu.Lock()
+			w.processName = name
+			w.hide()
+			w.visible = false
+			w.mu.Unlock()
+			return
+		}
+	}
+}
+
+// resolveProcessName finds the macOS process name for our PID.
+// Camoufox may register as "camoufox", "firefox", or "Camoufox" in System Events.
+func (w *WindowController) resolveProcessName() string {
+	if w.processName != "" {
+		return w.processName
+	}
+
+	// Ask System Events for the process name matching our PID
+	out, err := exec.Command("osascript", "-e",
+		`tell application "System Events" to get name of first process whose unix id is `+strconv.Itoa(w.pid),
+	).Output()
+	if err == nil {
+		name := string(out)
+		// Trim whitespace/newline
+		for len(name) > 0 && (name[len(name)-1] == '\n' || name[len(name)-1] == '\r' || name[len(name)-1] == ' ') {
+			name = name[:len(name)-1]
+		}
+		if name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func (w *WindowController) show() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	name := w.resolveProcessName()
+	if name == "" {
+		return
+	}
+	exec.Command("osascript", "-e",
+		`tell application "System Events" to set visible of process "`+name+`" to true`,
+	).Run()
+	exec.Command("osascript", "-e",
+		`tell application "System Events" to set frontmost of process "`+name+`" to true`,
+	).Run()
 }
 
 func (w *WindowController) hide() {
-	if runtime.GOOS == "darwin" {
-		// Hide the Camoufox/Firefox app
-		exec.Command("osascript", "-e", `
-			tell application "System Events"
-				set visible of every process whose unix id is `+itoa(w.pid)+` to false
-			end tell
-		`).Run()
+	if runtime.GOOS != "darwin" {
+		return
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
+	name := w.resolveProcessName()
+	if name == "" {
+		return
 	}
-	s := ""
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
+	exec.Command("osascript", "-e",
+		`tell application "System Events" to set visible of process "`+name+`" to false`,
+	).Run()
 }

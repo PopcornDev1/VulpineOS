@@ -130,7 +130,8 @@ func (k *Kernel) Start(cfg Config) error {
 	// Create window controller for non-headless mode
 	if !cfg.Headless {
 		k.window = NewWindowController(cmd.Process.Pid)
-		go func() { k.window.Hide() }()
+		// Wait for the browser window to appear, then hide it
+		go k.window.HideWhenReady()
 	}
 
 	return nil
