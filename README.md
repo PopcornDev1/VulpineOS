@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="https://i.imgur.com/enUBkXt.png" width="120">
+  <img src="assets/VulpineOSBanner.png" alt="VulpineOS" width="600">
 </p>
 
-<h1 align="center">VulpineOS</h1>
-
-<h4 align="center">The first browser engine with AI agent security built into the C++ core</h4>
+<p align="center">
+  <b>The first browser engine with AI agent security built into the C++ core</b>
+</p>
 
 <p align="center">
 VulpineOS is a sovereign agent runtime — a Firefox/Camoufox fork that makes AI agents undetectable, deterministic, and token-efficient at the browser engine level.
