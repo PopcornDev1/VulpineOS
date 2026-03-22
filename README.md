@@ -34,9 +34,7 @@ Every existing solution tries to fix these in JavaScript or in the agent framewo
 
 VulpineOS was born from work on [Camoufox](https://github.com/daijro/camoufox), the open-source anti-detect browser originally created by [daijro](https://github.com/daijro). Camoufox pioneered C++-level fingerprint injection — spoofing navigator properties, WebGL parameters, fonts, screen dimensions, and hundreds of other signals at the implementation level rather than through detectable JavaScript overrides.
 
-[Clover Labs](https://cloverlabs.ai) took over maintenance of Camoufox, where Elliot (the creator of VulpineOS) built per-context fingerprint spoofing — the ability to run multiple browser contexts, each with a completely unique hardware identity, in a single Firefox process. This work revealed that the same C++ interception techniques used for fingerprint rotation could solve the AI agent security problem: if you can intercept what the browser exposes to JavaScript, you can also intercept what the browser exposes to AI agents.
-
-VulpineOS is a personal project, independent of Clover Labs. It forks Camoufox and extends it with security features purpose-built for AI agents.
+[Clover Labs](https://cloverlabs.ai) took over maintenance of Camoufox, where Elliot built per-context fingerprint spoofing — the ability to run multiple browser contexts, each with a completely unique hardware identity, in a single Camoufox process. This work revealed that the same C++ interception techniques used for fingerprint rotation could solve the AI agent security problem: if you can intercept what the browser exposes to JavaScript, you can also intercept what the browser exposes to AI agents.
 
 VulpineOS builds on Camoufox's battle-tested stealth foundation (Firefox 146.0.1) and adds four security phases purpose-built for autonomous agents, a Go TUI for managing agents, and full integration with [OpenClaw](https://github.com/anthropics/openclaw) for deploying AI agents at scale.
 
@@ -223,7 +221,7 @@ make package-macos  # Create distributable
 VulpineOS stands on the shoulders of excellent open-source work:
 
 - **[daijro](https://github.com/daijro)** — Created [Camoufox](https://github.com/daijro/camoufox), pioneering C++-level fingerprint injection in Firefox. The foundation that makes VulpineOS possible.
-- **[Clover Labs](https://cloverlabs.ai)** — Maintains Camoufox. Elliot built per-context fingerprint spoofing, WebGL database, and hardware-consistent identity generation as part of his work there.
+- **[Clover Labs](https://cloverlabs.ai)** — Primary maintainers of Camoufox.
 - **[BrowserForge](https://github.com/daijro/browserforge)** — Bayesian network fingerprint generator that ensures spoofed identities match real-world traffic distribution.
 - **[LibreWolf](https://gitlab.com/librewolf-community/browser/source)** — Build system inspiration and debloat patches.
 - **[riflosnake/HumanCursor](https://github.com/riflosnake/HumanCursor)** — Original human-like cursor algorithm, ported to C++.
