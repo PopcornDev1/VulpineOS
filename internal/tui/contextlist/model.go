@@ -16,6 +16,8 @@ type ContextItem struct {
 	ContextID string
 	URL       string
 	FrameID   string
+	Loading   bool   // true while navigating
+	Title     string // page title if known
 }
 
 // Model holds the context list state.
@@ -72,9 +74,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		for i := range m.items {
 			if m.items[i].SessionID == msg.SessionID {
 				m.items[i].URL = msg.URL
+				m.items[i].Loading = true
 				if m.items[i].FrameID == "" {
 					m.items[i].FrameID = msg.FrameID
 				}
+			}
+		}
+	case shared.PageLoadMsg:
+		for i := range m.items {
+			if m.items[i].SessionID == msg.SessionID {
+				m.items[i].Loading = false
 			}
 		}
 	case shared.FrameAttachedMsg:
@@ -109,6 +118,14 @@ func (m Model) SelectedTarget() (string, string) {
 	return m.items[m.selected].SessionID, m.items[m.selected].TargetID
 }
 
+// SelectedURL returns the URL of the selected context.
+func (m Model) SelectedURL() string {
+	if len(m.items) == 0 || m.selected >= len(m.items) {
+		return ""
+	}
+	return m.items[m.selected].URL
+}
+
 // truncateURL shortens a URL for display.
 func truncateURL(url string, maxLen int) string {
 	if maxLen < 4 {
@@ -132,11 +149,20 @@ func (m Model) View() string {
 		return b.String()
 	}
 
-	maxURL := m.width - 4
+	maxURL := m.width - 6
 	for i, item := range m.items {
 		cursor := " "
 		if i == m.selected {
 			cursor = "▸"
+		}
+
+		// Status indicator
+		status := shared.RunningStyle.Render("●") // green = idle
+		if item.Loading {
+			status = shared.WarmingStyle.Render("◌") // amber = loading
+		}
+		if item.URL == "" || item.URL == "about:blank" {
+			status = shared.MutedStyle.Render("○") // gray = blank
 		}
 
 		url := item.URL
@@ -145,7 +171,7 @@ func (m Model) View() string {
 		}
 		url = truncateURL(url, maxURL)
 
-		line := fmt.Sprintf("%s %s", cursor, url)
+		line := fmt.Sprintf("%s %s %s", cursor, status, url)
 		if i == m.selected {
 			line = shared.SelectedStyle.Render(line)
 		}

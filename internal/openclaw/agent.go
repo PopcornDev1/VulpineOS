@@ -129,40 +129,47 @@ func (a *Agent) start(binary string, args []string) error {
 	a.status.Status = "running"
 	a.emitStatusLocked() // already holding a.mu
 
-	// Start activity watchdog — warns if agent produces no output for too long
+	// Start activity watchdog — warns with escalating timeouts
 	activityCh := make(chan struct{}, 1)
 	go func() {
-		timeout := 60 * time.Second
-		timer := time.NewTimer(timeout)
+		firstTimeout := 30 * time.Second
+		longTimeout := 90 * time.Second
+		timer := time.NewTimer(firstTimeout)
 		defer timer.Stop()
-		warned := false
+		warnings := 0
 		for {
 			select {
 			case <-activityCh:
-				// Agent produced output — reset timer and warning
 				if !timer.Stop() {
 					select {
 					case <-timer.C:
 					default:
 					}
 				}
-				timer.Reset(timeout)
-				warned = false
+				timer.Reset(firstTimeout)
+				warnings = 0
 			case <-timer.C:
-				// No output for 60s
-				if !warned {
-					a.mu.Lock()
-					if a.status.Status == "running" || a.status.Status == "thinking" {
-						a.emitConversation(ConversationMsg{
-							AgentID: a.ID,
-							Role:    "system",
-							Content: "Agent has been inactive for 60s — may be stuck on a browser action. Check if the page is loading or if there's a dialog/captcha blocking.",
-						})
-						warned = true
+				a.mu.Lock()
+				status := a.status.Status
+				a.mu.Unlock()
+				if status == "running" || status == "thinking" || status == "active" {
+					warnings++
+					var msg string
+					switch warnings {
+					case 1:
+						msg = "Agent is working — waiting for response..."
+					case 2:
+						msg = "Still processing. The agent may be performing a browser action. Press v to view the page."
+					default:
+						msg = fmt.Sprintf("Agent has been working for %ds with no response. It may be stuck — try sending another message or check the browser with v.", warnings*30+30)
 					}
-					a.mu.Unlock()
+					a.emitConversation(ConversationMsg{
+						AgentID: a.ID,
+						Role:    "system",
+						Content: msg,
+					})
 				}
-				timer.Reset(timeout)
+				timer.Reset(longTimeout)
 			case <-a.doneCh:
 				return
 			}

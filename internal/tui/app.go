@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -374,6 +375,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.noticeTTL = 5
 				}
 			}
+		case "v":
+			// View: open current context URL in system browser
+			_, targetID := a.contextList.SelectedTarget()
+			if targetID != "" {
+				url := a.contextList.SelectedURL()
+				if url != "" && url != "about:blank" {
+					exec.Command("open", url).Start() // macOS; TODO: cross-platform
+					a.notice = "Opened " + url
+					a.noticeTTL = 3
+				}
+			}
 		case "enter":
 			switch a.focus {
 			case FocusAgentList, FocusAgentDetail, FocusConversation:
@@ -521,6 +533,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.waitForEvent())
 	case shared.NavigationMsg:
 		a.contextList, _ = a.contextList.Update(msg)
+		// Show navigation as live activity in conversation
+		if a.selectedAgentID != "" && msg.URL != "" && msg.URL != "about:blank" {
+			a.conversation.AddEntry("system", "Navigating to "+msg.URL)
+		}
 		cmds = append(cmds, a.waitForEvent())
 	case shared.FrameAttachedMsg:
 		a.contextList, _ = a.contextList.Update(msg)
@@ -528,6 +544,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shared.ExecContextCreatedMsg:
 		cmds = append(cmds, a.waitForEvent())
 	case shared.PageLoadMsg:
+		a.contextList, _ = a.contextList.Update(msg)
+		// Show page load completion as live activity
+		if a.selectedAgentID != "" && msg.Name == "load" {
+			a.conversation.AddEntry("system", "Page loaded")
+		}
 		cmds = append(cmds, a.waitForEvent())
 	case shared.TelemetryMsg:
 		a.systemInfo, _ = a.systemInfo.Update(msg)
@@ -936,7 +957,7 @@ func (a App) renderStatusBar() string {
 	bar := shared.TitleStyle.Render("VULPINE") +
 		shared.MutedStyle.Render(" | ") +
 		shared.RunningStyle.Render("* "+mode) +
-		shared.MutedStyle.Render("  n:new  x:del  S:settings  Enter:chat  Tab:focus  ↑↓:scroll  ←→:resize  q:quit")
+		shared.MutedStyle.Render("  n:new  x:del  v:view  S:settings  Enter:chat  Tab:focus  ↑↓:scroll  q:quit")
 
 	return lipgloss.NewStyle().MaxWidth(a.width).Render(bar)
 }
