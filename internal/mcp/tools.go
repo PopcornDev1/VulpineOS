@@ -157,14 +157,15 @@ func tools() []ToolDefinition {
 
 // HandleToolCallDirect dispatches a tool call directly (for testing).
 func HandleToolCallDirect(client *juggler.Client, name string, args json.RawMessage) (*ToolCallResult, error) {
-	return handleToolCall(client, name, args)
+	tracker := NewContextTracker(client)
+	return handleToolCall(client, tracker, name, args)
 }
 
 // handleToolCall dispatches a tool call to the appropriate handler.
-func handleToolCall(client *juggler.Client, name string, args json.RawMessage) (*ToolCallResult, error) {
+func handleToolCall(client *juggler.Client, tracker *ContextTracker, name string, args json.RawMessage) (*ToolCallResult, error) {
 	switch name {
 	case "vulpine_navigate":
-		return handleNavigate(client, args)
+		return handleNavigate(client, tracker, args)
 	case "vulpine_snapshot":
 		return handleSnapshot(client, args)
 	case "vulpine_click":
@@ -207,7 +208,7 @@ func errorResult(err error) *ToolCallResult {
 
 // --- Tool handlers ---
 
-func handleNavigate(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
+func handleNavigate(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
 	var p struct {
 		URL       string `json:"url"`
 		SessionID string `json:"sessionId"`
@@ -216,10 +217,15 @@ func handleNavigate(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 		return errorResult(err), nil
 	}
 
-	// Use Runtime.evaluate to navigate — avoids needing the frameId
-	_, err := client.Call(p.SessionID, "Runtime.evaluate", map[string]interface{}{
-		"expression":    fmt.Sprintf("window.location.href = %q", p.URL),
-		"returnByValue": true,
+	// Resolve frame ID for this session
+	ctx, err := tracker.Resolve(p.SessionID)
+	if err != nil {
+		return errorResult(fmt.Errorf("cannot navigate: %w", err)), nil
+	}
+
+	_, err = client.Call(p.SessionID, "Page.navigate", map[string]interface{}{
+		"url":     p.URL,
+		"frameId": ctx.FrameID,
 	})
 	if err != nil {
 		return errorResult(err), nil
@@ -322,6 +328,7 @@ func handleScreenshot(client *juggler.Client, args json.RawMessage) (*ToolCallRe
 
 	result, err := client.Call(p.SessionID, "Page.screenshot", map[string]interface{}{
 		"mimeType": "image/png",
+		"clip":     map[string]interface{}{"x": 0, "y": 0, "width": 1280, "height": 720},
 	})
 	if err != nil {
 		return errorResult(err), nil

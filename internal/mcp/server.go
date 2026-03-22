@@ -19,17 +19,19 @@ const (
 
 // Server is an MCP server that bridges OpenClaw to VulpineOS via stdio.
 type Server struct {
-	client *juggler.Client
-	reader *bufio.Reader
-	writer io.Writer
+	client  *juggler.Client
+	tracker *ContextTracker
+	reader  *bufio.Reader
+	writer  io.Writer
 }
 
 // NewServer creates an MCP server connected to the given Juggler client.
 func NewServer(client *juggler.Client) *Server {
 	return &Server{
-		client: client,
-		reader: bufio.NewReader(os.Stdin),
-		writer: os.Stdout,
+		client:  client,
+		tracker: NewContextTracker(client),
+		reader:  bufio.NewReader(os.Stdin),
+		writer:  os.Stdout,
 	}
 }
 
@@ -119,7 +121,7 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		}
 	}
 
-	result, err := handleToolCall(s.client, params.Name, params.Arguments)
+	result, err := handleToolCall(s.client, s.tracker, params.Name, params.Arguments)
 	if err != nil {
 		return &Response{
 			JSONRPC: "2.0",
