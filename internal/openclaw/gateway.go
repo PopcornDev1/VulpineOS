@@ -20,6 +20,7 @@ func NewGateway(binary string) *Gateway {
 }
 
 // Start launches the OpenClaw gateway in the background.
+// Stops any stale gateway from a previous session first.
 func (g *Gateway) Start() error {
 	if g.cmd != nil {
 		return nil // already running
@@ -27,13 +28,17 @@ func (g *Gateway) Start() error {
 
 	openclawBin := g.binary
 	if openclawBin == "" {
-		// Use the manager's find logic
 		mgr := NewManager("")
 		openclawBin = mgr.findOpenClaw()
 	}
 	if openclawBin == "" {
 		return fmt.Errorf("OpenClaw binary not found")
 	}
+
+	// Kill any stale gateway from a previous VulpineOS session
+	stopCmd := exec.Command(openclawBin, "--profile", "vulpine", "gateway", "stop")
+	stopCmd.Run() // ignore errors — may not be running
+	time.Sleep(500 * time.Millisecond)
 
 	args := []string{
 		"--profile", "vulpine",
@@ -43,10 +48,7 @@ func (g *Gateway) Start() error {
 	}
 
 	g.cmd = exec.Command(openclawBin, args...)
-	g.cmd.Stdout = nil // suppress output
-	g.cmd.Stderr = nil
 
-	// Redirect to log file
 	logPath := os.TempDir() + "/vulpineos-gateway.log"
 	if logFile, err := os.Create(logPath); err == nil {
 		g.cmd.Stdout = logFile
@@ -59,7 +61,7 @@ func (g *Gateway) Start() error {
 
 	log.Printf("OpenClaw gateway started (PID %d), log: %s", g.cmd.Process.Pid, logPath)
 
-	// Wait a moment for it to bind
+	// Wait for it to bind
 	time.Sleep(3 * time.Second)
 
 	return nil

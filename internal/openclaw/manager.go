@@ -66,12 +66,10 @@ func (m *Manager) SpawnWithSession(agentID, task, sessionName, configPath string
 
 	args := []string{
 		"--profile", "vulpine",
-		"agent",
-		"--local",
+		"run",
 		"--session-id", sessionName,
 		"--message", task,
 		"--json",
-		"--timeout", "120",
 	}
 
 	agent := newAgent(agentID, "openclaw", m.statusCh)
@@ -122,8 +120,7 @@ func (m *Manager) SpawnPersistent(agentID, initialMessage, sessionName string) (
 	// Launch in interactive mode — no --message flag keeps stdin open
 	args := []string{
 		"--profile", "vulpine",
-		"agent",
-		"--local",
+		"run",
 		"--session-id", sessionName,
 		"--json",
 	}
@@ -203,12 +200,10 @@ func (m *Manager) ResumeWithSession(agentID, sessionName, configPath string) (st
 
 	args := []string{
 		"--profile", "vulpine",
-		"agent",
-		"--local",
+		"run",
 		"--session-id", sessionName,
 		"--message", "/resume",
 		"--json",
-		"--timeout", "120",
 	}
 
 	agent := newAgent(agentID, "openclaw", m.statusCh)
