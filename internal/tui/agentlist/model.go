@@ -24,6 +24,7 @@ type Model struct {
 	agents   []AgentListItem
 	selected int
 	width    int
+	height   int
 }
 
 // New creates a new agent list panel.
@@ -36,6 +37,11 @@ func New() Model {
 // SetWidth sets the render width.
 func (m *Model) SetWidth(w int) {
 	m.width = w
+}
+
+// SetHeight sets the render height.
+func (m *Model) SetHeight(h int) {
+	m.height = h
 }
 
 // Init implements tea.Model.
@@ -189,5 +195,14 @@ func (m Model) View() string {
 		}
 	}
 
-	return b.String()
+	// Truncate to allocated height so the panel never overflows
+	result := b.String()
+	if m.height > 0 {
+		lines := strings.Split(result, "\n")
+		if len(lines) > m.height {
+			lines = lines[:m.height]
+			result = strings.Join(lines, "\n")
+		}
+	}
+	return result
 }

@@ -621,32 +621,79 @@ func renderMarkdown(text string, maxWidth int) []string {
 	return allLines
 }
 
-// wordWrap breaks text into lines of at most maxWidth characters,
-// breaking at word boundaries when possible.
+// ansiVisualWidth returns the visual width of a string, ignoring ANSI escape codes.
+func ansiVisualWidth(s string) int {
+	width := 0
+	inEscape := false
+	for _, r := range s {
+		if inEscape {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		width++
+	}
+	return width
+}
+
+// wordWrap breaks text into lines of at most maxWidth visual characters,
+// breaking at word boundaries when possible. ANSI escape codes are not
+// counted toward the width since they add bytes but no visual width.
 func wordWrap(text string, maxWidth int) []string {
 	if maxWidth <= 0 {
 		return []string{text}
 	}
-	if len(text) <= maxWidth {
+	if ansiVisualWidth(text) <= maxWidth {
 		return []string{text}
 	}
 
 	var lines []string
 	for len(text) > 0 {
-		if len(text) <= maxWidth {
+		if ansiVisualWidth(text) <= maxWidth {
 			lines = append(lines, text)
 			break
 		}
 
-		// Find the last space within maxWidth
-		cut := maxWidth
-		for cut > 0 && text[cut] != ' ' {
-			cut--
+		// Walk through runes counting only visible characters to find the byte
+		// position corresponding to maxWidth visual chars.
+		visualW := 0
+		bytePos := 0
+		inEscape := false
+		for i, r := range text {
+			if inEscape {
+				if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+					inEscape = false
+				}
+				bytePos = i + len(string(r))
+				continue
+			}
+			if r == '\x1b' {
+				inEscape = true
+				bytePos = i + len(string(r))
+				continue
+			}
+			visualW++
+			bytePos = i + len(string(r))
+			if visualW >= maxWidth {
+				break
+			}
 		}
-		if cut == 0 {
-			// No space found — hard break
-			cut = maxWidth
+
+		// Find the last space within the visual-width boundary
+		cut := bytePos
+		trycut := cut
+		for trycut > 0 && text[trycut-1] != ' ' {
+			trycut--
 		}
+		if trycut > 0 {
+			cut = trycut
+		}
+		// else: no space found, hard break at bytePos
 
 		lines = append(lines, text[:cut])
 		text = strings.TrimLeft(text[cut:], " ")

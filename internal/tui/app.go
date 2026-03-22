@@ -894,10 +894,14 @@ func (a App) View() string {
 
 	output := lipgloss.JoinVertical(lipgloss.Left, body, statusBar)
 
-	// Final safety: hard-truncate to terminal height
+	// Final safety: hard-truncate to terminal height.
+	// Keep the last line (status bar) and trim overflow from the top of the body
+	// so the status bar is never cut off.
 	outputLines := strings.Split(output, "\n")
 	if len(outputLines) > a.height {
-		output = strings.Join(outputLines[:a.height], "\n")
+		excess := len(outputLines) - a.height
+		outputLines = append(outputLines[excess:len(outputLines)-1], outputLines[len(outputLines)-1])
+		output = strings.Join(outputLines, "\n")
 	}
 	return output
 }
@@ -953,12 +957,27 @@ func (a *App) updatePanelSizes() {
 		convHeight = minSplit
 	}
 
+	// Left column splits
+	leftTop := a.leftSplit
+	leftBottom := bodyHeight - leftTop - 4
+	if leftBottom < 3 { leftBottom = 3; leftTop = bodyHeight - leftBottom - 4 }
+	if leftTop < 3 { leftTop = 3 }
+
+	// Right column splits
+	rightTop := a.rightSplit
+	rightBottom := bodyHeight - rightTop - 4
+	if rightBottom < 3 { rightBottom = 3; rightTop = bodyHeight - rightBottom - 4 }
+	if rightTop < 3 { rightTop = 3 }
+
 	a.systemInfo.SetWidth(leftWidth)
+	a.systemInfo.SetHeight(leftTop)
 	a.agentList.SetWidth(leftWidth)
-	a.agentDetail.SetSize(rightWidth, a.rightSplit)
+	a.agentList.SetHeight(leftBottom)
+	a.agentDetail.SetSize(rightWidth, rightTop)
 	a.conversation.SetSize(centerWidth, convHeight)
 	a.settings.SetSize(centerWidth, bodyHeight)
 	a.contextList.SetWidth(rightWidth)
+	a.contextList.SetHeight(rightBottom)
 	a.poolStats.SetWidth(rightWidth)
 
 	// Update text input widths to fit center panel

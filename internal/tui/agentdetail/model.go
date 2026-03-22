@@ -196,5 +196,14 @@ func (m Model) View() string {
 	b.WriteString("\n")
 	b.WriteString(shared.MutedStyle.Render("[Enter] chat  [x] delete"))
 
-	return b.String()
+	// Truncate to allocated height so the panel never overflows
+	result := b.String()
+	if m.height > 0 {
+		lines := strings.Split(result, "\n")
+		if len(lines) > m.height {
+			lines = lines[:m.height]
+			result = strings.Join(lines, "\n")
+		}
+	}
+	return result
 }
