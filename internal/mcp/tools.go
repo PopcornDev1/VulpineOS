@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"vulpineos/internal/juggler"
 )
@@ -372,6 +373,21 @@ func handleScroll(client *juggler.Client, args json.RawMessage) (*ToolCallResult
 }
 
 func handleNewContext(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
+	// Subscribe to get the sessionID from the attachedToTarget event
+	sessionCh := make(chan string, 4)
+	client.Subscribe("Browser.attachedToTarget", func(_ string, params json.RawMessage) {
+		var ev struct {
+			SessionID string `json:"sessionId"`
+		}
+		json.Unmarshal(params, &ev)
+		if ev.SessionID != "" {
+			select {
+			case sessionCh <- ev.SessionID:
+			default:
+			}
+		}
+	})
+
 	// Create context
 	ctxResult, err := client.Call("", "Browser.createBrowserContext", map[string]interface{}{
 		"removeOnDetach": true,
@@ -388,19 +404,22 @@ func handleNewContext(client *juggler.Client, args json.RawMessage) (*ToolCallRe
 	}
 
 	// Create page in context
-	pageResult, err := client.Call("", "Browser.newPage", map[string]interface{}{
+	_, err = client.Call("", "Browser.newPage", map[string]interface{}{
 		"browserContextId": ctx.BrowserContextID,
 	})
 	if err != nil {
 		return errorResult(err), nil
 	}
 
-	var page struct {
-		TargetID string `json:"targetId"`
+	// Wait for session ID from event
+	var sessionID string
+	select {
+	case sessionID = <-sessionCh:
+	case <-time.After(10 * time.Second):
+		return errorResult(fmt.Errorf("timed out waiting for page session")), nil
 	}
-	json.Unmarshal(pageResult, &page)
 
-	return textResult(fmt.Sprintf(`{"contextId":"%s","targetId":"%s"}`, ctx.BrowserContextID, page.TargetID)), nil
+	return textResult(fmt.Sprintf(`{"contextId":"%s","sessionId":"%s"}`, ctx.BrowserContextID, sessionID)), nil
 }
 
 func handleCloseContext(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
