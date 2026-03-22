@@ -155,6 +155,11 @@ func tools() []ToolDefinition {
 	}
 }
 
+// HandleToolCallDirect dispatches a tool call directly (for testing).
+func HandleToolCallDirect(client *juggler.Client, name string, args json.RawMessage) (*ToolCallResult, error) {
+	return handleToolCall(client, name, args)
+}
+
 // handleToolCall dispatches a tool call to the appropriate handler.
 func handleToolCall(client *juggler.Client, name string, args json.RawMessage) (*ToolCallResult, error) {
 	switch name {
