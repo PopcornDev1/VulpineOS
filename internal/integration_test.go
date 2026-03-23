@@ -367,6 +367,7 @@ func TestIntegration_MouseClick(t *testing.T) {
 		"button":     0,
 		"clickCount": 1,
 		"modifiers":  0,
+		"buttons":    1,
 	}))
 	if err != nil {
 		t.Fatalf("mousedown failed: %v", err)
@@ -379,6 +380,7 @@ func TestIntegration_MouseClick(t *testing.T) {
 		"button":     0,
 		"clickCount": 1,
 		"modifiers":  0,
+		"buttons":    0,
 	}))
 	if err != nil {
 		t.Fatalf("mouseup failed: %v", err)
