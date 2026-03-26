@@ -83,9 +83,19 @@ class Runtime {
   }
 
   async evaluate({executionContextId, expression, returnByValue}) {
-    const executionContext = this.findExecutionContext(executionContextId);
-    if (!executionContext)
-      throw new Error('Failed to find execution context with id = ' + executionContextId);
+    let executionContext;
+    try {
+      executionContext = this.findExecutionContext(executionContextId);
+    } catch (e) {
+      // Fallback: use the most recently created execution context.
+      // This handles races where the context ID becomes stale after navigation.
+      const contexts = this.executionContexts();
+      if (contexts.length > 0) {
+        executionContext = contexts[contexts.length - 1];
+      } else {
+        throw e;
+      }
+    }
     const exceptionDetails = {};
     let result = await executionContext.evaluateScript(expression, exceptionDetails);
     if (!result)
@@ -96,9 +106,17 @@ class Runtime {
   }
 
   async callFunction({executionContextId, functionDeclaration, args, returnByValue}) {
-    const executionContext = this.findExecutionContext(executionContextId);
-    if (!executionContext)
-      throw new Error('Failed to find execution context with id = ' + executionContextId);
+    let executionContext;
+    try {
+      executionContext = this.findExecutionContext(executionContextId);
+    } catch (e) {
+      const contexts = this.executionContexts();
+      if (contexts.length > 0) {
+        executionContext = contexts[contexts.length - 1];
+      } else {
+        throw e;
+      }
+    }
     const exceptionDetails = {};
     let result = await executionContext.evaluateFunction(functionDeclaration, args, exceptionDetails);
     if (!result)
