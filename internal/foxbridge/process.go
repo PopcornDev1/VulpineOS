@@ -9,13 +9,17 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"vulpineos/internal/juggler"
 )
 
 // Process manages the foxbridge CDP-to-Juggler proxy process.
+// Supports two modes: external subprocess (Start) or embedded in-process (StartEmbeddedMode).
 type Process struct {
-	cmd    *exec.Cmd
-	port   int
-	binary string
+	cmd      *exec.Cmd
+	port     int
+	binary   string
+	embedded *EmbeddedServer // non-nil when running in embedded mode
 }
 
 // Config holds foxbridge startup configuration.
@@ -87,8 +91,40 @@ func (p *Process) Start(cfg Config) error {
 	return nil
 }
 
-// Stop kills the foxbridge process.
+// StartEmbeddedMode starts foxbridge as an in-process CDP server wrapping an existing Juggler client.
+// This avoids launching a second Firefox process — the CDP server shares the kernel's connection.
+func (p *Process) StartEmbeddedMode(client *juggler.Client, port int) error {
+	if p.cmd != nil || p.embedded != nil {
+		return nil // already running
+	}
+	if port == 0 {
+		port = 9222
+	}
+	p.port = port
+
+	es, err := StartEmbedded(client, port)
+	if err != nil {
+		return fmt.Errorf("start embedded foxbridge: %w", err)
+	}
+	p.embedded = es
+
+	// Wait briefly for the HTTP server to bind.
+	if err := waitForPort(port, 5*time.Second); err != nil {
+		p.embedded = nil
+		return fmt.Errorf("embedded foxbridge port not ready: %w", err)
+	}
+
+	log.Printf("foxbridge embedded CDP proxy ready on ws://127.0.0.1:%d", port)
+	return nil
+}
+
+// Stop kills the foxbridge process or stops the embedded server.
 func (p *Process) Stop() {
+	if p.embedded != nil {
+		p.embedded.Stop()
+		p.embedded = nil
+		return
+	}
 	if p.cmd != nil && p.cmd.Process != nil {
 		p.cmd.Process.Kill()
 		p.cmd.Wait()
@@ -99,6 +135,9 @@ func (p *Process) Stop() {
 
 // Running returns true if foxbridge is alive.
 func (p *Process) Running() bool {
+	if p.embedded != nil {
+		return true
+	}
 	return p.cmd != nil && p.cmd.ProcessState == nil
 }
 

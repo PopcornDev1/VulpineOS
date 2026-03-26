@@ -168,23 +168,21 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 				}
 			}
 
-			// Try to start foxbridge CDP proxy (routes OpenClaw browser through Camoufox)
-			fb = foxbridge.New()
-			fbErr := fb.Start(foxbridge.Config{
-				CamoufoxBinary: binaryPath,
-				Port:           9222,
-				Headless:       headless,
-				ProfileDir:     profileDir,
-			})
-			if fbErr != nil {
-				log.Printf("foxbridge not available: %v (OpenClaw will use built-in Chrome)", fbErr)
-				fb = nil
-			} else {
-				// Set CDP URL in config so OpenClaw routes through foxbridge
-				cfg.FoxbridgeCDPURL = fb.CDPURL()
-				exe, _ := os.Executable()
-				cfg.GenerateOpenClawConfig(exe, binaryPath)
-				log.Printf("foxbridge active — OpenClaw browser routed through Camoufox at %s", fb.CDPURL())
+			// Start foxbridge as an embedded CDP server sharing the kernel's Juggler client.
+			// This avoids launching a second Firefox — OpenClaw connects to the same kernel.
+			if client != nil {
+				fb = foxbridge.New()
+				fbErr := fb.StartEmbeddedMode(client, 9222)
+				if fbErr != nil {
+					log.Printf("embedded foxbridge not available: %v (OpenClaw will use built-in Chrome)", fbErr)
+					fb = nil
+				} else {
+					// Set CDP URL in config so OpenClaw routes through foxbridge
+					cfg.FoxbridgeCDPURL = fb.CDPURL()
+					exe, _ := os.Executable()
+					cfg.GenerateOpenClawConfig(exe, binaryPath)
+					log.Printf("foxbridge embedded — OpenClaw browser routed through Camoufox at %s", fb.CDPURL())
+				}
 			}
 
 			// Start OpenClaw gateway for browser support
