@@ -36,6 +36,7 @@ func main() {
 		apiKey     = flag.String("api-key", "", "API key for remote authentication")
 		tlsCert    = flag.String("tls-cert", "", "TLS certificate file (with --serve)")
 		tlsKey     = flag.String("tls-key", "", "TLS key file (with --serve)")
+		noTLS      = flag.Bool("no-tls", false, "Disable TLS (plain ws:// instead of wss://)")
 		noBrowser  = flag.Bool("no-browser", false, "Start TUI without launching browser (demo mode)")
 		mcpServer  = flag.Bool("mcp-server", false, "Run as MCP stdio server (used by OpenClaw)")
 		mcpConnect = flag.String("mcp-connect", "", "WebSocket URL to connect MCP server to remote kernel")
@@ -50,7 +51,7 @@ func main() {
 	case *remoteAddr != "":
 		err = runRemote(*remoteAddr, *apiKey)
 	case *serve:
-		err = runServe(*binaryPath, *headless, *profileDir, *port, *apiKey, *tlsCert, *tlsKey)
+		err = runServe(*binaryPath, *headless, *profileDir, *port, *apiKey, *tlsCert, *tlsKey, *noTLS)
 	default:
 		err = runLocal(*binaryPath, *headless, *profileDir, *noBrowser)
 	}
@@ -271,7 +272,7 @@ func runRemote(addr string, apiKey string) error {
 }
 
 // runServe starts the kernel and exposes it via WebSocket server.
-func runServe(binaryPath string, headless bool, profileDir string, port int, apiKey string, tlsCert, tlsKey string) error {
+func runServe(binaryPath string, headless bool, profileDir string, port int, apiKey string, tlsCert, tlsKey string, noTLS bool) error {
 	k := kernel.New()
 	if err := k.Start(kernel.Config{
 		BinaryPath: binaryPath,
@@ -307,6 +308,11 @@ func runServe(binaryPath string, headless bool, profileDir string, port int, api
 	}
 
 	log.Printf("VulpineOS kernel running (PID %d)", k.PID())
+
+	if noTLS {
+		log.Printf("TLS disabled — serving plain ws:// on port %d", port)
+		return server.Start()
+	}
 
 	// Resolve TLS certificates
 	certFile, keyFile := tlsCert, tlsKey
