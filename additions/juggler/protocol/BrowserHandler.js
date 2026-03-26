@@ -9,6 +9,7 @@ const {XPIProvider} = ChromeUtils.importESModule("resource://gre/modules/addons/
 const {TargetRegistry} = ChromeUtils.importESModule("chrome://juggler/content/TargetRegistry.js");
 const {Helper} = ChromeUtils.importESModule('chrome://juggler/content/Helper.js');
 const {PageHandler} = ChromeUtils.importESModule("chrome://juggler/content/protocol/PageHandler.js");
+const {PageNetwork} = ChromeUtils.importESModule('chrome://juggler/content/NetworkObserver.js');
 const {AppConstants} = ChromeUtils.importESModule("resource://gre/modules/AppConstants.sys.mjs");
 
 const helper = new Helper();
@@ -27,6 +28,7 @@ export class BrowserHandler {
     this._startCompletePromise = startCompletePromise;
     this._trustWarmService = null;
     this._telemetryService = null;
+    this._targetInterceptionListeners = new Map();
   }
 
   async ['Browser.enable']({attachToDefaultContext, userPrefs = []}) {
@@ -92,6 +94,10 @@ export class BrowserHandler {
     if (this._trustWarmService)
       this._trustWarmService.dispose();
     helper.removeListeners(this._eventListeners);
+    // Clean up interception listeners.
+    for (const listener of this._targetInterceptionListeners.values())
+      helper.removeListeners([listener]);
+    this._targetInterceptionListeners.clear();
     for (const [target, session] of this._attachedSessions)
       this._dispatcher.destroySession(session);
     this._attachedSessions.clear();
@@ -120,6 +126,19 @@ export class BrowserHandler {
       targetInfo: target.info()
     });
     session.setHandler(new PageHandler(target, session, channel));
+
+    // Subscribe to browser-level request interception events for this target.
+    const pageNetwork = PageNetwork.forPageTarget(target);
+    if (pageNetwork) {
+      const listener = helper.on(pageNetwork, PageNetwork.Events.RequestIntercepted, (details) => {
+        const browserContext = target.browserContext();
+        this._session.emitEvent('Browser.requestIntercepted', {
+          browserContextId: browserContext ? browserContext.browserContextId : undefined,
+          ...details,
+        });
+      });
+      this._targetInterceptionListeners.set(target, listener);
+    }
   }
 
   _onTargetDestroyed(target) {
@@ -128,6 +147,12 @@ export class BrowserHandler {
       return;
     this._attachedSessions.delete(target);
     this._dispatcher.destroySession(session);
+    // Clean up interception listener for this target.
+    const listener = this._targetInterceptionListeners.get(target);
+    if (listener) {
+      helper.removeListeners([listener]);
+      this._targetInterceptionListeners.delete(target);
+    }
     this._session.emitEvent('Browser.detachedFromTarget', {
       sessionId: session.sessionId(),
       targetId: target.id(),
@@ -207,6 +232,30 @@ export class BrowserHandler {
 
   ['Browser.setRequestInterception']({browserContextId, enabled}) {
     this._targetRegistry.browserContextForId(browserContextId).requestInterceptionEnabled = enabled;
+  }
+
+  ['Browser.continueInterceptedRequest']({requestId, url, method, headers, postData}) {
+    const pageNetwork = this._findPageNetworkForRequest(requestId);
+    pageNetwork.resumeInterceptedRequest(requestId, url, method, headers, postData);
+  }
+
+  ['Browser.abortInterceptedRequest']({requestId, errorCode}) {
+    const pageNetwork = this._findPageNetworkForRequest(requestId);
+    pageNetwork.abortInterceptedRequest(requestId, errorCode);
+  }
+
+  ['Browser.fulfillInterceptedRequest']({requestId, status, statusText, headers, base64body}) {
+    const pageNetwork = this._findPageNetworkForRequest(requestId);
+    pageNetwork.fulfillInterceptedRequest(requestId, status, statusText, headers, base64body);
+  }
+
+  _findPageNetworkForRequest(requestId) {
+    for (const target of this._attachedSessions.keys()) {
+      const pageNetwork = PageNetwork.forPageTarget(target);
+      if (pageNetwork && pageNetwork._interceptedRequests.has(requestId))
+        return pageNetwork;
+    }
+    throw new Error(`Cannot find intercepted request "${requestId}"`);
   }
 
   ['Browser.setCacheDisabled']({browserContextId, cacheDisabled}) {

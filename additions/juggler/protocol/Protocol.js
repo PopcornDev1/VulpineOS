@@ -265,6 +265,17 @@ const Browser = {
       timestamp: t.Number,
       blocked: t.Boolean,
     },
+    'requestIntercepted': {
+      browserContextId: t.Optional(t.String),
+      requestId: t.String,
+      url: t.String,
+      method: t.String,
+      headers: t.Array(networkTypes.HTTPHeader),
+      postData: t.Optional(t.String),
+      frameId: t.Optional(t.String),
+      isNavigationRequest: t.Boolean,
+      resourceType: t.String,
+    },
   },
 
   methods: {
@@ -542,6 +553,30 @@ const Browser = {
         trustWarmingState: t.String,
         detectionEvents: t.Number,
         currentUrls: t.Array(t.String),
+      },
+    },
+    'continueInterceptedRequest': {
+      params: {
+        requestId: t.String,
+        url: t.Optional(t.String),
+        method: t.Optional(t.String),
+        headers: t.Optional(t.Array(networkTypes.HTTPHeader)),
+        postData: t.Optional(t.String),
+      },
+    },
+    'abortInterceptedRequest': {
+      params: {
+        requestId: t.String,
+        errorCode: t.String,
+      },
+    },
+    'fulfillInterceptedRequest': {
+      params: {
+        requestId: t.String,
+        status: t.Number,
+        statusText: t.String,
+        headers: t.Array(networkTypes.HTTPHeader),
+        base64body: t.Optional(t.String),
       },
     },
   },

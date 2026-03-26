@@ -367,9 +367,22 @@ class NetworkRequest {
     // If interception has been disabled while we were intercepting, resume and forget.
     const interceptionEnabled = this._shouldIntercept();
     this._sendOnRequest(!!interceptionEnabled);
-    if (interceptionEnabled)
+    if (interceptionEnabled) {
       pageNetwork._interceptedRequests.set(this.requestId, this);
-    else
+      // Emit browser-level interception event so BrowserHandler can notify.
+      const loadInfo = this.httpChannel.loadInfo;
+      const causeType = loadInfo?.externalContentPolicyType || Ci.nsIContentPolicy.TYPE_OTHER;
+      pageNetwork.emit(PageNetwork.Events.RequestIntercepted, {
+        requestId: this.requestId,
+        url: this.httpChannel.URI.spec,
+        method: this.httpChannel.requestMethod,
+        headers: requestHeaders(this.httpChannel),
+        postData: readRequestPostData(this.httpChannel),
+        frameId: this._frameId,
+        isNavigationRequest: !!this.navigationId,
+        resourceType: causeTypeToString(causeType),
+      });
+    } else
       this.resume();
   }
 
@@ -999,5 +1012,6 @@ PageNetwork.Events = {
   Response: Symbol('PageNetwork.Events.Response'),
   RequestFinished: Symbol('PageNetwork.Events.RequestFinished'),
   RequestFailed: Symbol('PageNetwork.Events.RequestFailed'),
+  RequestIntercepted: Symbol('PageNetwork.Events.RequestIntercepted'),
 };
 
