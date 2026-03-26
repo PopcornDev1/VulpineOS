@@ -76,10 +76,21 @@ func runMCPServer(binaryPath string, headless bool, profileDir string) error {
 	defer k.Stop()
 
 	client := k.Client()
-	if _, err := client.Call("", "Browser.enable", map[string]interface{}{
-		"attachToDefaultContext": true,
-	}); err != nil {
-		return fmt.Errorf("Browser.enable: %w", err)
+
+	// Start embedded foxbridge CDP server FIRST — its Browser.enable
+	// call sets up event subscriptions needed by both foxbridge and MCP.
+	fb := foxbridge.New()
+	if err := fb.StartEmbeddedMode(client, 9222); err != nil {
+		log.Printf("foxbridge embedded mode failed: %v", err)
+		// Fall back to manual Browser.enable for MCP
+		if _, err := client.Call("", "Browser.enable", map[string]interface{}{
+			"attachToDefaultContext": true,
+		}); err != nil {
+			return fmt.Errorf("Browser.enable: %w", err)
+		}
+	} else {
+		defer fb.Stop()
+		log.Printf("foxbridge CDP proxy on %s", fb.CDPURL())
 	}
 
 	server := mcp.NewServer(client)

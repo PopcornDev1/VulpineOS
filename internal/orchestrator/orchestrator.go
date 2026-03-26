@@ -233,19 +233,51 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Ci
 
 	// Apply locale/timezone if set
 	if citizen.Locale != "" {
-		if _, err := o.Client.Call("", "Browser.setLocaleOverride", map[string]interface{}{
+		o.Client.Call("", "Browser.setLocaleOverride", map[string]interface{}{
 			"browserContextId": contextID,
 			"locale":           citizen.Locale,
-		}); err != nil {
-			log.Printf("orchestrator: warning: failed to set locale for citizen %s on context %s: %v", citizen.ID, contextID, err)
-		}
+		})
 	}
 	if citizen.Timezone != "" {
-		if _, err := o.Client.Call("", "Browser.setTimezoneOverride", map[string]interface{}{
+		o.Client.Call("", "Browser.setTimezoneOverride", map[string]interface{}{
 			"browserContextId": contextID,
 			"timezoneId":       citizen.Timezone,
-		}); err != nil {
-			log.Printf("orchestrator: warning: failed to set timezone for citizen %s on context %s: %v", citizen.ID, contextID, err)
+		})
+	}
+
+	// Apply fingerprint to the browser context via existing Juggler per-context methods.
+	// Camoufox supports per-context: user agent, viewport, device scale factor, locale,
+	// timezone, geolocation, proxy — no C++ patches needed.
+	if citizen.Fingerprint != "" {
+		var fp vault.FingerprintData
+		if err := json.Unmarshal([]byte(citizen.Fingerprint), &fp); err == nil {
+			if fp.UserAgent != "" {
+				o.Client.Call("", "Browser.setUserAgentOverride", map[string]interface{}{
+					"browserContextId": contextID,
+					"userAgent":        fp.UserAgent,
+				})
+			}
+			if fp.ScreenWidth > 0 && fp.ScreenHeight > 0 {
+				o.Client.Call("", "Browser.setDefaultViewport", map[string]interface{}{
+					"browserContextId": contextID,
+					"viewport": map[string]interface{}{
+						"width":  fp.ScreenWidth,
+						"height": fp.ScreenHeight,
+					},
+				})
+			}
+			if fp.Language != "" && citizen.Locale == "" {
+				o.Client.Call("", "Browser.setLocaleOverride", map[string]interface{}{
+					"browserContextId": contextID,
+					"locale":           fp.Language,
+				})
+			}
+			uaSummary := fp.UserAgent
+			if len(uaSummary) > 40 {
+				uaSummary = uaSummary[:40] + "..."
+			}
+			log.Printf("orchestrator: fingerprint applied to context %s (ua=%s, screen=%dx%d)",
+				contextID, uaSummary, fp.ScreenWidth, fp.ScreenHeight)
 		}
 	}
 
