@@ -382,6 +382,59 @@ export class PageHandler {
     return { data: dataURL.substring(dataURL.indexOf(',') + 1) };
   }
 
+  async ['Page.printToPDF']({landscape, displayHeaderFooter, printBackground, scale, paperWidth, paperHeight, marginTop, marginBottom, marginLeft, marginRight, pageRanges, headerTemplate, footerTemplate, preferCSSPageSize}) {
+    const browsingContext = this._pageTarget.linkedBrowser().browsingContext;
+
+    // Use the default print settings as a base
+    const PSSVC = Cc["@mozilla.org/gfx/printsettings-service;1"]
+      .getService(Ci.nsIPrintSettingsService);
+    const settings = PSSVC.createNewPrintSettings();
+
+    try { settings.outputFormat = Ci.nsIPrintSettings.kOutputFormatPDF; } catch(e) {}
+    try { settings.printerName = ""; } catch(e) {}
+    try { settings.printSilent = true; } catch(e) {}
+    try { settings.showPrintProgress = false; } catch(e) {}
+
+    if (printBackground) {
+      try { settings.printBGImages = true; } catch(e) {}
+      try { settings.printBGColors = true; } catch(e) {}
+    }
+    if (landscape) {
+      try { settings.orientation = Ci.nsIPrintSettings.kLandscapeOrientation; } catch(e) {}
+    }
+    if (scale > 0) {
+      try { settings.scaling = scale; } catch(e) {}
+    }
+    if (paperWidth > 0) {
+      try { settings.paperWidth = paperWidth; } catch(e) {}
+    }
+    if (paperHeight > 0) {
+      try { settings.paperHeight = paperHeight; } catch(e) {}
+    }
+
+    // Print to a temporary file
+    const tmpDir = Services.dirsvc.get("TmpD", Ci.nsIFile);
+    const tmpFile = tmpDir.clone();
+    tmpFile.append("vulpineos-print-" + Date.now() + ".pdf");
+
+    try { settings.toFileName = tmpFile.path; } catch(e) {}
+    try { settings.outputDestination = Ci.nsIPrintSettings.kOutputDestinationFile; } catch(e) {}
+
+    try {
+      await browsingContext.print(settings);
+      const data = await IOUtils.read(tmpFile.path);
+      const uint8 = new Uint8Array(data);
+      // Manual base64 encoding
+      let binary = '';
+      for (let i = 0; i < uint8.length; i++) {
+        binary += String.fromCharCode(uint8[i]);
+      }
+      return {data: btoa(binary)};
+    } finally {
+      try { await IOUtils.remove(tmpFile.path); } catch(e) {}
+    }
+  }
+
   async ['Page.getContentQuads'](options) {
     return await this._contentPage.send('getContentQuads', options);
   }

@@ -998,6 +998,27 @@ const Page = {
         data: t.String,
       }
     },
+    'printToPDF': {
+      params: {
+        landscape: t.Optional(t.Boolean),
+        displayHeaderFooter: t.Optional(t.Boolean),
+        printBackground: t.Optional(t.Boolean),
+        scale: t.Optional(t.Number),
+        paperWidth: t.Optional(t.Number),
+        paperHeight: t.Optional(t.Number),
+        marginTop: t.Optional(t.Number),
+        marginBottom: t.Optional(t.Number),
+        marginLeft: t.Optional(t.Number),
+        marginRight: t.Optional(t.Number),
+        pageRanges: t.Optional(t.String),
+        headerTemplate: t.Optional(t.String),
+        footerTemplate: t.Optional(t.String),
+        preferCSSPageSize: t.Optional(t.Boolean),
+      },
+      returns: {
+        data: t.String,
+      },
+    },
     'getContentQuads': {
       params: {
         frameId: t.String,
