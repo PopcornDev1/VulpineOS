@@ -23,6 +23,7 @@ import (
 	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/pagecache"
 	"vulpineos/internal/pool"
+	"vulpineos/internal/proxy"
 	"vulpineos/internal/recording"
 	"vulpineos/internal/remote"
 	"vulpineos/internal/tui"
@@ -299,6 +300,13 @@ func runRemote(addr string, apiKey string) error {
 
 // runServe starts the kernel and exposes it via WebSocket server.
 func runServe(binaryPath string, headless bool, profileDir string, port int, apiKey string, tlsCert, tlsKey string, noTLS bool) error {
+	// Load config
+	cfg, err := config.Load()
+	if err != nil {
+		log.Printf("Warning: could not load config: %v", err)
+		cfg = &config.Config{}
+	}
+
 	k := kernel.New()
 	if err := k.Start(kernel.Config{
 		BinaryPath: binaryPath,
@@ -316,8 +324,59 @@ func runServe(binaryPath string, headless bool, profileDir string, port int, api
 		return fmt.Errorf("Browser.enable: %w", err)
 	}
 
+	// Open vault
+	v, _ := vault.Open()
+	if v != nil {
+		defer v.Close()
+	}
+
+	// Create orchestrator with subsystems
+	var orch *orchestrator.Orchestrator
+	var bus *agentbus.Bus
+	var costs *costtrack.Tracker
+	var wh *webhooks.Manager
+	var rec *recording.Recorder
+	if v != nil {
+		model := ""
+		if cfg != nil {
+			model = cfg.Model
+		}
+		bus = agentbus.New()
+		costs = costtrack.New(model)
+		wh = webhooks.New()
+		rec = recording.NewRecorder()
+		orch = orchestrator.New(k, client, v, pool.DefaultConfig(), "openclaw", orchestrator.Opts{
+			AgentBus:  bus,
+			Costs:     costs,
+			Webhooks:  wh,
+			Recording: rec,
+			PageCache: pagecache.New(filepath.Join(config.Dir(), "pagecache")),
+		})
+		if startErr := orch.Start(); startErr != nil {
+			log.Printf("Warning: orchestrator start: %v", startErr)
+		} else {
+			defer orch.Close()
+		}
+	}
+
+	// Create proxy rotator
+	rotator := proxy.NewRotator()
+
 	addr := fmt.Sprintf(":%d", port)
 	server := remote.NewServer(addr, apiKey, client)
+
+	// Wire PanelAPI for control message handling
+	server.SetPanelAPI(&remote.PanelAPI{
+		Orchestrator: orch,
+		Config:       cfg,
+		Vault:        v,
+		AgentBus:     bus,
+		Costs:        costs,
+		Webhooks:     wh,
+		Recorder:     rec,
+		Rotator:      rotator,
+		Kernel:       k,
+	})
 
 	// Forward telemetry events to connected clients
 	for _, event := range []string{

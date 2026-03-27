@@ -22,6 +22,7 @@ type Server struct {
 	mux       *http.ServeMux
 	clients   map[*wsClient]struct{}
 	clientsMu sync.RWMutex
+	panelAPI  *PanelAPI
 }
 
 type wsClient struct {
@@ -52,6 +53,11 @@ func NewServer(addr string, apiKey string, jugglerClient *juggler.Client) *Serve
 	}
 
 	return s
+}
+
+// SetPanelAPI attaches the PanelAPI for handling control messages from the web panel.
+func (s *Server) SetPanelAPI(api *PanelAPI) {
+	s.panelAPI = api
 }
 
 // Mux returns the HTTP mux for registering additional handlers (e.g., web panel).
@@ -191,7 +197,17 @@ func (s *Server) handleControl(wsc *wsClient, payload json.RawMessage) {
 	case "ping":
 		resp, _ = json.Marshal(map[string]string{"status": "pong"})
 	default:
-		resp, _ = json.Marshal(map[string]string{"error": fmt.Sprintf("unknown command: %s", cmd.Command)})
+		// Dispatch to PanelAPI if available
+		if s.panelAPI != nil {
+			result, err := s.panelAPI.HandleMessage(cmd.Command, cmd.Params)
+			if err != nil {
+				resp, _ = json.Marshal(map[string]string{"error": err.Error()})
+			} else {
+				resp = result
+			}
+		} else {
+			resp, _ = json.Marshal(map[string]string{"error": fmt.Sprintf("unknown command: %s", cmd.Command)})
+		}
 	}
 
 	env, _ := NewControlEnvelope("response", json.RawMessage(resp))

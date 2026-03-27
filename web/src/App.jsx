@@ -3,10 +3,14 @@ import { Routes, Route, Link, useLocation } from 'react-router-dom'
 import { useWebSocket } from './hooks/useWebSocket'
 import Dashboard from './pages/Dashboard'
 import Agents from './pages/Agents'
+import AgentDetail from './pages/AgentDetail'
 import Contexts from './pages/Contexts'
 import Proxies from './pages/Proxies'
 import Settings from './pages/Settings'
 import Logs from './pages/Logs'
+import Security from './pages/Security'
+import Webhooks from './pages/Webhooks'
+import Scripts from './pages/Scripts'
 import Login from './pages/Login'
 import './App.css'
 
@@ -24,6 +28,9 @@ export default function App() {
     { path: '/agents', label: 'Agents', icon: '🤖' },
     { path: '/contexts', label: 'Contexts', icon: '🔲' },
     { path: '/proxies', label: 'Proxies', icon: '🌐' },
+    { path: '/security', label: 'Security', icon: '🛡️' },
+    { path: '/webhooks', label: 'Webhooks', icon: '🔔' },
+    { path: '/scripts', label: 'Scripts', icon: '📜' },
     { path: '/logs', label: 'Logs', icon: '📋' },
     { path: '/settings', label: 'Settings', icon: '⚙️' },
   ]
@@ -51,8 +58,12 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard ws={ws} />} />
           <Route path="/agents" element={<Agents ws={ws} />} />
+          <Route path="/agents/:id" element={<AgentDetail ws={ws} />} />
           <Route path="/contexts" element={<Contexts ws={ws} />} />
           <Route path="/proxies" element={<Proxies ws={ws} />} />
+          <Route path="/security" element={<Security ws={ws} />} />
+          <Route path="/webhooks" element={<Webhooks ws={ws} />} />
+          <Route path="/scripts" element={<Scripts ws={ws} />} />
           <Route path="/logs" element={<Logs ws={ws} />} />
           <Route path="/settings" element={<Settings ws={ws} />} />
         </Routes>
