@@ -19,6 +19,7 @@ type Server struct {
 	client    *juggler.Client
 	addr      string
 	server    *http.Server
+	mux       *http.ServeMux
 	clients   map[*wsClient]struct{}
 	clientsMu sync.RWMutex
 }
@@ -44,12 +45,18 @@ func NewServer(addr string, apiKey string, jugglerClient *juggler.Client) *Serve
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	s.mux = mux
 	s.server = &http.Server{
 		Addr:    addr,
 		Handler: mux,
 	}
 
 	return s
+}
+
+// Mux returns the HTTP mux for registering additional handlers (e.g., web panel).
+func (s *Server) Mux() *http.ServeMux {
+	return s.mux
 }
 
 // Start begins listening for WebSocket connections.

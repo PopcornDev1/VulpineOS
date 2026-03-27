@@ -333,6 +333,21 @@ func runServe(binaryPath string, headless bool, profileDir string, port int, api
 		})
 	}
 
+	// Serve the web panel from embedded files
+	if panelFS := PanelFS(); panelFS != nil {
+		remote.ServePanel(server.Mux(), panelFS)
+		log.Println("web panel available at /")
+	}
+
+	// Start embedded foxbridge CDP server
+	fb := foxbridge.New()
+	if err := fb.StartEmbeddedMode(client, 9222); err != nil {
+		log.Printf("foxbridge: %v (CDP proxy not available)", err)
+	} else {
+		defer fb.Stop()
+		log.Printf("foxbridge CDP on %s", fb.CDPURL())
+	}
+
 	log.Printf("VulpineOS kernel running (PID %d)", k.PID())
 
 	if noTLS {

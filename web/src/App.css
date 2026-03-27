@@ -1,0 +1,186 @@
+.app {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 220px;
+  background: #12121a;
+  border-right: 1px solid #1e1e2e;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 0;
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+}
+
+.logo {
+  padding: 0 20px 20px;
+  border-bottom: 1px solid #1e1e2e;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.logo h2 { font-size: 18px; color: #a78bfa; }
+
+.status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  display: inline-block;
+}
+.status-dot.connected { background: #22c55e; }
+.status-dot.disconnected { background: #ef4444; }
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  color: #8888a0;
+  text-decoration: none;
+  font-size: 14px;
+  transition: all 0.15s;
+  border: none;
+  background: none;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.nav-item:hover { background: #1a1a2e; color: #c0c0d0; }
+.nav-item.active { background: #1e1e3a; color: #a78bfa; border-right: 2px solid #a78bfa; }
+.nav-icon { font-size: 16px; width: 24px; text-align: center; }
+.nav-spacer { flex: 1; }
+.logout { color: #666; }
+.logout:hover { color: #ef4444; }
+
+/* Main content */
+.content {
+  flex: 1;
+  margin-left: 220px;
+  padding: 24px;
+  min-height: 100vh;
+}
+
+/* Cards */
+.card {
+  background: #12121a;
+  border: 1px solid #1e1e2e;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card h3 {
+  font-size: 14px;
+  color: #8888a0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+
+/* Grid */
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: 1fr 1fr; }
+.grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+.grid-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+
+/* Stats */
+.stat-value { font-size: 32px; font-weight: 600; color: #fff; }
+.stat-label { font-size: 12px; color: #666; margin-top: 4px; }
+
+/* Tables */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #666;
+  border-bottom: 1px solid #1e1e2e;
+  text-transform: uppercase;
+}
+.table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #0e0e16;
+  font-size: 13px;
+}
+.table tr:hover td { background: #0e0e1a; }
+
+/* Buttons */
+.btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+.btn-primary { background: #7c3aed; color: #fff; }
+.btn-primary:hover { background: #6d28d9; }
+.btn-danger { background: #dc2626; color: #fff; }
+.btn-danger:hover { background: #b91c1c; }
+.btn-ghost { background: transparent; color: #8888a0; border: 1px solid #2e2e3e; }
+.btn-ghost:hover { background: #1a1a2e; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+/* Inputs */
+.input {
+  background: #0a0a14;
+  border: 1px solid #2e2e3e;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #e0e0e8;
+  font-size: 14px;
+  width: 100%;
+}
+.input:focus { outline: none; border-color: #7c3aed; }
+
+/* Badge */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-green { background: #064e3b; color: #34d399; }
+.badge-yellow { background: #713f12; color: #fbbf24; }
+.badge-red { background: #7f1d1d; color: #f87171; }
+.badge-blue { background: #1e3a5f; color: #60a5fa; }
+.badge-gray { background: #1e1e2e; color: #8888a0; }
+
+/* Page header */
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+.page-header h1 { font-size: 24px; font-weight: 600; }
+
+/* Event log */
+.event-log {
+  max-height: 400px;
+  overflow-y: auto;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.event-log .event {
+  padding: 4px 0;
+  border-bottom: 1px solid #0e0e16;
+}
+.event-log .event-time { color: #666; }
+.event-log .event-method { color: #a78bfa; }
+
+@media (max-width: 900px) {
+  .sidebar { width: 60px; }
+  .sidebar .nav-item span:last-child, .sidebar .logo h2 { display: none; }
+  .content { margin-left: 60px; }
+  .grid-3, .grid-4 { grid-template-columns: 1fr 1fr; }
+}
