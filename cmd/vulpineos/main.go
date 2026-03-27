@@ -10,19 +10,26 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"path/filepath"
+
+	"vulpineos/internal/agentbus"
 	"vulpineos/internal/config"
+	"vulpineos/internal/costtrack"
 	"vulpineos/internal/foxbridge"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
 	"vulpineos/internal/mcp"
 	"vulpineos/internal/openclaw"
 	"vulpineos/internal/orchestrator"
+	"vulpineos/internal/pagecache"
 	"vulpineos/internal/pool"
+	"vulpineos/internal/recording"
 	"vulpineos/internal/remote"
 	"vulpineos/internal/tui"
 	"vulpineos/internal/tui/loading"
 	"vulpineos/internal/tui/setup"
 	"vulpineos/internal/vault"
+	"vulpineos/internal/webhooks"
 )
 
 func main() {
@@ -172,9 +179,19 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 			if startErr == nil {
 				client = k.Client()
 
-				// Create orchestrator
+				// Create orchestrator with optional subsystems
 				if v != nil {
-					orch = orchestrator.New(k, client, v, pool.DefaultConfig(), "openclaw")
+					model := ""
+					if cfg != nil {
+						model = cfg.Model
+					}
+					orch = orchestrator.New(k, client, v, pool.DefaultConfig(), "openclaw", orchestrator.Opts{
+						AgentBus:  agentbus.New(),
+						Costs:     costtrack.New(model),
+						Webhooks:  webhooks.New(),
+						Recording: recording.NewRecorder(),
+						PageCache: pagecache.New(filepath.Join(config.Dir(), "pagecache")),
+					})
 					orch.Start()
 				}
 			}

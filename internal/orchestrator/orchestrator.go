@@ -6,23 +6,29 @@ import (
 	"log"
 	"sync"
 
+	"vulpineos/internal/agentbus"
+	"vulpineos/internal/costtrack"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
 	"vulpineos/internal/openclaw"
+	"vulpineos/internal/pagecache"
 	"vulpineos/internal/pool"
+	"vulpineos/internal/recording"
 	"vulpineos/internal/vault"
+	"vulpineos/internal/webhooks"
 )
 
 // Status describes the orchestrator's current state.
 type Status struct {
-	KernelRunning  bool   `json:"kernel_running"`
-	KernelPID      int    `json:"kernel_pid"`
-	PoolAvailable  int    `json:"pool_available"`
-	PoolActive     int    `json:"pool_active"`
-	PoolTotal      int    `json:"pool_total"`
-	ActiveAgents   int    `json:"active_agents"`
-	TotalCitizens  int    `json:"total_citizens"`
-	TotalTemplates int    `json:"total_templates"`
+	KernelRunning  bool    `json:"kernel_running"`
+	KernelPID      int     `json:"kernel_pid"`
+	PoolAvailable  int     `json:"pool_available"`
+	PoolActive     int     `json:"pool_active"`
+	PoolTotal      int     `json:"pool_total"`
+	ActiveAgents   int     `json:"active_agents"`
+	TotalCitizens  int     `json:"total_citizens"`
+	TotalTemplates int     `json:"total_templates"`
+	TotalCostUSD   float64 `json:"total_cost_usd,omitempty"`
 }
 
 // AgentResult is returned when an agent completes.
@@ -41,14 +47,30 @@ type Orchestrator struct {
 	Vault   *vault.DB
 	Agents  *openclaw.Manager
 
+	// Optional subsystems (nil-safe)
+	AgentBus  *agentbus.Bus
+	Costs     *costtrack.Tracker
+	Webhooks  *webhooks.Manager
+	Recording *recording.Recorder
+	PageCache *pagecache.Cache
+
 	// Track which agent owns which context slot
 	agentToSlot   map[string]*pool.ContextSlot
 	agentToSlotMu sync.Mutex
 }
 
+// Opts holds optional subsystem dependencies for the orchestrator.
+type Opts struct {
+	AgentBus  *agentbus.Bus
+	Costs     *costtrack.Tracker
+	Webhooks  *webhooks.Manager
+	Recording *recording.Recorder
+	PageCache *pagecache.Cache
+}
+
 // New creates an orchestrator with all subsystems.
-func New(k *kernel.Kernel, client *juggler.Client, v *vault.DB, poolCfg pool.Config, openclawBinary string) *Orchestrator {
-	return &Orchestrator{
+func New(k *kernel.Kernel, client *juggler.Client, v *vault.DB, poolCfg pool.Config, openclawBinary string, opts ...Opts) *Orchestrator {
+	o := &Orchestrator{
 		Kernel:      k,
 		Client:      client,
 		Pool:        pool.New(client, poolCfg),
@@ -56,6 +78,14 @@ func New(k *kernel.Kernel, client *juggler.Client, v *vault.DB, poolCfg pool.Con
 		Agents:      openclaw.NewManager(openclawBinary),
 		agentToSlot: make(map[string]*pool.ContextSlot),
 	}
+	if len(opts) > 0 {
+		o.AgentBus = opts[0].AgentBus
+		o.Costs = opts[0].Costs
+		o.Webhooks = opts[0].Webhooks
+		o.Recording = opts[0].Recording
+		o.PageCache = opts[0].PageCache
+	}
+	return o
 }
 
 // Start initializes the pool and begins the agent status relay.
@@ -112,6 +142,11 @@ func (o *Orchestrator) SpawnCitizen(citizenID, templateID string) (string, error
 	o.agentToSlotMu.Unlock()
 	o.Vault.UpdateCitizenUsage(citizenID)
 
+	// Start recording for this agent
+	if o.Recording != nil {
+		o.Recording.Record(agentID, recording.ActionNavigate, nil)
+	}
+
 	log.Printf("orchestrator: spawned citizen agent %s (citizen=%s, context=%s)", agentID, citizen.Label, slot.ContextID)
 	return agentID, nil
 }
@@ -155,6 +190,11 @@ func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
 	o.agentToSlot[agentID] = slot
 	o.agentToSlotMu.Unlock()
 
+	// Start recording for this agent
+	if o.Recording != nil {
+		o.Recording.Record(agentID, recording.ActionNavigate, nil)
+	}
+
 	log.Printf("orchestrator: spawned nomad agent %s (session=%s, context=%s)", agentID, session.ID, slot.ContextID)
 	return agentID, nil
 }
@@ -164,6 +204,24 @@ func (o *Orchestrator) KillAgent(agentID string) error {
 	if err := o.Agents.Kill(agentID); err != nil {
 		return err
 	}
+
+	// Stop recording for this agent
+	if o.Recording != nil {
+		o.Recording.Clear(agentID)
+	}
+
+	// Save page cache state
+	if o.PageCache != nil {
+		o.PageCache.Save(&pagecache.PageState{AgentID: agentID})
+	}
+
+	// Fire webhook notification
+	if o.Webhooks != nil {
+		o.Webhooks.Fire(webhooks.AgentCompleted, map[string]interface{}{
+			"agentId": agentID,
+		})
+	}
+
 	o.agentToSlotMu.Lock()
 	slot, ok := o.agentToSlot[agentID]
 	if ok {
@@ -189,6 +247,11 @@ func (o *Orchestrator) Status() Status {
 		templateCount = len(templates)
 	}
 
+	var totalCost float64
+	if o.Costs != nil {
+		totalCost = o.Costs.TotalCost()
+	}
+
 	return Status{
 		KernelRunning:  o.Kernel.Running(),
 		KernelPID:      o.Kernel.PID(),
@@ -198,6 +261,7 @@ func (o *Orchestrator) Status() Status {
 		ActiveAgents:   o.Agents.Count(),
 		TotalCitizens:  citizenCount,
 		TotalTemplates: templateCount,
+		TotalCostUSD:   totalCost,
 	}
 }
 
@@ -210,9 +274,24 @@ func (o *Orchestrator) Close() {
 		o.Client.Close()
 	}
 	o.Vault.Close()
+	// Clean up optional subsystems (nil-safe)
+	// AgentBus, Costs, Webhooks, Recording, PageCache have no Close methods
+	// but we nil them to release references
+	o.AgentBus = nil
+	o.Costs = nil
+	o.Webhooks = nil
+	o.Recording = nil
+	o.PageCache = nil
 }
 
 func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Citizen) error {
+	// Restore cached page state if resuming
+	if o.PageCache != nil {
+		if state := o.PageCache.Load(citizen.ID); state != nil {
+			log.Printf("orchestrator: restoring cached page state for citizen %s (url=%s)", citizen.ID, state.URL)
+		}
+	}
+
 	// Inject cookies
 	cookies, err := o.Vault.GetCookies(citizen.ID)
 	if err != nil {
