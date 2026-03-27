@@ -82,3 +82,5 @@ checks-bundle.js
 # VulpineOS Go binaries
 /vulpineos
 /openclaw/
+go.work
+go.work.sum

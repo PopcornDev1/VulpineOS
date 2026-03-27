@@ -3,7 +3,7 @@ module vulpineos
 go 1.26.1
 
 require (
-	github.com/PopcornDev1/foxbridge v0.0.0
+	github.com/PopcornDev1/foxbridge v0.1.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
@@ -43,5 +43,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/PopcornDev1/foxbridge => ../foxbridge
