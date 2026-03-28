@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <b>The first browser engine with AI agent security built into the C++ core</b>
+  <b>Operate Stealth and Secure OpenClaw Agents at Scale</b>
 </p>
 
 <p align="center">
-VulpineOS is a sovereign agent runtime — a Firefox/Camoufox fork that makes AI agents undetectable, deterministic, and token-efficient at the browser engine level.
+VulpineOS is the operating system for AI browser agents — a Firefox/Camoufox-based platform for managing hundreds of OpenClaw agents with unique identities, full security, and zero detection.
 </p>
 
 <p align="center">
