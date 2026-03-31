@@ -11,6 +11,10 @@ VulpineOS is the operating system for AI browser agents — a Firefox/Camoufox-b
 </p>
 
 <p align="center">
+  <a href="https://github.com/PopcornDev1/VulpineOS/actions/workflows/ci.yml"><img src="https://github.com/PopcornDev1/VulpineOS/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
+
+<p align="center">
   <a href="https://vulpineos.com">Documentation</a> ·
   <a href="https://github.com/PopcornDev1/foxbridge">Foxbridge CDP Proxy</a> ·
   <a href="https://github.com/PopcornDev1/VulpineOS/issues">Issues</a>
@@ -43,28 +47,41 @@ VulpineOS builds on Camoufox's battle-tested stealth foundation (Firefox 146.0.1
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    VulpineOS                         │
-│                                                     │
-│  C++ Engine (Firefox 146.0.1 + Camoufox patches)    │
-│  ├── Phase 1: Injection-Proof Accessibility Filter   │
-│  ├── Phase 2: Deterministic Execution (Action-Lock)  │
-│  ├── Phase 3: Token-Optimized DOM Export             │
-│  └── Phase 4: Autonomous Trust-Warming               │
-│                                                     │
-│  Juggler Protocol (pipe FD 3/4)                      │
-│  └── Telemetry Service + Trust Warming Service       │
-│                                                     │
-│  Go Runtime                                          │
-│  ├── Bubbletea TUI (3-column agent workbench)        │
-│  ├── Identity Vault (SQLite)                         │
-│  ├── Context Pool (100+ agents per process)           │
-│  ├── Proxy Manager (geo-synced fingerprints)          │
-│  ├── OpenClaw Integration (MCP bridge)               │
-│  └── Foxbridge CDP Proxy (Puppeteer compatibility)   │
-│                                                     │
-│  Docker: Vulpine-Box (one-click VPS deployment)      │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                        VulpineOS                              │
+│                                                              │
+│  C++ Engine (Firefox 146.0.1 + Camoufox patches)             │
+│  ├── Phase 1: Injection-Proof Accessibility Filter            │
+│  ├── Phase 2: Deterministic Execution (Action-Lock)           │
+│  ├── Phase 3: Token-Optimized DOM Export                      │
+│  └── Phase 4: Autonomous Trust-Warming                        │
+│                                                              │
+│  Juggler Protocol (pipe FD 3/4)                               │
+│  ├── Telemetry Service (memory, risk score, 2s interval)      │
+│  └── Trust Warming Service (idle-time profile warming)        │
+│                                                              │
+│  Go Runtime (22 packages, 283 tests)                          │
+│  ├── Bubbletea TUI (3-column agent workbench)                 │
+│  ├── Web Panel (React SPA, 11 pages, 29 API endpoints)        │
+│  ├── Identity Vault (SQLite — citizens, templates, sessions)  │
+│  ├── Context Pool (pre-warm, recycle, memory limits)           │
+│  ├── Orchestrator (spawn citizens + nomads, auto-release)      │
+│  ├── OpenClaw Manager (31 AI providers, skills, SOP files)     │
+│  ├── Proxy Manager (geo-synced fingerprints, auto-rotation)    │
+│  ├── MCP Server (12 browser tools via stdio)                   │
+│  ├── Foxbridge CDP Proxy (Puppeteer compatibility)             │
+│  ├── Agent Bus (inter-agent messaging with approval policies)  │
+│  ├── Cost Tracker (per-agent budgets, usage alerts)            │
+│  ├── Webhooks (event notifications, async delivery)            │
+│  ├── Session Recording (timeline capture, replay, export)      │
+│  ├── Scripting DSL (8-action JSON scripts, zero LLM tokens)   │
+│  ├── Security (CSP, DOM monitoring, signatures, sandbox)       │
+│  ├── Token Optimization (viewport, cache, diff, batch)         │
+│  ├── Kernel Watchdog (crash recovery, auto-restart)            │
+│  └── Remote Access (HTTP/WS server, API key auth)              │
+│                                                              │
+│  Docker: Vulpine-Box (one-click VPS deployment)               │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -115,6 +132,38 @@ Background service that builds organic browsing history on high-authority sites 
 
 ---
 
+## Advanced Security
+
+Beyond the four core phases, VulpineOS includes hardened runtime security:
+
+| Feature | Description |
+|---------|-------------|
+| **Content Security Policy** | CSP enforcement for agent-controlled pages |
+| **DOM Mutation Monitoring** | Real-time alerting on unexpected DOM changes |
+| **Action Signatures** | 13 injection signatures verified before execution |
+| **Agent Sandboxing** | Constraint enforcement on agent capabilities |
+
+---
+
+## Platform Features
+
+| Feature | Description |
+|---------|-------------|
+| **Web Panel** | React SPA (Vite) with 11 pages — Dashboard, Agents, Contexts, Proxies, Security, Webhooks, Scripts, Settings, Logs, and more. 29 API endpoints over WebSocket. |
+| **Agent Bus** | Inter-agent communication (ask, delegate, reply, notify) with user-controlled approval policies and full audit trail |
+| **Cost Tracking** | Per-agent token usage and API cost tracking with budget limits. Built-in pricing for Claude, GPT-4o, Gemini. Alerts at configurable thresholds. |
+| **Session Recording** | Record browser actions as timestamped timelines. Export to JSON. Terminal-based replay at real speed. |
+| **Proxy Rotation** | Auto-rotate proxies on rate limit, IP block, or time interval. Fingerprint re-synced on every rotation. 32-country locale map. |
+| **Webhook Notifications** | HTTP webhooks for agent.completed/failed/paused, rate_limit.detected, injection.detected, budget.alert/exceeded. Async delivery with secret verification. |
+| **Scripting DSL** | JSON scripting language for repetitive tasks without LLM calls. 8 actions: navigate, click, type, wait, extract, screenshot, set, if. Variable expansion. |
+| **Kernel Watchdog** | Monitors Camoufox every 2s. On crash: fires callback, auto-restarts (up to 3 attempts), re-establishes Juggler connection. |
+| **Token Optimization** | Viewport-aware DOM pruning, persistent page cache, delta encoding between snapshots, batch operations. |
+| **Page Cache** | Saves and restores page state (URL, HTML, cookies, scroll, forms) across agent restarts. |
+| **Rate Limit Monitor** | Pattern-based scanning of agent output for 429s, captchas, and blocks. Per-agent failure tracking. |
+| **Structured Logging** | JSON structured logger with levels, component tags, and field chaining. |
+
+---
+
 ## Go TUI: Agent Workbench
 
 A terminal-based command center for managing AI agents, browser contexts, and identity profiles.
@@ -138,14 +187,27 @@ A terminal-based command center for managing AI agents, browser contexts, and id
 
 ---
 
+## Web Panel
+
+A React SPA served from the Go binary — no separate frontend deployment needed.
+
+**11 pages:** Dashboard, Agents, Agent Detail, Contexts, Proxies, Security, Webhooks, Scripts, Settings, Logs, Login
+
+**29 API endpoints** covering: agent CRUD, config management, cost tracking, webhooks, proxy management, agent bus (pending/approve/reject/policies), session recording, fingerprints, and system status.
+
+Access via `--serve --port 8443 --api-key KEY` or through the remote client.
+
+---
+
 ## Foxbridge: CDP-to-Firefox Protocol Proxy
 
-[Foxbridge](https://github.com/PopcornDev1/foxbridge) is a standalone Go binary that translates Chrome DevTools Protocol (CDP) to Firefox's Juggler and WebDriver BiDi protocols. This lets any CDP tool — OpenClaw, Puppeteer, browser-use — control Camoufox as if it were Chrome.
+[Foxbridge](https://github.com/PopcornDev1/foxbridge) is a standalone Go binary that translates Chrome DevTools Protocol (CDP) to Firefox's Juggler and WebDriver BiDi protocols. Any CDP tool — OpenClaw, Puppeteer, browser-use — can control Camoufox as if it were Chrome.
 
-- Full Puppeteer compatibility (~100% method coverage)
+- **74/74 Puppeteer Juggler tests** passing
+- **62/62 Puppeteer BiDi tests** passing
 - Dual backend: `--backend juggler` (pipe) or `--backend bidi` (WebSocket)
 - Fetch domain with request/response interception
-- Integrated into VulpineOS startup — OpenClaw agents automatically use Camoufox
+- Embedded into VulpineOS startup — OpenClaw agents automatically use Camoufox
 
 ---
 
@@ -201,6 +263,16 @@ VulpineOS exposes 12 browser tools via Model Context Protocol:
 | `vulpine_new_context` | Create isolated browser context |
 | `vulpine_close_context` | Close browser context |
 | `vulpine_get_ax_tree` | Get full accessibility tree (injection-filtered) |
+
+---
+
+## Testing
+
+**283 Go tests** across 22 packages, all passing with race detector enabled.
+
+```bash
+go test -race ./...
+```
 
 ---
 
