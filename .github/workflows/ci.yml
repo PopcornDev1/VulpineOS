@@ -8,7 +8,7 @@ on:
 
 jobs:
   go:
-    name: Go checks
+    name: Go build & test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,38 +16,67 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: '1.26'
+
+      - name: Check module tidiness
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum || (echo "go mod tidy changed files" && exit 1)
 
       - name: Vet
         run: go vet ./...
 
-      - name: Build
-        run: go build ./...
+      - name: Build (linux)
+        run: GOOS=linux GOARCH=amd64 go build -o vulpineos-linux ./cmd/vulpineos/
+
+      - name: Build (darwin)
+        run: GOOS=darwin GOARCH=arm64 go build -o vulpineos-darwin ./cmd/vulpineos/
 
       - name: Binary size check
         run: |
-          go build -o vulpineos ./cmd/vulpineos/
-          size=$(stat -c%s vulpineos 2>/dev/null || stat -f%z vulpineos)
+          size=$(stat -c%s vulpineos-linux 2>/dev/null || stat -f%z vulpineos-linux)
           echo "Binary size: $size bytes ($(echo "scale=1; $size/1048576" | bc)MB)"
-          # Fail if binary exceeds 25MB
           if [ "$size" -gt 26214400 ]; then
             echo "ERROR: Binary too large (>25MB)"
             exit 1
           fi
 
-      - name: Test with race detector
-        run: go test -race ./... -v -count=1
-
-      - name: Test count check
+      - name: Unit tests with race detector
         run: |
-          count=$(go test ./... -v -count=1 2>&1 | grep -c "^--- PASS")
-          echo "Total tests passing: $count"
-          if [ "$count" -lt 60 ]; then
-            echo "WARNING: Test count dropped below 60 (was 66+)"
+          go test -race -v -count=1 \
+            ./internal/agentbus \
+            ./internal/config \
+            ./internal/costtrack \
+            ./internal/foxbridge \
+            ./internal/juggler \
+            ./internal/mcp \
+            ./internal/monitor \
+            ./internal/openclaw \
+            ./internal/orchestrator \
+            ./internal/pagecache \
+            ./internal/pool \
+            ./internal/proxy \
+            ./internal/recording \
+            ./internal/remote \
+            ./internal/scripting \
+            ./internal/security \
+            ./internal/slog \
+            ./internal/tokenopt \
+            ./internal/vault \
+            ./internal/webhooks \
+            2>&1 | tee test-output.txt
+
+      - name: Validate test count
+        run: |
+          count=$(grep -c "^--- PASS" test-output.txt || echo "0")
+          echo "Unit tests passing: $count"
+          if [ "$count" -lt 200 ]; then
+            echo "ERROR: Unit test count dropped below 200 (expected 258+)"
+            exit 1
           fi
 
-  js-lint:
-    name: JS syntax check
+  js:
+    name: JavaScript checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +84,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
       - name: Check JS syntax
         run: |
@@ -72,13 +101,21 @@ jobs:
           echo "Checked $count JS files"
           exit $exit_code
 
-      - name: Check patch files exist
+      - name: Check required patches
         run: |
-          required_patches="patches/action-lock.patch"
-          for p in $required_patches; do
+          for p in patches/action-lock.patch; do
             if [ ! -f "$p" ]; then
               echo "ERROR: Missing required patch: $p"
               exit 1
             fi
           done
           echo "All required patches present"
+
+      - name: Check web panel build exists
+        run: |
+          if [ ! -d "web/dist" ]; then
+            echo "WARNING: web/dist not found — web panel not built"
+          else
+            count=$(find web/dist -name '*.js' -o -name '*.html' | wc -l)
+            echo "Web panel assets: $count files"
+          fi
