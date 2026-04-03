@@ -15,7 +15,8 @@ VulpineOS is the operating system for AI browser agents — a Firefox/Camoufox-b
 </p>
 
 <p align="center">
-  <a href="https://vulpineos.com">Documentation</a> ·
+  <a href="https://docs.vulpineos.com">Documentation</a> ·
+  <a href="https://vulpineos.com">Vulpine API</a> ·
   <a href="https://github.com/PopcornDev1/foxbridge">Foxbridge CDP Proxy</a> ·
   <a href="https://github.com/PopcornDev1/VulpineOS/issues">Issues</a>
 </p>
@@ -307,5 +308,5 @@ VulpineOS is released under the [MPL 2.0](LICENSE) license, consistent with its 
 ---
 
 <p align="center">
-  <a href="https://vulpineos.com">vulpineos.com</a>
+  <a href="https://vulpineos.com">vulpineos.com</a> · <a href="https://docs.vulpineos.com">docs</a> · <a href="https://foxbridge.vulpineos.com">foxbridge</a>
 </p>
