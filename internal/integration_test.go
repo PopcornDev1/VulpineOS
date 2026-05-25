@@ -751,7 +751,7 @@ func TestIntegration_MCPNavigateAndClick(t *testing.T) {
 	t.Log("Click via MCP: OK")
 }
 
-// === OPENCLAW AGENT TESTS ===
+// === NANOCLAW AGENT TESTS ===
 
 func TestIntegration_NanoClawInstalled(t *testing.T) {
 	requireLiveNanoClaw(t)

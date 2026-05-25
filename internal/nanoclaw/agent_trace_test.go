@@ -38,7 +38,7 @@ func TestSummarizeToolCallRedactsSensitiveBrowserType(t *testing.T) {
 func TestSummarizeToolCallRedactsTokenizedURL(t *testing.T) {
 	got := summarizeToolCall("browser", map[string]interface{}{
 		"action": "open",
-		"url":    "https://example.com/login?token=panel-token&view=agents",
+		"url":    "https://example.com/login?token=remote-token&view=agents",
 	})
 	want := "Running browser open https://example.com/login?token=[redacted]&view=agents"
 	if got != want {

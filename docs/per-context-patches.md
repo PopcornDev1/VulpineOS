@@ -17,7 +17,7 @@ This public note is intentionally high level. The public repository documents th
 - `internal/vault` stores agent, citizen, proxy, and fingerprint metadata.
 - `internal/orchestrator` applies identity settings when spawning or resuming agents.
 - `internal/proxy` keeps proxy geography and context identity aligned.
-- `internal/remote` and the web panel expose high-level fingerprint get/regenerate controls.
+- `internal/remote` exposes high-level fingerprint get/regenerate controls to TUI clients.
 - `internal/extensions` provides stable optional interfaces for private or external providers.
 
 Implementation-specific browser patch notes should stay out of tracked public docs unless they have been reviewed and reduced to a compatibility-focused public description.

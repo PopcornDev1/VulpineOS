@@ -15,6 +15,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"vulpineos/internal/config"
 )
 
 const nanoclawFirstResponseTimeout = 10 * time.Minute
@@ -241,28 +243,30 @@ func LookupNanoclawAgentGroupID(nanoclawDir string) (string, error) {
 }
 
 func findNanoclawDir() string {
-	cwd, _ := os.Getwd()
-	dir := cwd
-	for i := 0; i < 5; i++ {
-		nanoclawDir := filepath.Join(dir, "nanoclaw")
-		if _, err := os.Stat(filepath.Join(nanoclawDir, "data", "cli.sock")); err == nil {
-			return nanoclawDir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
+	nanoclawDir := VulpineNanoclawDir()
+	if _, err := os.Stat(filepath.Join(nanoclawDir, "data", "cli.sock")); err == nil {
+		return nanoclawDir
 	}
 	return ""
 }
 
-func FindNanoclawSocket() (string, bool) {
-	dir := findNanoclawDir()
-	if dir == "" {
-		return "", false
+func VulpineNanoclawDir() string {
+	if dir := strings.TrimSpace(os.Getenv("VULPINE_NANOCLAW_DIR")); dir != "" {
+		return dir
 	}
-	socketPath := filepath.Join(dir, "data", "cli.sock")
+	return config.NanoClawProfileDir()
+}
+
+func VulpineNanoclawDataDir() string {
+	return filepath.Join(VulpineNanoclawDir(), "data")
+}
+
+func VulpineNanoclawSocketPath() string {
+	return filepath.Join(VulpineNanoclawDataDir(), "cli.sock")
+}
+
+func FindNanoclawSocket() (string, bool) {
+	socketPath := VulpineNanoclawSocketPath()
 	if _, err := os.Stat(socketPath); err == nil {
 		return socketPath, true
 	}

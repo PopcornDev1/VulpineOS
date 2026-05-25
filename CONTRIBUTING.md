@@ -28,13 +28,6 @@ For most VulpineOS runtime changes, run:
 go test ./cmd/... ./internal/...
 ```
 
-If you change the web panel, also run:
-
-```bash
-npm --prefix web test -- --run
-npm --prefix web run build
-```
-
 The browser-layer test suites below are required when you change Firefox/Camoufox patches, browser fingerprinting code, or Python package integration. They test different layers of the browser stack and catch different classes of bugs.
 
 ### build-tester

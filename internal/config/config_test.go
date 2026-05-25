@@ -406,6 +406,21 @@ func TestGenerateNanoClawConfigPreservesGatewayAndCommands(t *testing.T) {
 	}
 }
 
+func TestNanoClawPathsAreOwnedByVulpineOS(t *testing.T) {
+	home := withTempHome(t)
+
+	wantProfile := filepath.Join(home, ".vulpineos", "nanoclaw")
+	if got := NanoClawProfileDir(); got != wantProfile {
+		t.Fatalf("NanoClawProfileDir() = %q, want %q", got, wantProfile)
+	}
+	if got := NanoClawConfigPath(); got != filepath.Join(wantProfile, "nanoclaw.json") {
+		t.Fatalf("NanoClawConfigPath() = %q, want profile nanoclaw.json", got)
+	}
+	if got := NanoClawWorkspaceDir(); got != filepath.Join(wantProfile, "workspace") {
+		t.Fatalf("NanoClawWorkspaceDir() = %q, want profile workspace", got)
+	}
+}
+
 func TestGenerateNanoClawConfigRewritesStaleVulpineBrowserSkill(t *testing.T) {
 	withTempHome(t)
 

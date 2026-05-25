@@ -93,7 +93,7 @@ type remoteStatusMsg struct {
 	ActivePages    int    `json:"active_pages"`
 }
 
-// ControlClient sends panel/control commands over a remote connection.
+// ControlClient sends TUI control commands over a remote connection.
 type ControlClient interface {
 	ControlCall(ctx context.Context, method string, params any, result any) error
 }
@@ -142,7 +142,7 @@ type App struct {
 	inputMode               string // "" | "new-agent-name" | "new-agent-desc" | "chat" | "rename"
 	newAgentName            string // temp storage during agent creation
 	newAgentContext         string
-	renameAgentID           string  // agent ID being renamed
+	renameAgentID           string // agent ID being renamed
 	notice                  string
 	noticeTTL               int  // number of ticks before notice is cleared
 	confirmDelete           bool // true when waiting for delete confirmation
@@ -988,7 +988,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "S":
 			if a.control != nil {
-				a.notice = "Remote settings are unavailable in TUI; use the web panel"
+				a.notice = "Remote settings are host-local for now; configure them on the host TUI"
 				a.noticeTTL = 3
 				return a, nil
 			}
@@ -1032,7 +1032,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		case "c":
 			if a.control != nil {
-				a.notice = "Remote reconfigure is unavailable in TUI; use the web panel"
+				a.notice = "Remote reconfigure is host-local for now; run it on the host TUI"
 				a.noticeTTL = 3
 				return a, nil
 			}
@@ -1361,7 +1361,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.noticeTTL = 3
 	case shared.ReconfigureRequestedMsg:
 		if a.control != nil {
-			a.notice = "Remote reconfigure is unavailable in TUI; use the web panel"
+			a.notice = "Remote reconfigure is host-local for now; run it on the host TUI"
 			a.noticeTTL = 3
 			break
 		}
@@ -1723,7 +1723,7 @@ func (a *App) handleOpenSessionLog() {
 		return
 	}
 	if a.control != nil {
-		a.notice = "Remote session logs are available in the web panel"
+		a.notice = "Remote raw session logs are not exposed in this TUI yet"
 		a.noticeTTL = 4
 		return
 	}

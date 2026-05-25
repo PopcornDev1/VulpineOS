@@ -101,19 +101,6 @@ check_pattern() {
 
 check_vulpineos_public_polish() {
   local repo="$1"
-  local matches
-
-  matches="$(git -C "$repo" grep -nI --color=never --perl-regexp '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]' -- web/src || true)"
-  if [[ -n "$matches" ]]; then
-    fail "VulpineOS: web panel source contains decorative emoji"
-    printf '%s\n' "$matches"
-  fi
-
-  matches="$(git -C "$repo" grep -nI --color=never --perl-regexp '\b(window\.)?(alert|confirm)\s*\(' -- web/src || true)"
-  if [[ -n "$matches" ]]; then
-    fail "VulpineOS: web panel source uses browser-native alert/confirm dialogs"
-    printf '%s\n' "$matches"
-  fi
 
   extra_media="$(
     git -C "$repo" ls-files 'assets/*.gif' 'assets/*.jpeg' 'assets/*.jpg' 'assets/*.png' 'assets/*.webp' \

@@ -473,8 +473,8 @@ func (c *Config) GenerateNanoClawConfig(vulpineosBinary, camoufoxBinary string) 
 		return fmt.Errorf("marshal nanoclaw config: %w", err)
 	}
 
-	// Write to the NanoClaw profile directory (~/.nanoclaw-vulpine/)
-	// This is where `nanoclaw --profile vulpine` reads config from
+	// Write to the VulpineOS-owned NanoClaw directory. Remote sessions use
+	// temporary runtime overlays, so the user's local config stays stable.
 	profileDir := NanoClawProfileDir()
 	if err := os.MkdirAll(profileDir, 0700); err != nil {
 		return fmt.Errorf("create nanoclaw profile dir: %w", err)
@@ -527,8 +527,7 @@ func writePrivateFile(path string, data []byte) error {
 
 // NanoClawProfileDir returns the NanoClaw profile directory for VulpineOS.
 func NanoClawProfileDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".nanoclaw-vulpine")
+	return filepath.Join(Dir(), "nanoclaw")
 }
 
 // NanoClawConfigPath returns the path to the generated nanoclaw.json.

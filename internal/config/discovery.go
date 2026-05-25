@@ -13,29 +13,29 @@ import (
 )
 
 type DiscoveredModel struct {
-	Key          string
-	Name         string
-	Input        string
+	Key           string
+	Name          string
+	Input         string
 	ContextWindow int
-	Local        bool
+	Local         bool
 }
 
 type DiscoveredProvider struct {
-	ID           string
-	Name         string
-	Models       []DiscoveredModel
-	NeedsKey     bool
+	ID       string
+	Name     string
+	Models   []DiscoveredModel
+	NeedsKey bool
 }
 
 type DiscoveryResult struct {
-	Providers []DiscoveredProvider
+	Providers    []DiscoveredProvider
 	DiscoveredAt time.Time
 }
 
 var (
-	discoveryCache     *DiscoveryResult
-	discoveryCacheMu   sync.RWMutex
-	nanoclawBinary     string
+	discoveryCache   *DiscoveryResult
+	discoveryCacheMu sync.RWMutex
+	nanoclawBinary   string
 )
 
 func SetNanoClawBinary(path string) {
@@ -87,11 +87,11 @@ func discoverModelsImpl() (*DiscoveryResult, error) {
 		if err == nil {
 			var raw struct {
 				Models []struct {
-					Key          string `json:"key"`
-					Name         string `json:"name"`
-					Input        string `json:"input"`
-					ContextWindow int   `json:"contextWindow"`
-					Local        bool   `json:"local"`
+					Key           string `json:"key"`
+					Name          string `json:"name"`
+					Input         string `json:"input"`
+					ContextWindow int    `json:"contextWindow"`
+					Local         bool   `json:"local"`
 				} `json:"models"`
 			}
 			if err := json.Unmarshal(out, &raw); err == nil {
@@ -151,7 +151,8 @@ func findNanoClawBinary() string {
 	paths := []string{
 		"./node_modules/.bin/nanoclaw",
 		"node_modules/.bin/nanoclaw",
-		filepath.Join(os.Getenv("HOME"), ".nanoclaw-vulpine", "nanoclaw"),
+		filepath.Join(Dir(), "nanoclaw", "nanoclaw"),
+		filepath.Join(Dir(), "nanoclaw", "nanoclaw.sh"),
 		"/opt/homebrew/bin/nanoclaw",
 		"/usr/local/bin/nanoclaw",
 		"/usr/bin/nanoclaw",

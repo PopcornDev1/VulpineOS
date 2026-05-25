@@ -7,10 +7,10 @@ import (
 	"vulpineos/internal/vault"
 )
 
-func TestPanelQuery_GetMessages(t *testing.T) {
+func TestControlQuery_GetMessages(t *testing.T) {
 	env := newTestEnv(t)
 
-	agent, err := env.Vault.CreateAgent("panel-test", "test task", "{}")
+	agent, err := env.Vault.CreateAgent("control-test", "test task", "{}")
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestPanelQuery_GetMessages(t *testing.T) {
 	}
 }
 
-func TestPanelQuery_Truncation(t *testing.T) {
+func TestControlQuery_Truncation(t *testing.T) {
 	env := newTestEnv(t)
 
 	agent, err := env.Vault.CreateAgent("truncation-test", "test task", "{}")
@@ -61,7 +61,7 @@ func TestPanelQuery_Truncation(t *testing.T) {
 	}
 }
 
-func TestPanelQuery_InvalidAgentIDRejected(t *testing.T) {
+func TestControlQuery_InvalidAgentIDRejected(t *testing.T) {
 	env := newTestEnv(t)
 
 	_, err := env.Vault.GetAgent("invalid-agent-id-12345")
@@ -70,7 +70,7 @@ func TestPanelQuery_InvalidAgentIDRejected(t *testing.T) {
 	}
 }
 
-func TestPanelQuery_JSONShape(t *testing.T) {
+func TestControlQuery_JSONShape(t *testing.T) {
 	env := newTestEnv(t)
 
 	agent, err := env.Vault.CreateAgent("json-shape-test", "test task", "{}")

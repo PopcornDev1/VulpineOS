@@ -168,7 +168,7 @@ These are NEW ideas beyond the MVP and current roadmap, ranked by impact-to-effo
 ### 5. SVG Overlay Output (`--format=svg`)
 **What:** Emit an SVG overlay (not a raster PNG) that can be composited over the raw screenshot client-side. Agent/UI can toggle the overlay, zoom losslessly, or extract just the underlying screenshot on demand.
 **Effort:** ~4 hours. Replace `image/draw` calls with an SVG writer; keep the raster path as the default.
-**Why it matters:** Solves two pain points at once: (a) VLMs sometimes reason better on the *unannotated* image then consult the overlay separately, (b) UI tools (debug viewer, web panel replay) want a toggleable layer. Also dramatically smaller payload than PNG for sparse pages.
+**Why it matters:** Solves two pain points at once: (a) VLMs sometimes reason better on the *unannotated* image then consult the overlay separately, (b) UI tools want a toggleable layer. Also dramatically smaller payload than PNG for sparse pages.
 **Where:** Public repo. Trivially portable.
 
 ---

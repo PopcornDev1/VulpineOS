@@ -4,7 +4,7 @@ Detailed Playwright/Juggler synchronization notes are maintained outside the
 public repository.
 
 The public contract is that VulpineOS exposes a compatible browser automation
-route for the runtime, TUI, MCP bridge, and web panel. Low-level browser patch
+route for the runtime, TUI, and MCP bridge. Low-level browser patch
 sync steps, component-registration details, and version-specific migration notes
 should stay in private maintainer documentation.
 

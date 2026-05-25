@@ -33,16 +33,15 @@ Build the VulpineOS runtime and pass the browser binary explicitly:
 
 ```bash
 go build -o vulpineos ./cmd/vulpineos
-./vulpineos tui --binary /path/to/camoufox
+./vulpineos --binary /path/to/camoufox
 ```
 
 Useful local commands:
 
 ```bash
-./vulpineos panel --binary /path/to/camoufox
+./vulpineos --listen --port 8443 --api-key devtest --binary /path/to/camoufox
 ./vulpineos serve --no-tls --port 8443 --api-key devtest --binary /path/to/camoufox
-./vulpineos remote panel --url http://127.0.0.1:8443 --api-key devtest
-./vulpineos remote tui --url http://127.0.0.1:8443 --api-key devtest
+./vulpineos remote --url http://127.0.0.1:8443 --api-key devtest
 ```
 
 When no `--binary` flag is provided, VulpineOS prefers a repo-local `camoufox-*/obj-*/dist` build before falling back to configured or installed browser paths. Passing `--binary` is still recommended for launch validation because it removes ambiguity.

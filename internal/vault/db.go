@@ -102,6 +102,16 @@ CREATE TABLE IF NOT EXISTS runtime_settings (
 	value  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS remote_clients (
+	id          TEXT PRIMARY KEY,
+	label       TEXT NOT NULL,
+	token_hash  TEXT NOT NULL UNIQUE,
+	created_at  INTEGER NOT NULL,
+	last_used_at INTEGER NOT NULL,
+	revoked_at  INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_remote_clients_token_hash ON remote_clients(token_hash);
+
 CREATE TABLE IF NOT EXISTS proxies (
 	id       TEXT PRIMARY KEY,
 	config   TEXT NOT NULL,

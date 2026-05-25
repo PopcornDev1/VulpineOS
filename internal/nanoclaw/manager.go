@@ -94,8 +94,8 @@ func (m *Manager) ConversationChan() <-chan ConversationMsg {
 }
 
 // SpawnWithSession creates and starts a new agent with a named session for state persistence.
-// Each call spawns a fresh NanoClaw process for one turn of conversation.
-// If a previous process for this agentID is still running, it is stopped first.
+// VulpineOS talks to the managed NanoClaw daemon over its socket; per-turn CLI
+// fallback is intentionally disabled so daemon failures are visible.
 func (m *Manager) SpawnWithSession(agentID, task, sessionName, configPath string) (string, error) {
 	return m.SpawnWithSessionIsolated(agentID, task, sessionName, configPath, nil)
 }
@@ -109,29 +109,7 @@ func (m *Manager) SpawnWithSessionIsolated(agentID, task, sessionName, configPat
 		}
 		return "", err
 	}
-
-	useDefaultBinary := m.binary == "" || m.binary == "nanoclaw"
-	if useDefaultBinary {
-		if cfg, err := config.Load(); err == nil && cfg.Provider == "opencode-local" {
-			return m.SpawnOpenCode(task, agentID)
-		}
-
-		_, socketFound := FindNanoclawSocket()
-		if socketFound {
-			return m.spawnViaSocket(agentID, sessionName, task, configPath, cleanup)
-		}
-	}
-
-	nanoclawBin := m.findNanoClaw()
-	if nanoclawBin == "" {
-		if cleanup != nil {
-			cleanup()
-		}
-		return "", fmt.Errorf("NanoClaw not found. Install: git clone https://github.com/qwibitai/nanoclaw.git && cd nanoclaw && pnpm tsx src/index.ts")
-	}
-
-	args := nanoclawArgs(sessionName, task)
-	return m.startManagedAgent(agentID, "nanoclaw", nanoclawBin, args, configPath, cleanup)
+	return m.spawnViaSocket(agentID, sessionName, task, configPath, cleanup)
 }
 
 // SpawnPersistent is a compatibility shim over the current one-turn NanoClaw CLI.
@@ -169,7 +147,13 @@ func (m *Manager) PauseAgent(agentID string) error {
 		return fmt.Errorf("agent %s not found", agentID)
 	}
 
-	return entry.agent.stopWithStatus("paused")
+	if err := entry.agent.stopWithStatus("paused"); err != nil {
+		return err
+	}
+	if entry.agent.cmd == nil {
+		m.removeManagedAgent(agentID, entry)
+	}
+	return nil
 }
 
 // forwardConversation reads from an agent's conversationCh and sends to the manager's channel.
@@ -202,21 +186,13 @@ func (m *Manager) SendMessage(agentID, text string) error {
 	return entry.agent.SendMessage(text)
 }
 
-// Spawn creates and starts a new agent turn using the current NanoClaw session CLI.
-// The newer CLI no longer accepts legacy context-id or SOP flags directly, so the
-// template SOP content is sent as the first turn and browser attachment is handled
-// by the generated NanoClaw profile config.
+// Spawn creates and starts a new agent turn through the managed NanoClaw daemon.
 func (m *Manager) Spawn(contextID string, sopFile string, extraArgs ...string) (string, error) {
 	return m.SpawnIsolated(contextID, sopFile, "", nil, extraArgs...)
 }
 
 // SpawnIsolated starts an agent with an optional per-run NanoClaw config and cleanup hook.
 func (m *Manager) SpawnIsolated(contextID string, sopFile string, configPath string, cleanup func(), extraArgs ...string) (string, error) {
-	nanoclawBin := m.findNanoClaw()
-	if nanoclawBin == "" {
-		return "", fmt.Errorf("NanoClaw not found. Install: git clone https://github.com/nanocoai/nanoclaw.git")
-	}
-
 	id := uuid.New().String()[:8]
 
 	message := ""
@@ -233,31 +209,20 @@ func (m *Manager) SpawnIsolated(contextID string, sopFile string, configPath str
 	if message == "" {
 		message = "Start."
 	}
+	if strings.TrimSpace(configPath) == "" {
+		configPath = config.NanoClawConfigPath()
+	}
 
-	args := nanoclawArgs("vulpine-"+id, message)
-	return m.startManagedAgent(id, contextID, nanoclawBin, args, configPath, cleanup)
+	return m.SpawnWithSessionIsolated(id, message, "vulpine-"+id, configPath, cleanup)
 }
 
 // SpawnNanoClaw spawns an agent using NanoClaw.
 // It sends a task message to NanoClaw to start an agent run.
 func (m *Manager) SpawnNanoClaw(task string, agentSkills []config.SkillEntry) (string, error) {
-	// Find NanoClaw binary
-	nanoclawBin := m.findNanoClaw()
-	if nanoclawBin == "" {
-		return "", fmt.Errorf("NanoClaw not found. Install: git clone https://github.com/nanocoai/nanoclaw.git")
-	}
-
 	id := uuid.New().String()[:8]
-
-	// NanoClaw args: run with session and task
-	args := []string{
-		"run",
-		"--session", "vulpine-" + id,
-		task,
-	}
 	_ = agentSkills
 
-	return m.startManagedAgent(id, "nanoclaw", nanoclawBin, args, "", nil)
+	return m.SpawnWithSession(id, task, "vulpine-"+id, config.NanoClawConfigPath())
 }
 
 // SpawnOpenCode spawns an agent using the local OpenCode server.
@@ -329,13 +294,19 @@ func (m *Manager) SpawnOpenCode(task string, vaultAgentID string) (string, error
 func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, cleanup func()) (string, error) {
 	nanoclawDir := GetNanoclawDir()
 	if nanoclawDir == "" {
-		return "", fmt.Errorf("nanoclaw directory not found")
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", fmt.Errorf("NanoClaw daemon is not running at %s", VulpineNanoclawSocketPath())
 	}
 
 	client := NewNanoclawClient(nanoclawDir)
 
 	if !client.IsRunning() {
-		return "", fmt.Errorf("nanoclaw daemon not running. Start with: cd nanoclaw && pnpm tsx src/index.ts")
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", fmt.Errorf("NanoClaw daemon is not running at %s", VulpineNanoclawSocketPath())
 	}
 	if err := ensureVulpineAgentRoute(nanoclawDir, agentID); err != nil {
 		if cleanup != nil {
@@ -345,33 +316,50 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 	}
 
 	agent := newAgent(agentID, sessionName, m.statusSource)
-	agent.sessionLogPath = ""
+	if path, err := sessionLogPathForSessionID(sessionName); err == nil {
+		agent.sessionLogPath = path
+	}
+
+	entry := &managedAgent{agent: agent, cleanup: cleanup}
 
 	m.mu.Lock()
-	m.agents[agentID] = &managedAgent{agent: agent, cleanup: cleanup}
+	m.agents[agentID] = entry
 	m.mu.Unlock()
 
+	agent.mu.Lock()
+	agent.status.Status = "running"
+	agent.status.Objective = task
+	agent.emitStatusLocked()
+	agent.mu.Unlock()
+
 	go func() {
+		finished := false
+		finish := func(status string) {
+			if finished {
+				return
+			}
+			finished = true
+			agent.mu.Lock()
+			agent.status.Status = status
+			agent.status.Tokens = 0
+			agent.mu.Unlock()
+			agent.finish(status)
+			m.removeManagedAgent(agentID, entry)
+		}
 		err := client.SendAgentMessage(agentID, task, func(chunk string, done bool) {
 			if chunk == "[superseded by a newer client]" {
 				return
 			}
 			if chunk != "" {
-				agent.conversationCh <- ConversationMsg{
+				agent.emitConversation(ConversationMsg{
 					AgentID: agentID,
 					Role:    "assistant",
 					Content: chunk,
 					Tokens:  0,
-				}
+				})
 			}
 			if done {
-				agent.mu.Lock()
-				agent.status.Status = "completed"
-				agent.status.Tokens = 0
-				agent.mu.Unlock()
-				agent.statusCh <- agent.status
-				close(agent.doneCh)
-				close(agent.conversationCh)
+				finish("completed")
 			}
 		})
 		if err != nil {
@@ -379,8 +367,10 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 			agent.status.Status = "error"
 			agent.status.Objective = err.Error()
 			agent.mu.Unlock()
-			agent.statusCh <- agent.status
+			finish("error")
+			return
 		}
+		finish("completed")
 	}()
 
 	go m.forwardConversation(agent)
@@ -485,7 +475,13 @@ func (m *Manager) Kill(agentID string) error {
 	if !ok {
 		return fmt.Errorf("agent %s not found", agentID)
 	}
-	return entry.agent.stopWithStatus("interrupted")
+	if err := entry.agent.stopWithStatus("interrupted"); err != nil {
+		return err
+	}
+	if entry.agent.cmd == nil {
+		m.removeManagedAgent(agentID, entry)
+	}
+	return nil
 }
 
 // List returns the status of all active agents.
@@ -555,6 +551,22 @@ func waitAgentDone(agent *Agent, timeout time.Duration) {
 	select {
 	case <-agent.doneCh:
 	case <-time.After(timeout):
+	}
+}
+
+func (m *Manager) removeManagedAgent(agentID string, entry *managedAgent) {
+	if entry == nil {
+		return
+	}
+	removed := false
+	m.mu.Lock()
+	if current, ok := m.agents[agentID]; ok && current == entry {
+		delete(m.agents, agentID)
+		removed = true
+	}
+	m.mu.Unlock()
+	if removed && entry.cleanup != nil {
+		entry.cleanup()
 	}
 }
 
@@ -694,7 +706,7 @@ func sessionLogPathForSessionID(sessionID string) (string, error) {
 
 func sessionIDFromArgs(args []string) string {
 	for i := 0; i < len(args)-1; i++ {
-		if args[i] == "--session-id" {
+		if args[i] == "--session-id" || args[i] == "--session" {
 			return args[i+1]
 		}
 	}
@@ -719,10 +731,10 @@ func runtimeEnvForConfig(configPath string) map[string]string {
 	}
 
 	env := map[string]string{
-		"OPENCLAW_CONFIG_PATH": configPath,
+		"NANOCLAW_CONFIG_PATH": configPath,
 	}
 	if token, err := gatewayAuthToken(configPath); err == nil && strings.TrimSpace(token) != "" {
-		env["OPENCLAW_GATEWAY_TOKEN"] = token
+		env["NANOCLAW_GATEWAY_TOKEN"] = token
 	}
 	return env
 }

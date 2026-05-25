@@ -83,6 +83,7 @@ type Agent struct {
 	binary         string            // binary path used to start this agent
 	args           []string          // args used to start this agent
 	waitState      *agentWaitState
+	finishOnce     sync.Once
 	stopStatus     string
 	sessionLogPath string
 	lastToolName   string
@@ -131,7 +132,7 @@ func (a *Agent) start(binary string, args []string) error {
 	configureAgentProcess(a.cmd)
 	a.waitState = &agentWaitState{}
 
-	// Apply extra environment variables (e.g. OPENCLAW_CONFIG_PATH)
+	// Apply extra environment variables (e.g. NANOCLAW_CONFIG_PATH)
 	if len(a.env) > 0 {
 		a.cmd.Env = os.Environ()
 		for k, v := range a.env {
@@ -1098,6 +1099,19 @@ func (a *Agent) emitConversation(msg ConversationMsg) {
 	}
 }
 
+func (a *Agent) finish(status string) {
+	a.finishOnce.Do(func() {
+		a.mu.Lock()
+		if status != "" {
+			a.status.Status = status
+		}
+		a.mu.Unlock()
+		a.emitStatus()
+		close(a.doneCh)
+		close(a.conversationCh)
+	})
+}
+
 // Stop kills the agent subprocess and waits for it to exit.
 func (a *Agent) Stop() error {
 	return a.stopWithStatus("completed")
@@ -1131,7 +1145,11 @@ func (a *Agent) stopWithStatus(status string) error {
 		pipe.Close()
 	}
 
-	a.emitStatus()
+	if cmd == nil && pipe == nil {
+		a.finish(status)
+	} else {
+		a.emitStatus()
+	}
 	return nil
 }
 

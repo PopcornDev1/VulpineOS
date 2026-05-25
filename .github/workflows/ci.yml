@@ -51,7 +51,7 @@ jobs:
             ./internal/juggler \
             ./internal/mcp \
             ./internal/monitor \
-            ./internal/openclaw \
+            ./internal/nanoclaw \
             ./internal/orchestrator \
             ./internal/pagecache \
             ./internal/pool \
@@ -111,12 +111,3 @@ jobs:
             fi
           done
           echo "All required patches present"
-
-      - name: Check web panel build exists
-        run: |
-          if [ ! -d "web/dist" ]; then
-            echo "WARNING: web/dist not found — web panel not built"
-          else
-            count=$(find web/dist -name '*.js' -o -name '*.html' | wc -l)
-            echo "Web panel assets: $count files"
-          fi

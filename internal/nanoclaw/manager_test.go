@@ -205,7 +205,25 @@ func TestSpawnFailsWithBadBinary(t *testing.T) {
 	}
 }
 
-func TestRuntimeEnvForConfigIncludesGatewayToken(t *testing.T) {
+func TestSpawnWithSessionRequiresVulpineOwnedDaemonSocket(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	tmpDir := t.TempDir()
+	bin := filepath.Join(tmpDir, "nanoclaw")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatalf("write fake nanoclaw binary: %v", err)
+	}
+	m := NewManager(bin)
+
+	_, err := m.SpawnWithSessionIsolated("agent-1", "task", "vulpine-agent-1", config.NanoClawConfigPath(), nil)
+	if err == nil {
+		t.Fatal("expected missing daemon socket error")
+	}
+	if !strings.Contains(err.Error(), "NanoClaw daemon is not running") {
+		t.Fatalf("error = %v, want daemon socket error", err)
+	}
+}
+
+func TestRuntimeEnvForConfigIncludesNanoClawGatewayToken(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "nanoclaw.json")
 	if err := os.WriteFile(configPath, []byte(`{"gateway":{"auth":{"mode":"token","token":"token-123"}}}`), 0600); err != nil {
@@ -213,15 +231,21 @@ func TestRuntimeEnvForConfigIncludesGatewayToken(t *testing.T) {
 	}
 
 	env := runtimeEnvForConfig(configPath)
-	if env["OPENCLAW_CONFIG_PATH"] != configPath {
-		t.Fatalf("OPENCLAW_CONFIG_PATH = %q, want %q", env["OPENCLAW_CONFIG_PATH"], configPath)
+	if env["NANOCLAW_CONFIG_PATH"] != configPath {
+		t.Fatalf("NANOCLAW_CONFIG_PATH = %q, want %q", env["NANOCLAW_CONFIG_PATH"], configPath)
 	}
-	if env["OPENCLAW_GATEWAY_TOKEN"] != "token-123" {
-		t.Fatalf("OPENCLAW_GATEWAY_TOKEN = %q, want %q", env["OPENCLAW_GATEWAY_TOKEN"], "token-123")
+	if env["NANOCLAW_GATEWAY_TOKEN"] != "token-123" {
+		t.Fatalf("NANOCLAW_GATEWAY_TOKEN = %q, want %q", env["NANOCLAW_GATEWAY_TOKEN"], "token-123")
+	}
+	if _, ok := env["OPENCLAW_CONFIG_PATH"]; ok {
+		t.Fatalf("OPENCLAW_CONFIG_PATH should not be set after clean cutover: %#v", env)
+	}
+	if _, ok := env["OPENCLAW_GATEWAY_TOKEN"]; ok {
+		t.Fatalf("OPENCLAW_GATEWAY_TOKEN should not be set after clean cutover: %#v", env)
 	}
 }
 
-func TestRuntimeEnvForConfigOmitsMissingGatewayToken(t *testing.T) {
+func TestRuntimeEnvForConfigOmitsMissingNanoClawGatewayToken(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "nanoclaw.json")
 	if err := os.WriteFile(configPath, []byte(`{"gateway":{"mode":"local"}}`), 0600); err != nil {
@@ -229,11 +253,11 @@ func TestRuntimeEnvForConfigOmitsMissingGatewayToken(t *testing.T) {
 	}
 
 	env := runtimeEnvForConfig(configPath)
-	if env["OPENCLAW_CONFIG_PATH"] != configPath {
-		t.Fatalf("OPENCLAW_CONFIG_PATH = %q, want %q", env["OPENCLAW_CONFIG_PATH"], configPath)
+	if env["NANOCLAW_CONFIG_PATH"] != configPath {
+		t.Fatalf("NANOCLAW_CONFIG_PATH = %q, want %q", env["NANOCLAW_CONFIG_PATH"], configPath)
 	}
-	if _, ok := env["OPENCLAW_GATEWAY_TOKEN"]; ok {
-		t.Fatalf("OPENCLAW_GATEWAY_TOKEN should be omitted when token is absent: %#v", env)
+	if _, ok := env["NANOCLAW_GATEWAY_TOKEN"]; ok {
+		t.Fatalf("NANOCLAW_GATEWAY_TOKEN should be omitted when token is absent: %#v", env)
 	}
 }
 

@@ -16,7 +16,7 @@ FROM ubuntu:22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
-    ca-certificates curl \
+    ca-certificates curl git \
     && install -d -m 0755 /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
@@ -30,9 +30,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /opt/vulpineos
 
-# Install OpenClaw where the runtime manager can discover it.
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# Install NanoClaw from its maintained upstream source and expose a stable
+# command for VulpineOS to manage as its owned daemon.
+RUN corepack enable \
+    && git clone --depth=1 https://github.com/qwibitai/nanoclaw.git /opt/vulpineos/nanoclaw-src \
+    && cd /opt/vulpineos/nanoclaw-src \
+    && pnpm install --frozen-lockfile \
+    && printf '%s\n' '#!/bin/sh' 'cd /opt/vulpineos/nanoclaw-src' 'exec pnpm tsx src/index.ts "$@"' > /usr/local/bin/nanoclaw \
+    && chmod +x /usr/local/bin/nanoclaw \
+    && pnpm store prune
 
 # Copy pre-built Camoufox distribution (must be in dist/camoufox-linux/)
 COPY dist/camoufox-linux/ ./browser/
@@ -48,6 +54,7 @@ RUN chmod +x ./entrypoint.sh ./vulpineos
 RUN mkdir -p /root/.vulpineos
 
 ENV DISPLAY=:99
+ENV VULPINE_NANOCLAW_DIR=/root/.vulpineos/nanoclaw
 EXPOSE 8443
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

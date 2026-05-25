@@ -140,6 +140,29 @@ func TestNanoclawClientRoutesAgentMessages(t *testing.T) {
 	}
 }
 
+func TestFindNanoclawSocketUsesVulpineOwnedPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	socketPath := filepath.Join(home, ".vulpineos", "nanoclaw", "data", "cli.sock")
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0700); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+	if err := os.WriteFile(socketPath, []byte{}, 0600); err != nil {
+		t.Fatalf("write socket marker: %v", err)
+	}
+
+	got, ok := FindNanoclawSocket()
+	if !ok {
+		t.Fatal("FindNanoclawSocket() did not find VulpineOS-owned socket")
+	}
+	if got != socketPath {
+		t.Fatalf("socket path = %q, want %q", got, socketPath)
+	}
+	if got := GetNanoclawDir(); got != filepath.Join(home, ".vulpineos", "nanoclaw") {
+		t.Fatalf("GetNanoclawDir() = %q, want VulpineOS-owned NanoClaw dir", got)
+	}
+}
+
 func TestEnsureVulpineAgentRouteCreatesMessagingGroupAndWiring(t *testing.T) {
 	nanoclawDir := t.TempDir()
 	dataDir := filepath.Join(nanoclawDir, "data")

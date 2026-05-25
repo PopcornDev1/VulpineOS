@@ -4,13 +4,10 @@
   "description": "VulpineOS: stealth-aware AI browser agent runtime with browser-engine security.",
   "private": true,
   "scripts": {
-    "postinstall": "echo 'VulpineOS dependencies installed. OpenClaw is ready.'",
+    "postinstall": "echo 'VulpineOS dependencies installed.'",
     "build-go": "go build -o vulpineos ./cmd/vulpineos/",
     "setup": "go build -o vulpineos ./cmd/vulpineos/ && ./vulpineos --no-browser",
     "benchmark:tokens": "node benchmarks/token-optimization/benchmark.mjs"
-  },
-  "dependencies": {
-    "openclaw": "latest"
   },
   "devDependencies": {
     "gpt-tokenizer": "^3.4.0"

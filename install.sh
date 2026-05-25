@@ -13,10 +13,17 @@ if [ ! -f "go.mod" ]; then
     cd VulpineOS
 fi
 
-# Install nanoclaw (replaces npm install for OpenClaw)
-if command -v npm >/dev/null 2>&1; then
-    echo "Installing nanoclaw..."
-    npm install -g nanoclaw 2>/dev/null || true
+# Install NanoClaw from the maintained upstream source when pnpm/corepack is available.
+if command -v git >/dev/null 2>&1 && command -v corepack >/dev/null 2>&1; then
+    echo "Installing NanoClaw..."
+    corepack enable >/dev/null 2>&1 || true
+    if command -v pnpm >/dev/null 2>&1; then
+        rm -rf "${HOME}/.vulpineos/nanoclaw-src"
+        git clone --depth=1 https://github.com/qwibitai/nanoclaw.git "${HOME}/.vulpineos/nanoclaw-src" >/dev/null 2>&1 || true
+        if [ -d "${HOME}/.vulpineos/nanoclaw-src" ]; then
+            (cd "${HOME}/.vulpineos/nanoclaw-src" && pnpm install --frozen-lockfile) || true
+        fi
+    fi
 fi
 
 # Build

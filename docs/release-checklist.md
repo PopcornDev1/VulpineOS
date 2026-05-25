@@ -57,20 +57,6 @@ node --check additions/juggler/protocol/*.js
 node --check additions/juggler/content/*.js
 ```
 
-If the web panel changed:
-
-```bash
-npm --prefix web test -- --run
-npm --prefix web run build
-```
-
-Then smoke the embedded panel through the local Playwright MCP with
-`scripts/playwright/smoke-panel.js`. Set
-`VULPINE_PANEL_SMOKE_URL=http://127.0.0.1:8443` and
-`VULPINE_PANEL_SMOKE_ACCESS_KEY=<access-key>` if the URL does not already
-contain a token. Leave `VULPINE_PANEL_SMOKE_SCREENSHOT` unset unless the user
-has explicitly asked for a screenshot artifact.
-
 ## Public-boundary checks
 
 Run both public leak audits before tagging:

@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"go/parser"
 	"go/token"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,6 +72,59 @@ func openTestVault(t *testing.T) *vault.DB {
 		_ = db.Close()
 	})
 	return db
+}
+
+func startFakeNanoClawSocket(t *testing.T) func() {
+	t.Helper()
+	home, err := os.MkdirTemp("/tmp", "vot-*")
+	if err != nil {
+		t.Fatalf("create short temp home: %v", err)
+	}
+	t.Setenv("HOME", home)
+	dataDir := filepath.Join(home, ".vulpineos", "nanoclaw", "data")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatalf("mkdir nanoclaw data dir: %v", err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "v2.db"))
+	if err != nil {
+		t.Fatalf("open fake nanoclaw db: %v", err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE agent_groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, folder TEXT NOT NULL UNIQUE, agent_provider TEXT, created_at TEXT NOT NULL);
+CREATE TABLE messaging_groups (id TEXT PRIMARY KEY, channel_type TEXT NOT NULL, platform_id TEXT NOT NULL, name TEXT, is_group INTEGER DEFAULT 0, unknown_sender_policy TEXT NOT NULL DEFAULT 'strict', created_at TEXT NOT NULL, denied_at TEXT, UNIQUE(channel_type, platform_id));
+CREATE TABLE messaging_group_agents (id TEXT PRIMARY KEY, messaging_group_id TEXT NOT NULL REFERENCES messaging_groups(id), agent_group_id TEXT NOT NULL REFERENCES agent_groups(id), session_mode TEXT DEFAULT 'shared', priority INTEGER DEFAULT 0, created_at TEXT NOT NULL, engage_mode TEXT, engage_pattern TEXT, sender_scope TEXT, ignored_message_policy TEXT, UNIQUE(messaging_group_id, agent_group_id));
+INSERT INTO agent_groups (id, name, folder, created_at) VALUES ('ag-1', 'vulpine-test', 'vulpine-test', '2026-01-01T00:00:00Z');
+`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("create fake nanoclaw schema: %v", err)
+	}
+	_ = db.Close()
+
+	socketPath := filepath.Join(dataDir, "cli.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen fake nanoclaw socket: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = bufio.NewReader(c).ReadString('\n')
+				<-done
+			}(conn)
+		}
+	}()
+	return func() {
+		close(done)
+		_ = listener.Close()
+		_ = os.RemoveAll(home)
+	}
 }
 
 func TestNewAppReconcilesNonTerminalAgentsToPaused(t *testing.T) {
@@ -2629,6 +2685,8 @@ func TestRemoteGracefulShutdownPausesActiveAgents(t *testing.T) {
 
 func TestGracefulShutdownPausesActiveAgents(t *testing.T) {
 	db := openTestVault(t)
+	stopNanoClaw := startFakeNanoClawSocket(t)
+	defer stopNanoClaw()
 
 	agent, err := db.CreateAgent("active-agent", "task", "{}")
 	if err != nil {
