@@ -21,7 +21,7 @@ These tests use `testutil.NewFakeJugglerTransport` and in-memory fakes:
 |------|-------|-----|
 | `internal/integration_test.go` | Real browser/kernel flows | Requires Camoufox |
 | `internal/agent_soak_integration_test.go` | Multi-agent soak | Requires real browser |
-| `internal/openclaw/manager_test.go` | OpenClaw binary spawn | Requires binary |
+| `internal/nanoclaw/manager_test.go` | Nanoclaw binary spawn | Requires binary |
 
 These stay as slow/regression tests. Our new tests are fast smoke.
 
@@ -67,14 +67,14 @@ func (e *testEnv) Close()
 ### 1. Agent Spawn Flow
 
 ```
-Test: SpawnCitizen → Vault.GetTemplate → Pool.Acquire → Juggler calls → OpenClaw.WriteSOP → track ownership → Vault.CreateNomadSession
+Test: SpawnCitizen → Vault.GetTemplate → Pool.Acquire → Juggler calls → Nanoclaw.WriteSOP → track ownership → Vault.CreateNomadSession
 
 Verifies:
 - Template loads from vault
 - Pool acquires context
 - Juggler creates browser context
 - Juggler sets cookies/locale/timezone/fingerprint
-- OpenClaw writes SOP (mocked)
+- Nanoclaw writes SOP (mocked)
 - Orchestrator tracks context ownership
 - Vault records session
 ```
@@ -122,7 +122,7 @@ Each flow includes error-at-boundary tests:
 - Pool acquire fails → context not created in vault
 - Juggler create context fails → pool release attempted
 - Juggler error response → error propagates
-- OpenClaw spawn fails → context released
+- Nanoclaw spawn fails → context released
 
 ## Execution
 
@@ -146,7 +146,7 @@ Must pass with race detector (no data races).
 
 These remain slow/external tests (NOT in this suite):
 - Real browser rendering
-- OpenClaw binary execution
+- Nanoclaw binary execution
 - Network requests
 - File system beyond temp dir
 
