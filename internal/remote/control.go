@@ -3,6 +3,10 @@ package remote
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"vulpineos/internal/config"
@@ -34,10 +38,26 @@ func (api *ControlAPI) HandleMessage(method string, params json.RawMessage) (jso
 	switch method {
 	case "status.get":
 		return api.statusGet()
+	case "settings.get":
+		return api.settingsGet()
+	case "config.providers":
+		return api.configProviders()
+	case "config.set":
+		return api.configSet(params)
+	case "proxies.add":
+		return api.proxiesAdd(params)
+	case "proxies.delete":
+		return api.proxiesDelete(params)
+	case "proxies.test":
+		return api.proxiesTest(params)
+	case "skills.set":
+		return api.skillsSet(params)
 	case "agents.list":
 		return api.agentsList()
 	case "agents.getMessages":
 		return api.agentsGetMessages(params)
+	case "agents.getSessionLog":
+		return api.agentsGetSessionLog(params)
 	case "agents.spawn":
 		return api.agentsSpawn(params)
 	case "agents.pause":
@@ -55,6 +75,314 @@ func (api *ControlAPI) HandleMessage(method string, params json.RawMessage) (jso
 	default:
 		return nil, fmt.Errorf("unknown method: %s", method)
 	}
+}
+
+type configSummary struct {
+	Provider                string  `json:"provider"`
+	ProviderName            string  `json:"providerName"`
+	Model                   string  `json:"model"`
+	APIKeySet               bool    `json:"apiKeySet"`
+	SetupComplete           bool    `json:"setupComplete"`
+	ResizePanelsWithArrows  bool    `json:"resizePanelsWithArrows"`
+	DefaultBudgetMaxCostUSD float64 `json:"defaultBudgetMaxCostUsd,omitempty"`
+	DefaultBudgetMaxTokens  int64   `json:"defaultBudgetMaxTokens,omitempty"`
+}
+
+type providerSummary struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	EnvVar       string   `json:"envVar"`
+	DefaultModel string   `json:"defaultModel"`
+	Models       []string `json:"models"`
+	NeedsKey     bool     `json:"needsKey"`
+}
+
+type proxySummary struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Type    string `json:"type"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	Country string `json:"country,omitempty"`
+	Latency string `json:"latency"`
+}
+
+type skillSummary struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+func (api *ControlAPI) settingsGet() (json.RawMessage, error) {
+	out := map[string]any{
+		"config":    summarizeConfig(api.Config),
+		"proxies":   []proxySummary{},
+		"skills":    summarizeSkills(api.Config),
+		"providers": summarizeProviders(),
+	}
+	if api.Vault != nil {
+		proxies, err := api.Vault.ListProxies()
+		if err != nil {
+			return nil, err
+		}
+		out["proxies"] = summarizeProxies(proxies)
+	}
+	return json.Marshal(out)
+}
+
+func (api *ControlAPI) configProviders() (json.RawMessage, error) {
+	return json.Marshal(map[string]any{"providers": summarizeProviders()})
+}
+
+func (api *ControlAPI) configSet(params json.RawMessage) (json.RawMessage, error) {
+	if api.Config == nil {
+		return nil, fmt.Errorf("config not available")
+	}
+	var p struct {
+		Provider               string `json:"provider"`
+		Model                  string `json:"model"`
+		APIKey                 string `json:"apiKey"`
+		KeepAPIKey             bool   `json:"keepApiKey"`
+		SetupComplete          *bool  `json:"setupComplete"`
+		ResizePanelsWithArrows *bool  `json:"resizePanelsWithArrows"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+	if provider := strings.TrimSpace(p.Provider); provider != "" {
+		api.Config.Provider = provider
+	}
+	if model := strings.TrimSpace(p.Model); model != "" {
+		api.Config.Model = model
+	}
+	if key := strings.TrimSpace(p.APIKey); key != "" {
+		api.Config.APIKey = key
+	} else if !p.KeepAPIKey {
+		// A blank key is treated as "preserve existing" by default so remote
+		// settings never need to read the host secret back.
+	}
+	if p.ResizePanelsWithArrows != nil {
+		api.Config.ResizePanelsWithArrows = *p.ResizePanelsWithArrows
+	}
+	api.Config.RefreshSetupComplete()
+	if p.SetupComplete != nil && !*p.SetupComplete {
+		api.Config.SetupComplete = false
+	}
+	if err := api.Config.Save(); err != nil {
+		return nil, err
+	}
+	if api.Config.SetupComplete {
+		exe, _ := os.Executable()
+		if err := api.Config.GenerateNanoClawConfig(exe, api.Config.BinaryPath); err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(summarizeConfig(api.Config))
+}
+
+func (api *ControlAPI) proxiesAdd(params json.RawMessage) (json.RawMessage, error) {
+	if api.Vault == nil {
+		return nil, fmt.Errorf("vault not available")
+	}
+	var p struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+	pc, err := proxy.ParseProxyURL(p.URL)
+	if err != nil {
+		return nil, err
+	}
+	data, _ := json.Marshal(pc)
+	if _, err := api.Vault.AddProxy(string(data), "", pc.String()); err != nil {
+		return nil, err
+	}
+	return api.proxiesListResult()
+}
+
+func (api *ControlAPI) proxiesDelete(params json.RawMessage) (json.RawMessage, error) {
+	if api.Vault == nil {
+		return nil, fmt.Errorf("vault not available")
+	}
+	var p struct {
+		ProxyID string `json:"proxyId"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+	id := strings.TrimSpace(p.ProxyID)
+	if id == "" {
+		return nil, fmt.Errorf("proxyId is required")
+	}
+	if err := api.Vault.DeleteProxy(id); err != nil {
+		return nil, err
+	}
+	return api.proxiesListResult()
+}
+
+func (api *ControlAPI) proxiesTest(params json.RawMessage) (json.RawMessage, error) {
+	if api.Vault == nil {
+		return nil, fmt.Errorf("vault not available")
+	}
+	var p struct {
+		ProxyID string `json:"proxyId"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+	id := strings.TrimSpace(p.ProxyID)
+	if id == "" {
+		return nil, fmt.Errorf("proxyId is required")
+	}
+	stored, err := api.Vault.GetProxy(id)
+	if err != nil {
+		return nil, err
+	}
+	var pc proxy.ProxyConfig
+	if err := json.Unmarshal([]byte(stored.Config), &pc); err != nil {
+		return nil, fmt.Errorf("invalid proxy config")
+	}
+	latency, err := proxy.TestProxy(pc)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{
+		"proxyId": id,
+		"latency": fmt.Sprintf("%dms", latency),
+	}
+	if geo, err := proxy.ResolveGeo(pc); err == nil {
+		out["exitIp"] = geo.IP
+		out["country"] = geo.Country
+		if geoJSON, err := json.Marshal(geo); err == nil {
+			_ = api.Vault.UpdateProxyGeo(id, string(geoJSON))
+		}
+	}
+	return json.Marshal(out)
+}
+
+func (api *ControlAPI) proxiesListResult() (json.RawMessage, error) {
+	proxies, err := api.Vault.ListProxies()
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"proxies": summarizeProxies(proxies)})
+}
+
+func (api *ControlAPI) skillsSet(params json.RawMessage) (json.RawMessage, error) {
+	if api.Config == nil {
+		return nil, fmt.Errorf("config not available")
+	}
+	var p struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	if p.Enabled {
+		api.Config.AddGlobalSkill(name, nil)
+	} else {
+		api.Config.RemoveGlobalSkill(name)
+	}
+	if err := api.Config.Save(); err != nil {
+		return nil, err
+	}
+	if api.Config.SetupComplete {
+		exe, _ := os.Executable()
+		if err := api.Config.GenerateNanoClawConfig(exe, api.Config.BinaryPath); err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(map[string]any{"skills": summarizeSkills(api.Config)})
+}
+
+func summarizeConfig(cfg *config.Config) configSummary {
+	if cfg == nil {
+		return configSummary{}
+	}
+	providerName := cfg.Provider
+	if p := config.GetProvider(cfg.Provider); p != nil {
+		providerName = p.Name
+	}
+	return configSummary{
+		Provider:                cfg.Provider,
+		ProviderName:            providerName,
+		Model:                   cfg.Model,
+		APIKeySet:               strings.TrimSpace(cfg.APIKey) != "",
+		SetupComplete:           cfg.SetupComplete,
+		ResizePanelsWithArrows:  cfg.ResizePanelsWithArrows,
+		DefaultBudgetMaxCostUSD: cfg.DefaultBudgetMaxCostUSD,
+		DefaultBudgetMaxTokens:  cfg.DefaultBudgetMaxTokens,
+	}
+}
+
+func summarizeProviders() []providerSummary {
+	providers := config.MergedProviders()
+	out := make([]providerSummary, 0, len(providers))
+	for _, p := range providers {
+		out = append(out, providerSummary{
+			ID:           p.ID,
+			Name:         p.Name,
+			EnvVar:       p.EnvVar,
+			DefaultModel: p.DefaultModel,
+			Models:       append([]string(nil), p.Models...),
+			NeedsKey:     p.NeedsKey,
+		})
+	}
+	return out
+}
+
+func summarizeSkills(cfg *config.Config) []skillSummary {
+	if cfg == nil {
+		return []skillSummary{}
+	}
+	out := make([]skillSummary, 0, len(cfg.GlobalSkills))
+	for _, s := range cfg.GlobalSkills {
+		out = append(out, skillSummary{Name: s.Name, Enabled: s.Enabled})
+	}
+	return out
+}
+
+func summarizeProxies(proxies []vault.StoredProxy) []proxySummary {
+	out := make([]proxySummary, 0, len(proxies))
+	for _, stored := range proxies {
+		item := proxySummary{ID: stored.ID, Latency: "untested"}
+		var pc proxy.ProxyConfig
+		if json.Unmarshal([]byte(stored.Config), &pc) == nil {
+			item.Type = pc.Type
+			item.Host = pc.Host
+			item.Port = pc.Port
+			item.Label = pc.String()
+		} else {
+			item.Label = safeProxyLabel(stored.Label)
+		}
+		if item.Label == "" {
+			item.Label = stored.ID
+		}
+		var geo struct {
+			Country string `json:"country"`
+		}
+		if json.Unmarshal([]byte(stored.Geo), &geo) == nil {
+			item.Country = geo.Country
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func safeProxyLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	if pc, err := proxy.ParseProxyURL(label); err == nil {
+		return pc.String()
+	}
+	return label
 }
 
 func (api *ControlAPI) agentsList() (json.RawMessage, error) {
@@ -111,6 +439,87 @@ func (api *ControlAPI) agentsGetMessages(params json.RawMessage) (json.RawMessag
 		return nil, err
 	}
 	return json.Marshal(map[string]any{"messages": messages})
+}
+
+func (api *ControlAPI) agentsGetSessionLog(params json.RawMessage) (json.RawMessage, error) {
+	var p struct {
+		AgentID    string `json:"agentId"`
+		Offset     int64  `json:"offset"`
+		LimitBytes int64  `json:"limitBytes"`
+		Tail       bool   `json:"tail"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, err
+	}
+	agentID := strings.TrimSpace(p.AgentID)
+	if agentID == "" {
+		return nil, fmt.Errorf("agentId is required")
+	}
+	if api.Vault != nil {
+		if _, err := api.Vault.GetAgent(agentID); err != nil {
+			return nil, err
+		}
+	}
+	path, err := sessionLogPathForAgentID(agentID)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return json.Marshal(map[string]any{
+				"agentId":    agentID,
+				"exists":     false,
+				"redacted":   true,
+				"content":    "",
+				"offset":     int64(0),
+				"nextOffset": int64(0),
+				"eof":        true,
+			})
+		}
+		return nil, err
+	}
+	size := info.Size()
+	limit := p.LimitBytes
+	if limit <= 0 || limit > 65536 {
+		limit = 65536
+	}
+	offset := p.Offset
+	if p.Tail && size > limit {
+		offset = size - limit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > size {
+		offset = size
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if _, err := f.Seek(offset, 0); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, limit)
+	n, err := f.Read(buf)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	next := offset + int64(n)
+	content := redactRemoteLogText(string(buf[:n]))
+	return json.Marshal(map[string]any{
+		"agentId":    agentID,
+		"exists":     true,
+		"sizeBytes":  size,
+		"offset":     offset,
+		"nextOffset": next,
+		"eof":        next >= size,
+		"truncated":  next < size,
+		"redacted":   true,
+		"content":    content,
+	})
 }
 
 func (api *ControlAPI) agentsSpawn(params json.RawMessage) (json.RawMessage, error) {
@@ -382,4 +791,35 @@ func (api *ControlAPI) browserWindow() string {
 		return "visible"
 	}
 	return "hidden"
+}
+
+func sessionLogPathForAgentID(agentID string) (string, error) {
+	id := strings.TrimSpace(agentID)
+	if id == "" {
+		return "", fmt.Errorf("agent id is required")
+	}
+	if strings.ContainsAny(id, `/\`) || id == "." || id == ".." {
+		return "", fmt.Errorf("invalid agent id")
+	}
+	sessionsDir := filepath.Join(config.NanoClawProfileDir(), "agents", "main", "sessions")
+	path := filepath.Join(sessionsDir, "vulpine-"+id+".jsonl")
+	rel, err := filepath.Rel(sessionsDir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("invalid agent id")
+	}
+	return path, nil
+}
+
+var (
+	remoteBearerPattern      = regexp.MustCompile(`(?i)(Authorization:\s*Bearer\s+)[^\s",}]+`)
+	remoteQuerySecretPattern = regexp.MustCompile(`(?i)([?&](?:token|api[_-]?key|key|secret|password|signature|sig|auth|access[_-]?token)=)[^&\s"']+`)
+	remoteJSONSecretPattern  = regexp.MustCompile(`(?i)("(?:token|api[_-]?key|key|secret|password|signature|cookie|authorization|credential)"\s*:\s*")[^"]*(")`)
+	remoteKVSecretPattern    = regexp.MustCompile(`(?i)\b(token|api[_-]?key|key|secret|password|signature|cookie|credential)(\s*[:=]\s*)[^\s",}]+`)
+)
+
+func redactRemoteLogText(value string) string {
+	value = remoteBearerPattern.ReplaceAllString(value, "${1}[redacted]")
+	value = remoteQuerySecretPattern.ReplaceAllString(value, "${1}[redacted]")
+	value = remoteJSONSecretPattern.ReplaceAllString(value, "${1}[redacted]${2}")
+	return remoteKVSecretPattern.ReplaceAllString(value, "${1}${2}[redacted]")
 }

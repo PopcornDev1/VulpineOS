@@ -184,12 +184,12 @@ var Providers = []Provider{
 
 	// --- Gateway/proxy providers ---
 	{ID: "opencode", Name: "OpenCode (Zen)", EnvVar: "OPENCODE_API_KEY",
-		DefaultModel: "opencode/claude-opus-4-6",
-		Models:       []string{"opencode/claude-opus-4-6", "opencode/claude-sonnet-4-6"},
+		DefaultModel: "opencode/minimax-m2.5",
+		Models:       []string{"opencode/minimax-m2.5", "opencode/deepseek-v4", "opencode/claude-opus-4-6", "opencode/claude-sonnet-4-6"},
 		NeedsKey:     true},
 	{ID: "opencode-go", Name: "OpenCode Go", EnvVar: "OPENCODE_API_KEY",
 		DefaultModel: "opencode-go/minimax-m2.5",
-		Models:       []string{"opencode-go/minimax-m2.5", "opencode-go/minimax-m2.1", "opencode-go/minimax-m2"},
+		Models:       []string{"opencode-go/minimax-m2.5", "opencode-go/deepseek-v4", "opencode-go/minimax-m2.1", "opencode-go/minimax-m2"},
 		NeedsKey:     true},
 	{ID: "kilocode", Name: "Kilo Gateway", EnvVar: "KILOCODE_API_KEY",
 		DefaultModel: "kilocode/anthropic/claude-opus-4.6",

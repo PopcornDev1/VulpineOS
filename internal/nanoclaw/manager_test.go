@@ -195,6 +195,60 @@ func TestNanoClawInstalledFalseForBogus(t *testing.T) {
 	_ = m.NanoClawInstalled()
 }
 
+func TestFindNanoClawCreatesLauncherForUpstreamSource(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	srcDir := filepath.Join(home, ".vulpineos", "nanoclaw-src")
+	if err := os.MkdirAll(filepath.Join(srcDir, "src", "cli"), 0700); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(srcDir, "bin"), 0700); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	for path, data := range map[string]string{
+		filepath.Join(srcDir, "package.json"):            `{"name":"nanoclaw"}`,
+		filepath.Join(srcDir, "src", "index.ts"):         `console.log("daemon")`,
+		filepath.Join(srcDir, "src", "cli", "client.ts"): `console.log("client")`,
+		filepath.Join(srcDir, "bin", "ncl"):              "#!/bin/sh\nexit 0\n",
+	} {
+		if err := os.WriteFile(path, []byte(data), 0700); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	m := NewManager("")
+	got := m.findNanoClaw()
+	want := filepath.Join(home, ".vulpineos", "nanoclaw", "nanoclaw")
+	if got != want {
+		t.Fatalf("findNanoClaw() = %q, want %q", got, want)
+	}
+	if !isRunnable(got) {
+		t.Fatalf("launcher is not runnable: %s", got)
+	}
+	content, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatalf("read launcher: %v", err)
+	}
+	for _, want := range []string{"VULPINE_NANOCLAW_HOME", "dist/index.js", "src/index.ts", "src/cli/client.ts"} {
+		if !strings.Contains(string(content), want) {
+			t.Fatalf("launcher content does not contain %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestAppendSocketSessionLogWritesJSONL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agents", "main", "sessions", "vulpine-agent-1.jsonl")
+	appendSocketSessionLog(path, "assistant", "visible reply")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read session log: %v", err)
+	}
+	if !strings.Contains(string(data), `"source":"vulpine-socket"`) || !strings.Contains(string(data), `"content":"visible reply"`) {
+		t.Fatalf("session log entry = %s", data)
+	}
+}
+
 func TestSpawnFailsWithBadBinary(t *testing.T) {
 	// Spawn should fail when given a binary that exists but isn't executable
 	// or when the process immediately fails

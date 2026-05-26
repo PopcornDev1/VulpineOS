@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -11,8 +13,22 @@ func TestFindNanoClawBinary(t *testing.T) {
 	if path == "" {
 		t.Skip("nanoclaw binary not found")
 	}
-	if !strings.Contains(path, "nanoclaw") {
-		t.Errorf("findNanoClawBinary(): got %q, want to contain 'nanoclaw'", path)
+	if !isNanoClawBinaryPath(path) {
+		t.Errorf("findNanoClawBinary(): got %q, want nanoclaw or ncl binary", path)
+	}
+}
+
+func TestFindNanoClawBinaryAcceptsNCL(t *testing.T) {
+	tmpDir := t.TempDir()
+	bin := tmpDir + "/ncl"
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatalf("write ncl: %v", err)
+	}
+	t.Setenv("PATH", tmpDir)
+
+	path := findNanoClawBinary()
+	if path != bin {
+		t.Fatalf("findNanoClawBinary() = %q, want %q", path, bin)
 	}
 }
 
@@ -68,6 +84,11 @@ func TestDiscoverModels(t *testing.T) {
 	}
 }
 
+func isNanoClawBinaryPath(path string) bool {
+	base := filepath.Base(path)
+	return strings.Contains(path, "nanoclaw") || base == "ncl"
+}
+
 func TestMergedProviders(t *testing.T) {
 	merged := MergedProviders()
 	if len(merged) == 0 {
@@ -102,16 +123,45 @@ func TestMergedProviders(t *testing.T) {
 	}
 }
 
+func TestOpenCodeProviderIncludesFreeZenModels(t *testing.T) {
+	provider := GetProvider("opencode")
+	if provider == nil {
+		t.Fatal("opencode provider not found")
+	}
+	for _, want := range []string{"opencode/minimax-m2.5", "opencode/deepseek-v4"} {
+		if !containsString(provider.Models, want) {
+			t.Fatalf("opencode models = %#v, want %s", provider.Models, want)
+		}
+	}
+	if provider.DefaultModel != "opencode/minimax-m2.5" {
+		t.Fatalf("opencode default = %q, want free Zen default", provider.DefaultModel)
+	}
+
+	goProvider := GetProvider("opencode-go")
+	if goProvider == nil || !containsString(goProvider.Models, "opencode-go/deepseek-v4") {
+		t.Fatalf("opencode-go models = %#v, want deepseek v4", goProvider)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestProviderDisplayName(t *testing.T) {
 	tests := map[string]string{
-		"opencode":          "OpenCode (Zen)",
-		"opencode-go":        "OpenCode (Go)",
-		"anthropic":          "Anthropic (Claude)",
-		"openai":             "OpenAI (GPT)",
-		"google":             "Google (Gemini)",
-		"ollama":             "Ollama (Local)",
-		"vllm":               "vLLM (Local)",
-		"unknown-provider":   "unknown-provider",
+		"opencode":         "OpenCode (Zen)",
+		"opencode-go":      "OpenCode (Go)",
+		"anthropic":        "Anthropic (Claude)",
+		"openai":           "OpenAI (GPT)",
+		"google":           "Google (Gemini)",
+		"ollama":           "Ollama (Local)",
+		"vllm":             "vLLM (Local)",
+		"unknown-provider": "unknown-provider",
 	}
 	for id, want := range tests {
 		got := providerDisplayName(id)

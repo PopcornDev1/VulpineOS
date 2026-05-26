@@ -332,6 +332,8 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 	agent.emitStatusLocked()
 	agent.mu.Unlock()
 
+	appendSocketSessionLog(agent.sessionLogPath, "user", task)
+
 	go func() {
 		finished := false
 		finish := func(status string) {
@@ -351,6 +353,7 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 				return
 			}
 			if chunk != "" {
+				appendSocketSessionLog(agent.sessionLogPath, "assistant", chunk)
 				agent.emitConversation(ConversationMsg{
 					AgentID: agentID,
 					Role:    "assistant",
@@ -363,6 +366,7 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 			}
 		})
 		if err != nil {
+			appendSocketSessionLog(agent.sessionLogPath, "system", "error: "+err.Error())
 			agent.mu.Lock()
 			agent.status.Status = "error"
 			agent.status.Objective = err.Error()
@@ -376,6 +380,32 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 	go m.forwardConversation(agent)
 
 	return agentID, nil
+}
+
+func appendSocketSessionLog(path, role, content string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	entry := map[string]any{
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"source":    "vulpine-socket",
+		"role":      role,
+		"content":   content,
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(data, '\n'))
 }
 
 // findNanoClaw looks for the NanoClaw binary in common locations.
@@ -413,6 +443,7 @@ func (m *Manager) findNanoClaw() string {
 
 	for _, d := range searchDirs {
 		candidates := []string{
+			filepath.Join(config.Dir(), "nanoclaw", "nanoclaw"),
 			filepath.Join(d, "node_modules", ".bin", "nanoclaw"),
 			filepath.Join(d, "node_modules", "nanoclaw", "bin", "nanoclaw"),
 			filepath.Join(d, "nanoclaw", "nanoclaw.sh"),
@@ -422,6 +453,15 @@ func (m *Manager) findNanoClaw() string {
 				abs, _ := filepath.Abs(c)
 				return abs
 			}
+		}
+	}
+
+	for _, srcDir := range []string{
+		os.Getenv("VULPINE_NANOCLAW_SRC"),
+		filepath.Join(config.Dir(), "nanoclaw-src"),
+	} {
+		if launcher, ok := ensureNanoClawSourceLauncher(srcDir); ok {
+			return launcher
 		}
 	}
 
@@ -440,6 +480,79 @@ func (m *Manager) findNanoClaw() string {
 	}
 
 	return ""
+}
+
+func ensureNanoClawSourceLauncher(srcDir string) (string, bool) {
+	srcDir = strings.TrimSpace(srcDir)
+	if srcDir == "" {
+		return "", false
+	}
+	absSrc, err := filepath.Abs(srcDir)
+	if err != nil {
+		return "", false
+	}
+	if _, err := os.Stat(filepath.Join(absSrc, "package.json")); err != nil {
+		return "", false
+	}
+	if _, err := os.Stat(filepath.Join(absSrc, "src", "index.ts")); err != nil {
+		if _, distErr := os.Stat(filepath.Join(absSrc, "dist", "index.js")); distErr != nil {
+			return "", false
+		}
+	}
+
+	launcherDir := filepath.Join(config.Dir(), "nanoclaw")
+	launcherPath := filepath.Join(launcherDir, "nanoclaw")
+	if isRunnable(launcherPath) {
+		if data, err := os.ReadFile(launcherPath); err == nil && strings.Contains(string(data), "VULPINE_NANOCLAW_HOME") {
+			return launcherPath, true
+		}
+	}
+	if err := os.MkdirAll(launcherDir, 0700); err != nil {
+		return "", false
+	}
+	content := strings.Join([]string{
+		"#!/usr/bin/env bash",
+		"set -euo pipefail",
+		"",
+		"SRC=\"${VULPINE_NANOCLAW_SRC:-" + shellDoubleQuoteLiteral(absSrc) + "}\"",
+		"PROFILE=\"${VULPINE_NANOCLAW_HOME:-" + shellDoubleQuoteLiteral(config.NanoClawProfileDir()) + "}\"",
+		"mkdir -p \"$PROFILE\"",
+		"cd \"$PROFILE\"",
+		"",
+		"run_tsx() {",
+		"  local tsx_bin=\"${SRC}/node_modules/.bin/tsx\"",
+		"  if [ -x \"$tsx_bin\" ]; then",
+		"    exec \"$tsx_bin\" \"$@\"",
+		"  fi",
+		"  exec pnpm --dir \"$SRC\" exec tsx \"$@\"",
+		"}",
+		"",
+		"if [ \"${1:-}\" = \"run\" ]; then",
+		"  shift",
+		"  if [ -f \"${SRC}/dist/index.js\" ]; then",
+		"    exec node \"${SRC}/dist/index.js\" \"$@\"",
+		"  fi",
+		"  run_tsx \"${SRC}/src/index.ts\" \"$@\"",
+		"fi",
+		"",
+		"if [ -f \"${SRC}/dist/cli/client.js\" ]; then",
+		"  exec node \"${SRC}/dist/cli/client.js\" \"$@\"",
+		"fi",
+		"run_tsx \"${SRC}/src/cli/client.ts\" \"$@\"",
+		"",
+	}, "\n")
+	if err := os.WriteFile(launcherPath, []byte(content), 0700); err != nil {
+		return "", false
+	}
+	return launcherPath, true
+}
+
+func shellDoubleQuoteLiteral(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	value = strings.ReplaceAll(value, `$`, `\$`)
+	value = strings.ReplaceAll(value, "`", "\\`")
+	return value
 }
 
 // NanoClawInstalled returns true if NanoClaw is available.

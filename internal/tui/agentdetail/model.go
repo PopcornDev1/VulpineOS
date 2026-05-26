@@ -212,7 +212,7 @@ func (m Model) View() string {
 	b.WriteString("\n")
 	controls := "[Enter] chat  [p/r] agent  [o] log  [P/R] all  [x] delete"
 	if m.remote {
-		controls = "[Enter] chat  [p/r] agent  [P/R] all  [x] kill"
+		controls = "[Enter] chat  [p/r] agent  [o] log  [P/R] all  [x] kill"
 	}
 	b.WriteString(shared.MutedStyle.Render(controls))
 

@@ -147,15 +147,24 @@ func findNanoClawBinary() string {
 	if path, err := exec.LookPath("nanoclaw"); err == nil {
 		return path
 	}
+	if path, err := exec.LookPath("ncl"); err == nil {
+		return path
+	}
 
 	paths := []string{
 		"./node_modules/.bin/nanoclaw",
+		"./node_modules/.bin/ncl",
 		"node_modules/.bin/nanoclaw",
+		"node_modules/.bin/ncl",
 		filepath.Join(Dir(), "nanoclaw", "nanoclaw"),
+		filepath.Join(Dir(), "nanoclaw-src", "bin", "ncl"),
 		filepath.Join(Dir(), "nanoclaw", "nanoclaw.sh"),
 		"/opt/homebrew/bin/nanoclaw",
+		"/opt/homebrew/bin/ncl",
 		"/usr/local/bin/nanoclaw",
+		"/usr/local/bin/ncl",
 		"/usr/bin/nanoclaw",
+		"/usr/bin/ncl",
 	}
 	for _, p := range paths {
 		if abs, err := filepath.Abs(p); err == nil {

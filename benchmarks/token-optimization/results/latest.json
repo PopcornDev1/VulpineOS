@@ -28,7 +28,6 @@
   "fixtures": [
     {
       "fixture": "fixtures/retail-product.html",
-      "url": "file:///Users/apple/Code/Personal/VulpineOS/benchmarks/token-optimization/fixtures/retail-product.html",
       "tokens": {
         "rawHTML": 9704,
         "chromeAXVerbose": 167996,
@@ -56,7 +55,6 @@
     },
     {
       "fixture": "fixtures/retail-category.html",
-      "url": "file:///Users/apple/Code/Personal/VulpineOS/benchmarks/token-optimization/fixtures/retail-category.html",
       "tokens": {
         "rawHTML": 11486,
         "chromeAXVerbose": 261481,
@@ -84,7 +82,6 @@
     },
     {
       "fixture": "fixtures/docs-reference.html",
-      "url": "file:///Users/apple/Code/Personal/VulpineOS/benchmarks/token-optimization/fixtures/docs-reference.html",
       "tokens": {
         "rawHTML": 17093,
         "chromeAXVerbose": 306578,

@@ -203,7 +203,6 @@ async function measureFixture(browser, fixture, options) {
 
   return {
     fixture,
-    url,
     tokens: counts,
     reductions: {
       vsRawHTML: reduction(counts.rawHTML, counts.vulpineOptimized),

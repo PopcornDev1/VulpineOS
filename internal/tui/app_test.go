@@ -1076,40 +1076,179 @@ func TestRemoteControlBulkStatusExcludesFailures(t *testing.T) {
 	}
 }
 
-func TestRemoteControlLabelsHideLocalOnlyLogAndDelete(t *testing.T) {
+func TestRemoteControlLabelsExposeRemoteSettingsAndLogs(t *testing.T) {
 	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, &fakeControlClient{})
 	app.width = 160
 	app.agentDetail.SetAgent("agent-1", "Remote", "task", "active", 0, "", "", time.Now())
 
 	status := app.renderStatusBar()
 	detail := app.agentDetail.View()
-	if strings.Contains(status, "o:log") || strings.Contains(status, "x:del") || strings.Contains(status, "S:settings") {
-		t.Fatalf("remote status bar advertises local-only controls: %s", status)
+	if !strings.Contains(status, "o:log") || !strings.Contains(status, "S:settings") || !strings.Contains(status, "x:kill") {
+		t.Fatalf("remote status bar missing remote controls: %s", status)
 	}
-	if strings.Contains(detail, "[o] log") || strings.Contains(detail, "[x] delete") {
-		t.Fatalf("remote detail advertises local-only controls: %s", detail)
+	if strings.Contains(status, "x:del") {
+		t.Fatalf("remote status bar advertises local delete: %s", status)
+	}
+	if !strings.Contains(detail, "[o] log") || strings.Contains(detail, "[x] delete") {
+		t.Fatalf("remote detail controls are wrong: %s", detail)
 	}
 }
 
-func TestRemoteControlBlocksLocalSettingsAndReconfigure(t *testing.T) {
-	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, &fakeControlClient{})
+func TestRemoteControlOpensSettingsAndStartsReconfigure(t *testing.T) {
+	control := &fakeControlClient{responses: map[string]any{
+		"settings.get": map[string]any{
+			"config": map[string]any{
+				"provider":      "ollama",
+				"model":         "ollama/llama3.1",
+				"apiKeySet":     false,
+				"setupComplete": true,
+			},
+			"proxies": []any{},
+			"skills":  []any{map[string]any{"name": "vulpine-browser", "enabled": true}},
+		},
+	}}
+	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, control)
+	app.width = 100
+	app.height = 30
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
-	app = model.(App)
-	if app.focus == FocusSettings || app.settings.IsActive() {
-		t.Fatal("remote TUI should not open local settings")
-	}
-	if !strings.Contains(app.notice, "Remote settings") {
-		t.Fatalf("notice = %q, want remote settings notice", app.notice)
-	}
-
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
 	app = model.(App)
 	if cmd != nil {
-		t.Fatal("remote reconfigure should not queue local setup wizard")
+		model, cmd = app.Update(cmd())
+		app = model.(App)
 	}
-	if !strings.Contains(app.notice, "Remote reconfigure") {
-		t.Fatalf("notice = %q, want remote reconfigure notice", app.notice)
+	if app.focus != FocusSettings || !app.settings.IsActive() {
+		t.Fatal("remote TUI should open host settings")
+	}
+	if app.cfg == nil || app.cfg.Provider != "ollama" || app.cfg.Model != "ollama/llama3.1" {
+		t.Fatalf("remote config not loaded into app: %#v", app.cfg)
+	}
+	if len(control.calls) == 0 || control.calls[0].method != "settings.get" {
+		t.Fatalf("control calls = %+v, want settings.get", control.calls)
+	}
+
+	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	app = model.(App)
+	if cmd != nil {
+		model, _ = app.Update(cmd())
+		app = model.(App)
+	}
+	if !strings.Contains(app.View(), "First Time Setup") {
+		t.Fatalf("remote reconfigure should show setup wizard:\n%s", app.View())
+	}
+}
+
+func TestRemoteControlProxyAndSkillSettingsUseHostControl(t *testing.T) {
+	control := &fakeControlClient{responses: map[string]any{
+		"proxies.add": map[string]any{
+			"proxies": []any{map[string]any{
+				"id":      "proxy-1",
+				"label":   "127.0.0.1:8080",
+				"type":    "http",
+				"host":    "127.0.0.1",
+				"port":    8080,
+				"config":  `{"type":"http","host":"127.0.0.1","port":8080}`,
+				"latency": "untested",
+			}},
+		},
+		"skills.set": map[string]any{
+			"skills": []any{map[string]any{"name": "vulpine-browser", "enabled": false}},
+		},
+	}}
+	app := NewAppWithControl(nil, nil, nil, nil, &config.Config{}, nil, control)
+	app.settings.SetActive(true)
+	app.focus = FocusSettings
+
+	model, cmd := app.Update(shared.ProxyAddMsg{URL: "http://127.0.0.1:8080"})
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("remote proxy add should call host control")
+	}
+	model, _ = app.Update(cmd())
+	app = model.(App)
+	if len(control.calls) == 0 || control.calls[0].method != "proxies.add" {
+		t.Fatalf("control calls = %+v, want proxies.add", control.calls)
+	}
+
+	model, cmd = app.Update(shared.SkillToggleMsg{Name: "vulpine-browser", Enabled: false})
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("remote skill toggle should call host control")
+	}
+	model, _ = app.Update(cmd())
+	app = model.(App)
+	if len(control.calls) < 2 || control.calls[1].method != "skills.set" {
+		t.Fatalf("control calls = %+v, want skills.set", control.calls)
+	}
+}
+
+func TestRemoteApplySetupPreservesHostAPIKeyPlaceholder(t *testing.T) {
+	control := &fakeControlClient{responses: map[string]any{
+		"config.set": map[string]any{
+			"provider":      "opencode",
+			"model":         "opencode/deepseek-v4",
+			"apiKeySet":     true,
+			"setupComplete": true,
+		},
+	}}
+	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, control)
+	err := app.applySetupConfig(&config.Config{
+		Provider:      "opencode",
+		Model:         "opencode/deepseek-v4",
+		APIKey:        remoteAPIKeyPlaceholder,
+		SetupComplete: true,
+	})
+	if err != nil {
+		t.Fatalf("applySetupConfig: %v", err)
+	}
+	if len(control.calls) != 1 || control.calls[0].method != "config.set" {
+		t.Fatalf("control calls = %+v, want config.set", control.calls)
+	}
+	var params struct {
+		APIKey     string `json:"apiKey"`
+		KeepAPIKey bool   `json:"keepApiKey"`
+	}
+	if err := json.Unmarshal(control.calls[0].params, &params); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	if params.APIKey != "" || !params.KeepAPIKey {
+		t.Fatalf("remote config.set params = %+v, want blank apiKey with keepApiKey", params)
+	}
+}
+
+func TestRemoteOpenSessionLogFetchesAndOpensTempFile(t *testing.T) {
+	control := &fakeControlClient{responses: map[string]any{
+		"agents.getSessionLog": map[string]any{"exists": true, "content": "{\"message\":\"safe\"}\n"},
+	}}
+	original := startExternalCommand
+	defer func() { startExternalCommand = original }()
+	var opened []string
+	startExternalCommand = func(name string, args ...string) error {
+		opened = append([]string{name}, args...)
+		return nil
+	}
+
+	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, control)
+	app.selectedAgentID = "agent-1"
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("remote open log should fetch through control")
+	}
+	msg := cmd()
+	if notice, ok := msg.(statusNotice); !ok || notice.text != "Opened remote session log" {
+		t.Fatalf("cmd returned %#v, want opened remote session log notice", msg)
+	}
+	if len(opened) != 2 || opened[0] != "open" {
+		t.Fatalf("open command = %#v", opened)
+	}
+	data, err := os.ReadFile(opened[1])
+	if err != nil {
+		t.Fatalf("read opened temp log: %v", err)
+	}
+	if string(data) != "{\"message\":\"safe\"}\n" {
+		t.Fatalf("temp log content = %q", data)
 	}
 }
 

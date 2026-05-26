@@ -29,7 +29,7 @@
 - [ ] **Step 1: Rename directory**
 
 ```bash
-cd /Users/rowan/Documents/VulpineOS
+cd /path/to/VulpineOS
 mv internal/openclaw internal/nanoclaw
 ```
 
@@ -294,7 +294,7 @@ git commit -m "refactor: update main.go to use nanoclaw config"
 - [ ] **Step 1: Start vulpineos**
 
 ```bash
-cd /Users/rowan/Documents/VulpineOS
+cd /path/to/VulpineOS
 ./vulpineos
 ```
 

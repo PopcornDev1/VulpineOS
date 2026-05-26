@@ -109,6 +109,50 @@ type remoteMessagesLoadedMsg struct {
 	Messages []vault.AgentMessage
 }
 
+type remoteSettingsLoadedMsg struct {
+	Err     string
+	Config  remoteConfigSummary
+	Proxies []remoteProxySummary
+	Skills  []remoteSkillSummary
+}
+
+type remoteProxiesLoadedMsg struct {
+	Err     string
+	Notice  string
+	Proxies []remoteProxySummary
+}
+
+type remoteSkillsLoadedMsg struct {
+	Err    string
+	Notice string
+	Skills []remoteSkillSummary
+}
+
+type remoteConfigSummary struct {
+	Provider               string `json:"provider"`
+	Model                  string `json:"model"`
+	APIKeySet              bool   `json:"apiKeySet"`
+	SetupComplete          bool   `json:"setupComplete"`
+	ResizePanelsWithArrows bool   `json:"resizePanelsWithArrows"`
+}
+
+type remoteProxySummary struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Type    string `json:"type"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	Country string `json:"country"`
+	Latency string `json:"latency"`
+}
+
+type remoteSkillSummary struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+const remoteAPIKeyPlaceholder = "__vulpine_remote_api_key_set__"
+
 // App is the root Bubbletea model for the 3-column agent workbench.
 type App struct {
 	kernel           *kernel.Kernel
@@ -576,6 +620,66 @@ func (a App) loadRemoteMessages(agentID string) tea.Cmd {
 	}
 }
 
+func (a App) loadRemoteSettings() tea.Cmd {
+	if a.control == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var result struct {
+			Config  remoteConfigSummary  `json:"config"`
+			Proxies []remoteProxySummary `json:"proxies"`
+			Skills  []remoteSkillSummary `json:"skills"`
+		}
+		if err := a.control.ControlCall(ctx, "settings.get", map[string]any{}, &result); err != nil {
+			return remoteSettingsLoadedMsg{Err: err.Error()}
+		}
+		return remoteSettingsLoadedMsg{Config: result.Config, Proxies: result.Proxies, Skills: result.Skills}
+	}
+}
+
+func configFromRemoteSummary(item remoteConfigSummary) *config.Config {
+	cfg := &config.Config{
+		Provider:               item.Provider,
+		Model:                  item.Model,
+		SetupComplete:          item.SetupComplete,
+		ResizePanelsWithArrows: item.ResizePanelsWithArrows,
+	}
+	if item.APIKeySet {
+		cfg.APIKey = remoteAPIKeyPlaceholder
+	}
+	return cfg
+}
+
+func settingsProxiesFromRemote(items []remoteProxySummary) []settings.ProxyItem {
+	proxies := make([]settings.ProxyItem, 0, len(items))
+	for _, item := range items {
+		latency := item.Latency
+		if latency == "" {
+			latency = "untested"
+		}
+		proxies = append(proxies, settings.ProxyItem{
+			ID:      item.ID,
+			Label:   item.Label,
+			Type:    item.Type,
+			Host:    item.Host,
+			Port:    item.Port,
+			Country: item.Country,
+			Latency: latency,
+		})
+	}
+	return proxies
+}
+
+func settingsSkillsFromRemote(items []remoteSkillSummary) []settings.SkillItem {
+	skills := make([]settings.SkillItem, 0, len(items))
+	for _, item := range items {
+		skills = append(skills, settings.SkillItem{Name: item.Name, Enabled: item.Enabled})
+	}
+	return skills
+}
+
 func (a App) fetchRemoteAgents(ctx context.Context) ([]vault.Agent, error) {
 	var result struct {
 		Agents []remoteAgentSummary `json:"agents"`
@@ -873,8 +977,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.handleBrowserToggle()
 		case "V":
 			a.handleHideAll()
-		case "o":
-			a.handleOpenSessionLog()
+		case "o", "ctrl+o":
+			cmds = append(cmds, a.handleOpenSessionLog())
 		case "enter":
 			switch a.focus {
 			case FocusAgentList, FocusAgentDetail, FocusConversation:
@@ -988,9 +1092,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "S":
 			if a.control != nil {
-				a.notice = "Remote settings are host-local for now; configure them on the host TUI"
+				a.notice = "Loading remote settings..."
 				a.noticeTTL = 3
-				return a, nil
+				return a, a.loadRemoteSettings()
 			}
 			a.focus = FocusSettings
 			a.settings.SetActive(true)
@@ -1031,11 +1135,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		case "c":
-			if a.control != nil {
-				a.notice = "Remote reconfigure is host-local for now; run it on the host TUI"
-				a.noticeTTL = 3
-				return a, nil
-			}
 			return a, a.startEmbeddedReconfigure()
 		}
 
@@ -1269,6 +1368,52 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.conversation.LoadMessages(msg.Messages)
 		}
 
+	case remoteSettingsLoadedMsg:
+		if msg.Err != "" {
+			a.notice = "Remote settings failed: " + msg.Err
+			a.noticeTTL = 3
+			break
+		}
+		a.cfg = configFromRemoteSummary(msg.Config)
+		a.focus = FocusSettings
+		a.settings.SetActive(true)
+		a.settings.SetConfig(a.cfg)
+		a.settings.SetProxies(settingsProxiesFromRemote(msg.Proxies))
+		a.settings.SetSkills(settingsSkillsFromRemote(msg.Skills))
+		a.notice = "Remote settings loaded"
+		a.noticeTTL = 3
+
+	case remoteProxiesLoadedMsg:
+		if msg.Err != "" {
+			a.notice = msg.Err
+			a.noticeTTL = 3
+			break
+		}
+		a.settings.SetProxies(settingsProxiesFromRemote(msg.Proxies))
+		if msg.Notice != "" {
+			a.notice = msg.Notice
+			a.noticeTTL = 3
+		}
+
+	case remoteSkillsLoadedMsg:
+		if msg.Err != "" {
+			a.notice = msg.Err
+			a.noticeTTL = 3
+			break
+		}
+		a.settings.SetSkills(settingsSkillsFromRemote(msg.Skills))
+		if a.cfg != nil {
+			a.cfg.GlobalSkills = nil
+			for _, skill := range msg.Skills {
+				a.cfg.GlobalSkills = append(a.cfg.GlobalSkills, config.SkillEntry{Name: skill.Name, Enabled: skill.Enabled})
+			}
+			a.settings.SetConfig(a.cfg)
+		}
+		if msg.Notice != "" {
+			a.notice = msg.Notice
+			a.noticeTTL = 3
+		}
+
 	case shared.PoolStatsMsg:
 		a.systemInfo, _ = a.systemInfo.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
@@ -1360,14 +1505,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.notice = msg.Message
 		a.noticeTTL = 3
 	case shared.ReconfigureRequestedMsg:
-		if a.control != nil {
-			a.notice = "Remote reconfigure is host-local for now; run it on the host TUI"
-			a.noticeTTL = 3
-			break
-		}
 		return a, a.startEmbeddedReconfigure()
 
 	case shared.ProxyAddMsg:
+		if a.control != nil {
+			cmds = append(cmds, a.remoteProxyAdd(msg.URL))
+			break
+		}
 		if a.vault == nil {
 			a.notice = "Proxy changes unavailable without local vault access"
 			a.noticeTTL = 3
@@ -1386,6 +1530,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.reloadSettingsProxies()
 
 	case shared.ProxyDeleteMsg:
+		if a.control != nil {
+			cmds = append(cmds, a.remoteProxyDelete(msg.ProxyID))
+			break
+		}
 		if a.vault == nil {
 			a.notice = "Proxy changes unavailable without local vault access"
 			a.noticeTTL = 3
@@ -1397,6 +1545,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.reloadSettingsProxies()
 
 	case shared.SkillToggleMsg:
+		if a.control != nil {
+			cmds = append(cmds, a.remoteSkillSet(msg.Name, msg.Enabled))
+			break
+		}
 		if a.cfg != nil {
 			if msg.Enabled {
 				a.cfg.AddGlobalSkill(msg.Name, nil)
@@ -1415,6 +1567,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case shared.ProxyTestRequestMsg:
+		if a.control != nil {
+			cmds = append(cmds, a.remoteProxyTest(msg.ProxyID))
+			break
+		}
 		cmds = append(cmds, a.testProxy(msg.ProxyID, msg.Config))
 
 	case shared.ProxyTestedMsg:
@@ -1581,7 +1737,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "ctrl+v":
 			a.handleBrowserToggle()
 		case "ctrl+o":
-			a.handleOpenSessionLog()
+			return a, a.handleOpenSessionLog()
 		case "ctrl+t":
 			a.handleTraceToggle()
 		case "enter":
@@ -1605,8 +1761,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.handleBrowserToggle()
 		return a, nil
 	case "ctrl+o":
-		a.handleOpenSessionLog()
-		return a, nil
+		return a, a.handleOpenSessionLog()
 	case "ctrl+t":
 		a.handleTraceToggle()
 		return a, nil
@@ -1716,35 +1871,78 @@ func (a *App) handleHideAll() {
 	a.noticeTTL = 3
 }
 
-func (a *App) handleOpenSessionLog() {
+func (a *App) handleOpenSessionLog() tea.Cmd {
 	if a.selectedAgentID == "" {
 		a.notice = "No agent selected"
 		a.noticeTTL = 3
-		return
+		return nil
 	}
 	if a.control != nil {
-		a.notice = "Remote raw session logs are not exposed in this TUI yet"
-		a.noticeTTL = 4
-		return
+		agentID := a.selectedAgentID
+		a.notice = "Loading remote session log..."
+		a.noticeTTL = 3
+		return a.remoteOpenSessionLog(agentID)
 	}
 	logPath, err := agentSessionLogPath(a.selectedAgentID)
 	if err != nil {
 		a.notice = "Invalid agent id"
 		a.noticeTTL = 4
-		return
+		return nil
 	}
 	if _, err := os.Stat(logPath); err != nil {
 		a.notice = "No session log yet for selected agent"
 		a.noticeTTL = 4
-		return
+		return nil
 	}
 	if err := openExternalTarget(logPath); err != nil {
 		a.notice = "Failed to open session log: " + err.Error()
 		a.noticeTTL = 4
-		return
+		return nil
 	}
 	a.notice = "Opened session log"
 	a.noticeTTL = 3
+	return nil
+}
+
+func (a App) remoteOpenSessionLog(agentID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var result struct {
+			Content string `json:"content"`
+			Exists  bool   `json:"exists"`
+		}
+		if err := a.control.ControlCall(ctx, "agents.getSessionLog", map[string]any{
+			"agentId":    agentID,
+			"tail":       true,
+			"limitBytes": int64(65536),
+		}, &result); err != nil {
+			return statusNotice{text: "Remote session log failed: " + err.Error()}
+		}
+		if !result.Exists && result.Content == "" {
+			return statusNotice{text: "No session log yet for selected agent"}
+		}
+		path := filepath.Join(os.TempDir(), "vulpineos-remote-session-"+safeTempAgentID(agentID)+".jsonl")
+		if err := os.WriteFile(path, []byte(result.Content), 0600); err != nil {
+			return statusNotice{text: "Remote session log write failed: " + err.Error()}
+		}
+		if err := openExternalTarget(path); err != nil {
+			return statusNotice{text: "Failed to open remote session log: " + err.Error()}
+		}
+		return statusNotice{text: "Opened remote session log"}
+	}
+}
+
+func safeTempAgentID(agentID string) string {
+	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_")
+	id := strings.Trim(replacer.Replace(strings.TrimSpace(agentID)), "._")
+	if id == "" {
+		return "agent"
+	}
+	if len(id) > 80 {
+		return id[:80]
+	}
+	return id
 }
 
 func (a *App) handleTraceToggle() {
@@ -2108,7 +2306,7 @@ func (a App) renderStatusBar() string {
 	}
 	controls := "  n:new  p/r:agent  P/R:all  X:kill-all  x:del  v:view  o:log  m:resize  S:settings  Enter:chat  Tab:focus  t:trace  "
 	if a.control != nil {
-		controls = "  n:new  p/r:agent  P/R:all  X:kill-all  x:kill  v:view  m:resize  Enter:chat  Tab:focus  t:trace  "
+		controls = "  n:new  p/r:agent  P/R:all  X:kill-all  x:kill  v:view  o:log  m:resize  S:settings  Enter:chat  Tab:focus  t:trace  "
 	}
 	prefix := shared.TitleStyle.Render("VULPINE") +
 		shared.MutedStyle.Render(" | ") +
@@ -2327,7 +2525,7 @@ func (a *App) completeEmbeddedReconfigure() {
 	a.focus = FocusSettings
 	a.settings.SetActive(true)
 	a.settings.SetConfig(a.cfg)
-	if a.cfg != nil && a.cfg.SetupComplete {
+	if a.control == nil && a.cfg != nil && a.cfg.SetupComplete {
 		exe, _ := os.Executable()
 		if err := a.cfg.GenerateNanoClawConfig(exe, a.cfg.BinaryPath); err != nil {
 			a.notice = "Configuration saved; NanoClaw update failed: " + err.Error()
@@ -2342,6 +2540,29 @@ func (a *App) completeEmbeddedReconfigure() {
 func (a *App) applySetupConfig(updated *config.Config) error {
 	if updated == nil {
 		return fmt.Errorf("setup returned no configuration")
+	}
+	if a.control != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var result remoteConfigSummary
+		apiKey := strings.TrimSpace(updated.APIKey)
+		keepAPIKey := apiKey == "" || apiKey == remoteAPIKeyPlaceholder
+		if keepAPIKey {
+			apiKey = ""
+		}
+		params := map[string]any{
+			"provider":               updated.Provider,
+			"model":                  updated.Model,
+			"apiKey":                 apiKey,
+			"keepApiKey":             keepAPIKey,
+			"setupComplete":          updated.SetupComplete,
+			"resizePanelsWithArrows": updated.ResizePanelsWithArrows,
+		}
+		if err := a.control.ControlCall(ctx, "config.set", params, &result); err != nil {
+			return err
+		}
+		a.cfg = configFromRemoteSummary(result)
+		return nil
 	}
 	if a.cfg == nil {
 		a.cfg = updated
@@ -3043,6 +3264,65 @@ func (a App) remoteBulkAgentStatusCommand(method string, agentIDs []string, stat
 func statusNoticeCmd(text string) tea.Cmd {
 	return func() tea.Msg {
 		return statusNotice{text: text}
+	}
+}
+
+func (a App) remoteProxyAdd(rawURL string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var result struct {
+			Proxies []remoteProxySummary `json:"proxies"`
+		}
+		if err := a.control.ControlCall(ctx, "proxies.add", map[string]any{"url": rawURL}, &result); err != nil {
+			return statusNotice{text: "Remote proxy add failed: " + err.Error()}
+		}
+		return remoteProxiesLoadedMsg{Notice: "Remote proxy added", Proxies: result.Proxies}
+	}
+}
+
+func (a App) remoteProxyDelete(proxyID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var result struct {
+			Proxies []remoteProxySummary `json:"proxies"`
+		}
+		if err := a.control.ControlCall(ctx, "proxies.delete", map[string]any{"proxyId": proxyID}, &result); err != nil {
+			return statusNotice{text: "Remote proxy delete failed: " + err.Error()}
+		}
+		return remoteProxiesLoadedMsg{Notice: "Remote proxy deleted", Proxies: result.Proxies}
+	}
+}
+
+func (a App) remoteProxyTest(proxyID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		var result struct {
+			ProxyID string `json:"proxyId"`
+			Latency string `json:"latency"`
+			ExitIP  string `json:"exitIp"`
+			Country string `json:"country"`
+		}
+		if err := a.control.ControlCall(ctx, "proxies.test", map[string]any{"proxyId": proxyID}, &result); err != nil {
+			return shared.ProxyTestedMsg{ProxyID: proxyID, Latency: "error: " + err.Error()}
+		}
+		return shared.ProxyTestedMsg{ProxyID: result.ProxyID, Latency: result.Latency, ExitIP: result.ExitIP, Country: result.Country}
+	}
+}
+
+func (a App) remoteSkillSet(name string, enabled bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var result struct {
+			Skills []remoteSkillSummary `json:"skills"`
+		}
+		if err := a.control.ControlCall(ctx, "skills.set", map[string]any{"name": name, "enabled": enabled}, &result); err != nil {
+			return statusNotice{text: "Remote skill update failed: " + err.Error()}
+		}
+		return remoteSkillsLoadedMsg{Notice: "Remote skill updated", Skills: result.Skills}
 	}
 }
 
