@@ -177,7 +177,7 @@ func (api *ControlAPI) configSet(params json.RawMessage) (json.RawMessage, error
 			return nil, err
 		}
 		if _, err := os.Stat(filepath.Join(config.NanoClawProfileDir(), "data", "v2.db")); err == nil {
-			if err := nanoclaw.RepairVulpineProfileDatabase(config.NanoClawProfileDir(), api.Config.Provider, api.Config.Model); err != nil {
+			if err := nanoclaw.RepairVulpineProfileDatabase(config.NanoClawProfileDir(), api.Config.Provider, api.Config.Model, api.Config.FoxbridgeCDPURL); err != nil {
 				return nil, err
 			}
 		}

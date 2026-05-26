@@ -1,6 +1,7 @@
 package nanoclaw
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -183,6 +184,17 @@ func (m *Manager) SendMessage(agentID, text string) error {
 	if !ok {
 		return fmt.Errorf("agent %s not found", agentID)
 	}
+	if entry.agent.cmd == nil {
+		nanoclawDir := GetNanoclawDir()
+		if nanoclawDir == "" {
+			return fmt.Errorf("NanoClaw daemon is not running at %s", VulpineNanoclawSocketPath())
+		}
+		client := NewNanoclawClient(nanoclawDir)
+		if !client.IsRunning() {
+			return fmt.Errorf("NanoClaw daemon is not running at %s", VulpineNanoclawSocketPath())
+		}
+		return client.EnqueueAgentMessage(agentID, text)
+	}
 	return entry.agent.SendMessage(text)
 }
 
@@ -320,7 +332,14 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 		agent.sessionLogPath = path
 	}
 
-	entry := &managedAgent{agent: agent, cleanup: cleanup}
+	ctx, cancelMirror := context.WithCancel(context.Background())
+	wrappedCleanup := func() {
+		cancelMirror()
+		if cleanup != nil {
+			cleanup()
+		}
+	}
+	entry := &managedAgent{agent: agent, cleanup: wrappedCleanup}
 
 	m.mu.Lock()
 	m.agents[agentID] = entry
@@ -332,7 +351,17 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 	agent.emitStatusLocked()
 	agent.mu.Unlock()
 
-	appendSocketSessionLog(agent.sessionLogPath, "user", task)
+	go m.forwardConversation(agent)
+
+	completionCh := make(chan struct{}, 1)
+	mirror := NewNanoClawSessionMirror(nanoclawDir, agentID, agent.sessionLogPath, agent)
+	completionAfter := time.Now().UTC().Add(-2 * time.Second)
+	go mirror.Run(ctx, completionAfter, func() {
+		select {
+		case completionCh <- struct{}{}:
+		default:
+		}
+	})
 
 	go func() {
 		finished := false
@@ -348,25 +377,8 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 			agent.finish(status)
 			m.removeManagedAgent(agentID, entry)
 		}
-		err := client.SendAgentMessage(agentID, task, func(chunk string, done bool) {
-			if chunk == "[superseded by a newer client]" {
-				return
-			}
-			if chunk != "" {
-				appendSocketSessionLog(agent.sessionLogPath, "assistant", chunk)
-				agent.emitConversation(ConversationMsg{
-					AgentID: agentID,
-					Role:    "assistant",
-					Content: chunk,
-					Tokens:  0,
-				})
-			}
-			if done {
-				finish("completed")
-			}
-		})
-		if err != nil {
-			appendSocketSessionLog(agent.sessionLogPath, "system", "error: "+err.Error())
+		if err := client.EnqueueAgentMessage(agentID, task); err != nil {
+			appendManagerSessionLog(agent.sessionLogPath, "error: "+err.Error())
 			agent.mu.Lock()
 			agent.status.Status = "error"
 			agent.status.Objective = err.Error()
@@ -374,24 +386,38 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 			finish("error")
 			return
 		}
-		finish("completed")
+		select {
+		case <-completionCh:
+			finish("completed")
+		case <-time.After(nanoclawFirstResponseTimeout):
+			errText := "timed out waiting for NanoClaw session output"
+			appendManagerSessionLog(agent.sessionLogPath, "error: "+errText)
+			agent.mu.Lock()
+			agent.status.Status = "error"
+			agent.status.Objective = errText
+			agent.mu.Unlock()
+			finish("error")
+		case <-agent.doneCh:
+			cancelMirror()
+		}
 	}()
-
-	go m.forwardConversation(agent)
 
 	return agentID, nil
 }
 
-func appendSocketSessionLog(path, role, content string) {
+func appendManagerSessionLog(path, content string) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return
 	}
-	entry := map[string]any{
-		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
-		"source":    "vulpine-socket",
-		"role":      role,
-		"content":   content,
+	entry := normalizedSessionLogEntry{
+		Type:      "message",
+		Source:    "vulpine-manager",
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Message: normalizedSessionLogMessage{
+			Role:    "system",
+			Content: []normalizedSessionLogContent{{Type: "text", Text: content}},
+		},
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {

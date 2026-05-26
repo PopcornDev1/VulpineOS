@@ -1,6 +1,9 @@
 package nanoclaw
 
 import (
+	"bufio"
+	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,6 +118,62 @@ func TestSendMessageNonexistent(t *testing.T) {
 	err := m.SendMessage("nonexistent-id", "hello")
 	if err == nil {
 		t.Error("expected error when sending to nonexistent agent")
+	}
+}
+
+func TestSendMessageSocketAgentEnqueuesViaDaemon(t *testing.T) {
+	nanoclawDir, err := os.MkdirTemp("/tmp", "vulpine-ncl-send-*")
+	if err != nil {
+		t.Fatalf("temp nanoclaw dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(nanoclawDir) })
+	t.Setenv("VULPINE_NANOCLAW_DIR", nanoclawDir)
+	socketPath := VulpineNanoclawSocketPath()
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0700); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen socket: %v", err)
+	}
+	defer listener.Close()
+
+	payloadCh := make(chan map[string]interface{}, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, err := bufio.NewReader(conn).ReadString('\n')
+		if err != nil {
+			return
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			return
+		}
+		payloadCh <- payload
+	}()
+
+	m := NewManager("test")
+	agent := newAgent("agent-1", "ctx-1", m.statusSource)
+	m.agents["agent-1"] = &managedAgent{agent: agent}
+
+	if err := m.SendMessage("agent-1", "follow up"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	select {
+	case payload := <-payloadCh:
+		if payload["text"] != "follow up" {
+			t.Fatalf("text = %v, want follow up", payload["text"])
+		}
+		to, ok := payload["to"].(map[string]interface{})
+		if !ok || to["platformId"] != "vulpine:agent-1" {
+			t.Fatalf("to = %#v, want vulpine route", payload["to"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for socket payload")
 	}
 }
 
@@ -233,19 +292,6 @@ func TestFindNanoClawCreatesLauncherForUpstreamSource(t *testing.T) {
 		if !strings.Contains(string(content), want) {
 			t.Fatalf("launcher content does not contain %q:\n%s", want, content)
 		}
-	}
-}
-
-func TestAppendSocketSessionLogWritesJSONL(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agents", "main", "sessions", "vulpine-agent-1.jsonl")
-	appendSocketSessionLog(path, "assistant", "visible reply")
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read session log: %v", err)
-	}
-	if !strings.Contains(string(data), `"source":"vulpine-socket"`) || !strings.Contains(string(data), `"content":"visible reply"`) {
-		t.Fatalf("session log entry = %s", data)
 	}
 }
 

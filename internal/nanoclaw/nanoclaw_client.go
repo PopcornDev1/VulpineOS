@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,6 +75,25 @@ func (c *NanoclawClient) SendAgentMessage(agentID, message string, onChunk func(
 	}, onChunk)
 }
 
+func (c *NanoclawClient) EnqueueAgentMessage(agentID, message string) error {
+	platformID := vulpineAgentPlatformID(agentID)
+	return c.writePayload(nanoclawSocketPayload{
+		Text: message,
+		To: &nanoclawDeliveryAddress{
+			ChannelType: "cli",
+			PlatformID:  platformID,
+			ThreadID:    nil,
+		},
+		ReplyTo: &nanoclawDeliveryAddress{
+			ChannelType: "cli",
+			PlatformID:  platformID,
+			ThreadID:    nil,
+		},
+		Sender:   "vulpine",
+		SenderID: "vulpine:" + agentID,
+	})
+}
+
 func (c *NanoclawClient) sendPayload(payload nanoclawSocketPayload, onChunk func(string, bool)) error {
 	conn, err := net.DialTimeout("unix", c.socketPath, 5*time.Second)
 	if err != nil {
@@ -117,6 +137,23 @@ func (c *NanoclawClient) sendPayload(payload nanoclawSocketPayload, onChunk func
 		}
 	}
 
+	return nil
+}
+
+func (c *NanoclawClient) writePayload(payload nanoclawSocketPayload) error {
+	conn, err := net.DialTimeout("unix", c.socketPath, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("failed to connect to nanoclaw CLI socket: %w", err)
+	}
+	defer conn.Close()
+
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to encode message: %w", err)
+	}
+	if _, err := conn.Write(append(encoded, '\n')); err != nil {
+		return fmt.Errorf("failed to send message: %w", err)
+	}
 	return nil
 }
 
@@ -262,8 +299,9 @@ func LookupNanoclawAgentGroupID(nanoclawDir string) (string, error) {
 // RepairVulpineProfileDatabase makes the VulpineOS-owned NanoClaw profile
 // runnable after upstream migrations have created data/v2.db. NanoClaw's
 // current daemon ignores NANOCLAW_CONFIG_PATH, so provider/model state must
-// also be mirrored into the upstream DB-backed container config.
-func RepairVulpineProfileDatabase(nanoclawDir, provider, model string) error {
+// also be mirrored into the upstream DB-backed container config. Browser CDP
+// routing is written into the selected group workspace for agent-browser.
+func RepairVulpineProfileDatabase(nanoclawDir, provider, model, cdpURL string) error {
 	dbPath := filepath.Join(nanoclawDir, "data", "v2.db")
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -279,6 +317,13 @@ func RepairVulpineProfileDatabase(nanoclawDir, provider, model string) error {
 		return err
 	}
 	if err := ensureNanoClawContainerConfig(db, agentGroupID, provider, model); err != nil {
+		return err
+	}
+	folder, err := nanoClawAgentGroupFolder(db, agentGroupID)
+	if err != nil {
+		return err
+	}
+	if err := writeAgentBrowserConfig(nanoclawDir, folder, cdpURL); err != nil {
 		return err
 	}
 	return nil
@@ -342,7 +387,7 @@ func ensureNanoClawContainerConfig(db *sql.DB, agentGroupID, provider, model str
 		return nil
 	}
 
-	provider = strings.TrimSpace(provider)
+	provider = nanoClawContainerProvider(provider)
 	model = strings.TrimSpace(model)
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := db.Exec(`
@@ -355,6 +400,71 @@ ON CONFLICT(agent_group_id) DO UPDATE SET
 		return err
 	}
 	return nil
+}
+
+func nanoClawContainerProvider(provider string) string {
+	switch strings.TrimSpace(provider) {
+	case "opencode-go":
+		return "opencode"
+	default:
+		return strings.TrimSpace(provider)
+	}
+}
+
+func nanoClawAgentGroupFolder(db *sql.DB, agentGroupID string) (string, error) {
+	var folder string
+	if err := db.QueryRow(`SELECT folder FROM agent_groups WHERE id = ?`, agentGroupID).Scan(&folder); err != nil {
+		return "", fmt.Errorf("lookup nanoclaw agent group folder: %w", err)
+	}
+	folder = strings.TrimSpace(folder)
+	if folder == "" || strings.ContainsAny(folder, `/\`) || folder == "." || folder == ".." {
+		return "", fmt.Errorf("invalid NanoClaw agent group folder")
+	}
+	return folder, nil
+}
+
+func writeAgentBrowserConfig(nanoclawDir, folder, cdpURL string) error {
+	if strings.TrimSpace(folder) == "" {
+		return nil
+	}
+	path := filepath.Join(nanoclawDir, "groups", folder, "agent-browser.json")
+	cdpURL = strings.TrimSpace(cdpURL)
+	if cdpURL == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove agent-browser config: %w", err)
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create agent-browser config dir: %w", err)
+	}
+	data, err := json.MarshalIndent(map[string]string{
+		"cdp": containerReachableCDPURL(cdpURL),
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal agent-browser config: %w", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0600); err != nil {
+		return fmt.Errorf("write agent-browser config: %w", err)
+	}
+	return nil
+}
+
+func containerReachableCDPURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return strings.TrimSpace(raw)
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return u.String()
+	}
+	if port := u.Port(); port != "" {
+		u.Host = net.JoinHostPort("host.docker.internal", port)
+	} else {
+		u.Host = "host.docker.internal"
+	}
+	return u.String()
 }
 
 func tableExists(db *sql.DB, name string) (bool, error) {

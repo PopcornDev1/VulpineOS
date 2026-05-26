@@ -22,6 +22,7 @@ type Daemon struct {
 	logPath       string
 	logFile       *os.File
 	cmd           *exec.Cmd
+	env           map[string]string
 	exited        bool
 	exitCh        chan error
 	waitReadyFunc func() error
@@ -39,6 +40,26 @@ func NewDaemon(binary string, nanoclawDir ...string) *Daemon {
 		nanoclawDir: dir,
 		socketPath:  filepath.Join(dataDir, "cli.sock"),
 		logPath:     filepath.Join(dataDir, "nanoclaw.log"),
+	}
+}
+
+// SetEnv adds non-secret and secret provider runtime variables to the daemon
+// environment. Values are inherited by NanoClaw and its containers; callers
+// must avoid logging the returned environment.
+func (d *Daemon) SetEnv(env map[string]string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(env) == 0 {
+		d.env = nil
+		return
+	}
+	d.env = make(map[string]string, len(env))
+	for k, v := range env {
+		k = strings.TrimSpace(k)
+		if k == "" || strings.TrimSpace(v) == "" {
+			continue
+		}
+		d.env[k] = v
 	}
 }
 
@@ -67,14 +88,21 @@ func (d *Daemon) Start() error {
 		return fmt.Errorf("remove stale NanoClaw socket: %w", err)
 	}
 
-	cmd := exec.Command(nanoclawBin, "run")
-	cmd.Env = daemonEnv(os.Environ(), map[string]string{
+	overrides := map[string]string{
 		"NANOCLAW_HOME":        d.nanoclawDir,
 		"NANOCLAW_DIR":         d.nanoclawDir,
 		"NANOCLAW_DATA_DIR":    dataDir,
 		"NANOCLAW_SOCKET":      d.socketPath,
 		"NANOCLAW_CONFIG_PATH": config.NanoClawConfigPath(),
-	})
+	}
+	d.mu.Lock()
+	for k, v := range d.env {
+		overrides[k] = v
+	}
+	d.mu.Unlock()
+
+	cmd := exec.Command(nanoclawBin, "run")
+	cmd.Env = daemonEnv(os.Environ(), overrides)
 
 	var logFile *os.File
 	if f, err := os.OpenFile(d.logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600); err == nil {
@@ -170,6 +198,33 @@ func (d *Daemon) waitReady() error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("socket not available: %s", d.socketPath)
+}
+
+func ProviderRuntimeEnv(cfg *config.Config) map[string]string {
+	if cfg == nil {
+		return nil
+	}
+	env := make(map[string]string)
+	providerID := strings.TrimSpace(cfg.Provider)
+	model := strings.TrimSpace(cfg.Model)
+	apiKey := strings.TrimSpace(cfg.APIKey)
+	if provider := config.GetProvider(providerID); provider != nil && strings.TrimSpace(provider.EnvVar) != "" && apiKey != "" {
+		env[strings.TrimSpace(provider.EnvVar)] = apiKey
+	}
+	switch providerID {
+	case "opencode", "opencode-go":
+		env["OPENCODE_PROVIDER"] = providerID
+		if model != "" {
+			env["OPENCODE_MODEL"] = model
+		}
+		if apiKey != "" {
+			env["OPENCODE_API_KEY"] = apiKey
+		}
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 func daemonEnv(base []string, overrides map[string]string) []string {

@@ -2533,7 +2533,7 @@ func (a *App) completeEmbeddedReconfigure() {
 			return
 		}
 		if _, err := os.Stat(filepath.Join(config.NanoClawProfileDir(), "data", "v2.db")); err == nil {
-			if err := nanoclaw.RepairVulpineProfileDatabase(config.NanoClawProfileDir(), a.cfg.Provider, a.cfg.Model); err != nil {
+			if err := nanoclaw.RepairVulpineProfileDatabase(config.NanoClawProfileDir(), a.cfg.Provider, a.cfg.Model, a.cfg.FoxbridgeCDPURL); err != nil {
 				a.notice = "Configuration saved; NanoClaw database update failed: " + err.Error()
 				a.noticeTTL = 4
 				return

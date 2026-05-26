@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"vulpineos/internal/config"
 )
 
 func writeDaemonTestBinary(t *testing.T, body string) string {
@@ -78,5 +80,64 @@ func TestDaemonStartCleansUpOnReadinessFailure(t *testing.T) {
 	}
 	if daemon.Running() {
 		t.Fatal("daemon should not report running after failed Start")
+	}
+}
+
+func TestProviderRuntimeEnvIncludesOpenCodeSettings(t *testing.T) {
+	env := ProviderRuntimeEnv(&config.Config{
+		Provider: "opencode-go",
+		Model:    "opencode-go/deepseek-v4-flash",
+		APIKey:   "secret-key",
+	})
+
+	if env["OPENCODE_PROVIDER"] != "opencode-go" {
+		t.Fatalf("OPENCODE_PROVIDER = %q, want opencode-go", env["OPENCODE_PROVIDER"])
+	}
+	if env["OPENCODE_MODEL"] != "opencode-go/deepseek-v4-flash" {
+		t.Fatalf("OPENCODE_MODEL = %q, want opencode-go/deepseek-v4-flash", env["OPENCODE_MODEL"])
+	}
+	if env["OPENCODE_API_KEY"] != "secret-key" {
+		t.Fatalf("OPENCODE_API_KEY was not propagated")
+	}
+}
+
+func TestDaemonStartMergesProviderRuntimeEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envPath := filepath.Join(t.TempDir(), "daemon.env")
+	t.Setenv("VULPINE_TEST_DAEMON_ENV_FILE", envPath)
+
+	bin := writeDaemonTestBinary(t, `#!/bin/sh
+printf 'provider=%s
+model=%s
+key=%s
+' "$OPENCODE_PROVIDER" "$OPENCODE_MODEL" "$OPENCODE_API_KEY" > "$VULPINE_TEST_DAEMON_ENV_FILE"
+touch "$NANOCLAW_SOCKET"
+sleep 30
+`)
+	daemon := NewDaemon(bin)
+	daemon.SetEnv(ProviderRuntimeEnv(&config.Config{
+		Provider: "opencode",
+		Model:    "opencode/deepseek-v4-flash-free",
+		APIKey:   "secret-key",
+	}))
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(daemon.Stop)
+
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env capture: %v", err)
+	}
+	env := string(data)
+	for _, want := range []string{
+		"provider=opencode",
+		"model=opencode/deepseek-v4-flash-free",
+		"key=secret-key",
+	} {
+		if !strings.Contains(env, want) {
+			t.Fatalf("daemon env capture %q does not contain %q", env, want)
+		}
 	}
 }

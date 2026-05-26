@@ -140,6 +140,65 @@ func TestNanoclawClientRoutesAgentMessages(t *testing.T) {
 	}
 }
 
+func TestNanoclawClientEnqueuesRoutedAgentMessageWithoutWaitingForReply(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "ncl-enqueue-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	socketPath := filepath.Join(tmpDir, "cli.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	payloadCh := make(chan map[string]interface{}, 1)
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		line, err := bufio.NewReader(conn).ReadString('\n')
+		if err != nil {
+			return
+		}
+		var req map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &req); err != nil {
+			return
+		}
+		payloadCh <- req
+		time.Sleep(2 * time.Second)
+	}()
+
+	client := &NanoclawClient{socketPath: socketPath}
+	started := time.Now()
+	if err := client.EnqueueAgentMessage("agent-1", "hello"); err != nil {
+		t.Fatalf("EnqueueAgentMessage: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("EnqueueAgentMessage waited %s for a routed socket reply", elapsed)
+	}
+
+	select {
+	case payload := <-payloadCh:
+		if payload["text"] != "hello" {
+			t.Fatalf("text = %v, want hello", payload["text"])
+		}
+		to, ok := payload["to"].(map[string]interface{})
+		if !ok || to["platformId"] != "vulpine:agent-1" {
+			t.Fatalf("to = %#v, want vulpine route", payload["to"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for routed payload")
+	}
+	<-serverDone
+}
+
 func TestFindNanoclawSocketUsesVulpineOwnedPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -267,7 +326,7 @@ CREATE TABLE messaging_group_agents (id TEXT PRIMARY KEY, messaging_group_id TEX
 	}
 }
 
-func TestRepairVulpineProfileDatabaseUpsertsProviderModel(t *testing.T) {
+func TestRepairVulpineProfileDatabaseUpsertsProviderModelAndBrowserRoute(t *testing.T) {
 	nanoclawDir := t.TempDir()
 	dataDir := filepath.Join(nanoclawDir, "data")
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
@@ -305,7 +364,7 @@ VALUES ('ag-1', 'claude', 'old-model', '2026-01-01T00:00:00Z', '["vulpine-browse
 		t.Fatalf("create schema: %v", err)
 	}
 
-	if err := RepairVulpineProfileDatabase(nanoclawDir, "opencode", "opencode/deepseek-v4-flash-free"); err != nil {
+	if err := RepairVulpineProfileDatabase(nanoclawDir, "opencode-go", "opencode-go/deepseek-v4-flash", "ws://127.0.0.1:9222/devtools/browser/foxbridge"); err != nil {
 		t.Fatalf("RepairVulpineProfileDatabase: %v", err)
 	}
 
@@ -313,10 +372,23 @@ VALUES ('ag-1', 'claude', 'old-model', '2026-01-01T00:00:00Z', '["vulpine-browse
 	if err := db.QueryRow(`SELECT provider, model, skills, mcp_servers, cli_scope FROM container_configs WHERE agent_group_id = 'ag-1'`).Scan(&provider, &model, &skills, &mcpServers, &cliScope); err != nil {
 		t.Fatalf("query updated config: %v", err)
 	}
-	if provider != "opencode" || model != "opencode/deepseek-v4-flash-free" {
-		t.Fatalf("provider/model = %q/%q, want opencode/opencode/deepseek-v4-flash-free", provider, model)
+	if provider != "opencode" || model != "opencode-go/deepseek-v4-flash" {
+		t.Fatalf("provider/model = %q/%q, want opencode/opencode-go/deepseek-v4-flash", provider, model)
 	}
 	if skills != `["vulpine-browser"]` || mcpServers != `{"browser":{"command":"vulpineos"}}` || cliScope != "global" {
 		t.Fatalf("non-provider config changed: skills=%q mcp=%q cli_scope=%q", skills, mcpServers, cliScope)
+	}
+
+	browserConfig := filepath.Join(nanoclawDir, "groups", "existing", "agent-browser.json")
+	data, err := os.ReadFile(browserConfig)
+	if err != nil {
+		t.Fatalf("read agent-browser config: %v", err)
+	}
+	var browser map[string]string
+	if err := json.Unmarshal(data, &browser); err != nil {
+		t.Fatalf("parse agent-browser config: %v", err)
+	}
+	if browser["cdp"] != "ws://host.docker.internal:9222/devtools/browser/foxbridge" {
+		t.Fatalf("browser cdp = %q, want host.docker.internal route", browser["cdp"])
 	}
 }
