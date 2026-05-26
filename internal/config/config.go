@@ -769,5 +769,43 @@ Rules:
 8. ` + "`browser start`" + ` starts the service but does not create a page.
 9. VulpineOS snapshots default to a compact profile. If a required target is missing from a truncated snapshot, retry with expanded limits before concluding it is absent.
 `
-	return os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skill), 0600)
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skill), 0600); err != nil {
+		return err
+	}
+
+	// Add Superpowers collection – a minimal placeholder for each official skill.
+	superpowers := []string{
+		"brainstorming",
+		"using-superpowers",
+		"systematic-debugging",
+		"writing-plans",
+		"requesting-code-review",
+		"test-driven-development",
+		"executing-plans",
+		"subagent-driven-development",
+		"verification-before-completion",
+		"receiving-code-review",
+		"writing-skills",
+		"dispatching-parallel-agents",
+		"using-git-worktrees",
+		"finishing-a-development-branch",
+	}
+	for _, name := range superpowers {
+		skDir := filepath.Join(NanoClawProfileDir(), "skills", name)
+		if err := os.MkdirAll(skDir, 0700); err != nil {
+			return err
+		}
+		content := fmt.Sprintf(`---
+name: %s
+version: 1.0.0
+description: Placeholder for the "%s" superpowers skill
+tools: []
+---
+`, name, name)
+		if err := os.WriteFile(filepath.Join(skDir, "SKILL.md"), []byte(content), 0600); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
