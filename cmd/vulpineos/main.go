@@ -86,6 +86,14 @@ var startNanoClawDaemonIfAvailable = func(cfg *config.Config, audit *runtimeaudi
 				})
 			}
 		}
+		if err := nanoclaw.RepairVulpineProfileDatabase(config.NanoClawProfileDir(), cfg.Provider, cfg.Model); err != nil {
+			log.Printf("Warning: could not repair NanoClaw database after daemon start: %v", err)
+			if audit != nil {
+				_, _ = audit.Log("nanoclaw", "warn", "database_repair_failed", "NanoClaw database repair failed after daemon start", map[string]string{
+					"error": err.Error(),
+				})
+			}
+		}
 	}
 	return daemon
 }

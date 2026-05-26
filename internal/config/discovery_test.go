@@ -128,18 +128,18 @@ func TestOpenCodeProviderIncludesFreeZenModels(t *testing.T) {
 	if provider == nil {
 		t.Fatal("opencode provider not found")
 	}
-	for _, want := range []string{"opencode/minimax-m2.5", "opencode/deepseek-v4"} {
+	for _, want := range []string{"opencode/deepseek-v4-flash-free", "opencode/minimax-m2.5"} {
 		if !containsString(provider.Models, want) {
 			t.Fatalf("opencode models = %#v, want %s", provider.Models, want)
 		}
 	}
-	if provider.DefaultModel != "opencode/minimax-m2.5" {
+	if provider.DefaultModel != "opencode/deepseek-v4-flash-free" {
 		t.Fatalf("opencode default = %q, want free Zen default", provider.DefaultModel)
 	}
 
 	goProvider := GetProvider("opencode-go")
-	if goProvider == nil || !containsString(goProvider.Models, "opencode-go/deepseek-v4") {
-		t.Fatalf("opencode-go models = %#v, want deepseek v4", goProvider)
+	if goProvider == nil || !containsString(goProvider.Models, "opencode-go/deepseek-v4-flash") {
+		t.Fatalf("opencode-go models = %#v, want deepseek v4 flash", goProvider)
 	}
 }
 

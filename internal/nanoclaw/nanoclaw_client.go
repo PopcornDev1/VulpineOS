@@ -20,6 +20,7 @@ import (
 )
 
 const nanoclawFirstResponseTimeout = 10 * time.Minute
+const defaultNanoClawAgentGroupID = "vulpineos-main"
 
 type NanoclawClient struct {
 	socketPath string
@@ -138,6 +139,9 @@ func ensureVulpineAgentRoute(nanoclawDir, agentID string) error {
 	if err != nil {
 		return err
 	}
+	if err := ensureNanoClawContainerConfig(db, agentGroupID, "", ""); err != nil {
+		return err
+	}
 
 	platformID := vulpineAgentPlatformID(agentID)
 	messagingGroupID := vulpineMessagingGroupID(agentID)
@@ -211,12 +215,25 @@ func selectedNanoClawAgentGroupID(db *sql.DB) (string, error) {
 		return "", fmt.Errorf("iterate nanoclaw agent groups: %w", err)
 	}
 	if len(ids) == 0 {
-		return "", fmt.Errorf("no NanoClaw agent group configured")
+		return createDefaultNanoClawAgentGroup(db)
 	}
 	if len(ids) > 1 {
 		return "", fmt.Errorf("multiple NanoClaw agent groups found; set VULPINE_NANOCLAW_AGENT_GROUP_ID")
 	}
 	return ids[0], nil
+}
+
+func createDefaultNanoClawAgentGroup(db *sql.DB) (string, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.Exec(`
+INSERT INTO agent_groups (id, name, folder, agent_provider, created_at)
+VALUES (?, 'VulpineOS', 'vulpineos', NULL, ?)
+ON CONFLICT(id) DO UPDATE SET
+  name = excluded.name,
+  folder = excluded.folder`, defaultNanoClawAgentGroupID, now); err != nil {
+		return "", fmt.Errorf("create default nanoclaw agent group: %w", err)
+	}
+	return defaultNanoClawAgentGroupID, nil
 }
 
 func vulpineMessagingGroupID(agentID string) string {
@@ -240,6 +257,31 @@ func LookupNanoclawAgentGroupID(nanoclawDir string) (string, error) {
 	}
 	defer db.Close()
 	return selectedNanoClawAgentGroupID(db)
+}
+
+// RepairVulpineProfileDatabase makes the VulpineOS-owned NanoClaw profile
+// runnable after upstream migrations have created data/v2.db. NanoClaw's
+// current daemon ignores NANOCLAW_CONFIG_PATH, so provider/model state must
+// also be mirrored into the upstream DB-backed container config.
+func RepairVulpineProfileDatabase(nanoclawDir, provider, model string) error {
+	dbPath := filepath.Join(nanoclawDir, "data", "v2.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return fmt.Errorf("open nanoclaw database: %w", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("enable nanoclaw foreign keys: %w", err)
+	}
+
+	agentGroupID, err := selectedNanoClawAgentGroupID(db)
+	if err != nil {
+		return err
+	}
+	if err := ensureNanoClawContainerConfig(db, agentGroupID, provider, model); err != nil {
+		return err
+	}
+	return nil
 }
 
 func findNanoclawDir() string {
@@ -285,13 +327,42 @@ func SetContainerConfig(nanoclawDir, agentGroupID, provider, model string) error
 	}
 	defer db.Close()
 
-	if _, err := db.Exec(`
-		INSERT OR REPLACE INTO container_configs (agent_group_id, provider, model, updated_at)
-		VALUES (?, ?, ?, datetime('now'))
-	`, agentGroupID, provider, model); err != nil {
+	if err := ensureNanoClawContainerConfig(db, agentGroupID, provider, model); err != nil {
 		return fmt.Errorf("set container config: %w", err)
 	}
 	return nil
+}
+
+func ensureNanoClawContainerConfig(db *sql.DB, agentGroupID, provider, model string) error {
+	ok, err := tableExists(db, "container_configs")
+	if err != nil {
+		return fmt.Errorf("check nanoclaw container_configs table: %w", err)
+	}
+	if !ok {
+		return nil
+	}
+
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.Exec(`
+INSERT INTO container_configs (agent_group_id, provider, model, updated_at)
+VALUES (?, NULLIF(?, ''), NULLIF(?, ''), ?)
+ON CONFLICT(agent_group_id) DO UPDATE SET
+  provider = COALESCE(excluded.provider, container_configs.provider),
+  model = COALESCE(excluded.model, container_configs.model),
+  updated_at = excluded.updated_at`, agentGroupID, provider, model, now); err != nil {
+		return err
+	}
+	return nil
+}
+
+func tableExists(db *sql.DB, name string) (bool, error) {
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func CreateOpenRouterSecret(secretPath, apiKey string) error {

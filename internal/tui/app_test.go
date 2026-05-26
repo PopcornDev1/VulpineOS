@@ -1186,7 +1186,7 @@ func TestRemoteApplySetupPreservesHostAPIKeyPlaceholder(t *testing.T) {
 	control := &fakeControlClient{responses: map[string]any{
 		"config.set": map[string]any{
 			"provider":      "opencode",
-			"model":         "opencode/deepseek-v4",
+			"model":         "opencode/deepseek-v4-flash-free",
 			"apiKeySet":     true,
 			"setupComplete": true,
 		},
@@ -1194,7 +1194,7 @@ func TestRemoteApplySetupPreservesHostAPIKeyPlaceholder(t *testing.T) {
 	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, control)
 	err := app.applySetupConfig(&config.Config{
 		Provider:      "opencode",
-		Model:         "opencode/deepseek-v4",
+		Model:         "opencode/deepseek-v4-flash-free",
 		APIKey:        remoteAPIKeyPlaceholder,
 		SetupComplete: true,
 	})

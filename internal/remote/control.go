@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -174,6 +175,11 @@ func (api *ControlAPI) configSet(params json.RawMessage) (json.RawMessage, error
 		exe, _ := os.Executable()
 		if err := api.Config.GenerateNanoClawConfig(exe, api.Config.BinaryPath); err != nil {
 			return nil, err
+		}
+		if _, err := os.Stat(filepath.Join(config.NanoClawProfileDir(), "data", "v2.db")); err == nil {
+			if err := nanoclaw.RepairVulpineProfileDatabase(config.NanoClawProfileDir(), api.Config.Provider, api.Config.Model); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return json.Marshal(summarizeConfig(api.Config))
@@ -726,9 +732,7 @@ func (api *ControlAPI) statusGet() (json.RawMessage, error) {
 		out["kernel_pid"] = api.Kernel.PID()
 		out["kernel_headless"] = api.Kernel.IsHeadless()
 	}
-	if api.Daemon != nil {
-		out["nanoclaw_daemon_running"] = api.Daemon.Running()
-	}
+	out["nanoclaw_daemon_running"] = daemonRunning(api.Daemon)
 	if api.Orchestrator != nil {
 		status := api.Orchestrator.Status()
 		out["orchestrator"] = &status
@@ -743,6 +747,17 @@ func (api *ControlAPI) statusGet() (json.RawMessage, error) {
 		out["total_cost_usd"] = status.TotalCostUSD
 	}
 	return json.Marshal(out)
+}
+
+func daemonRunning(daemon daemonStatus) bool {
+	if daemon == nil {
+		return false
+	}
+	value := reflect.ValueOf(daemon)
+	if value.Kind() == reflect.Ptr && value.IsNil() {
+		return false
+	}
+	return daemon.Running()
 }
 
 func (api *ControlAPI) browserRoute() (string, string) {

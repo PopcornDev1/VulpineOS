@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"vulpineos/internal/config"
+	"vulpineos/internal/nanoclaw"
 	"vulpineos/internal/vault"
 )
 
@@ -143,6 +144,23 @@ func TestControlAPIConfigSetPreservesBlankAPIKeyAndRegeneratesNanoClawConfig(t *
 	}
 	if !strings.Contains(string(data), "sk-existing") || !strings.Contains(string(data), "anthropic/claude-opus-4-6") {
 		t.Fatalf("nanoclaw config was not regenerated with preserved key/model: %s", data)
+	}
+}
+
+func TestControlAPIStatusGetHandlesTypedNilDaemon(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	api := &ControlAPI{Daemon: (*nanoclaw.Daemon)(nil)}
+
+	out := callControl[struct {
+		NanoClawDaemonRunning bool   `json:"nanoclaw_daemon_running"`
+		BrowserRoute          string `json:"browser_route"`
+	}](t, api, "status.get", map[string]any{})
+
+	if out.NanoClawDaemonRunning {
+		t.Fatal("nanoclaw daemon should report stopped for typed nil daemon")
+	}
+	if out.BrowserRoute != "disabled" {
+		t.Fatalf("browser route = %q, want disabled", out.BrowserRoute)
 	}
 }
 
