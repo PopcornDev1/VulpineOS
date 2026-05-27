@@ -229,9 +229,14 @@ var Providers = []Provider{
 
 // GetProvider returns the provider by ID.
 func GetProvider(id string) *Provider {
-	for i := range Providers {
-		if Providers[i].ID == id {
-			return &Providers[i]
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	for _, provider := range providerRegistrySnapshot(false) {
+		if provider.ID == id {
+			p := provider
+			return &p
 		}
 	}
 	return nil

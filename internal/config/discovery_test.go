@@ -1,6 +1,8 @@
 package config
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -121,6 +123,127 @@ func TestMergedProviders(t *testing.T) {
 	if opencodeGoIdx < opencodeIdx {
 		t.Error("opencode-go should come after opencode in merged list")
 	}
+}
+
+func TestMergedProvidersUsesCatalogSources(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir())
+	resetProviderRegistryCache()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models-dev.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"opencode": {
+					"id": "opencode",
+					"name": "OpenCode Zen",
+					"env": ["OPENCODE_API_KEY"],
+					"models": {
+						"deepseek-v4-flash-free": {"id": "deepseek-v4-flash-free", "status": "active"},
+						"nemotron-3-super-free": {"id": "nemotron-3-super-free", "status": "active"}
+					}
+				},
+				"new-provider": {
+					"id": "new-provider",
+					"name": "New Provider",
+					"env": ["NEW_PROVIDER_API_KEY"],
+					"models": {
+						"fresh-model": {"id": "fresh-model", "status": "active"}
+					}
+				}
+			}`))
+		case "/zen/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"big-pickle"},{"id":"deepseek-v4-flash-free"}]}`))
+		case "/zen/go/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"minimax-m2.7"}]}`))
+		case "/openrouter/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"qwen/qwen3.7-max"}]}`))
+		case "/vercel/models":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"anthropic/claude-sonnet-4-6"}]}`))
+		case "/litellm.json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"gpt-catalog-test": {"litellm_provider": "openai", "mode": "chat"},
+				"dall-e-test": {"litellm_provider": "openai", "mode": "image_generation"}
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	oldModelsDevURL := providerRegistryModelsDevURL
+	oldOpenCodeZenURL := providerRegistryOpenCodeZenURL
+	oldOpenCodeGoURL := providerRegistryOpenCodeGoURL
+	oldOpenRouterURL := providerRegistryOpenRouterURL
+	oldVercelURL := providerRegistryVercelURL
+	oldLiteLLMURL := providerRegistryLiteLLMURL
+	defer func() {
+		providerRegistryModelsDevURL = oldModelsDevURL
+		providerRegistryOpenCodeZenURL = oldOpenCodeZenURL
+		providerRegistryOpenCodeGoURL = oldOpenCodeGoURL
+		providerRegistryOpenRouterURL = oldOpenRouterURL
+		providerRegistryVercelURL = oldVercelURL
+		providerRegistryLiteLLMURL = oldLiteLLMURL
+		resetProviderRegistryCache()
+	}()
+	providerRegistryModelsDevURL = server.URL + "/models-dev.json"
+	providerRegistryOpenCodeZenURL = server.URL + "/zen/v1/models"
+	providerRegistryOpenCodeGoURL = server.URL + "/zen/go/v1/models"
+	providerRegistryOpenRouterURL = server.URL + "/openrouter/models"
+	providerRegistryVercelURL = server.URL + "/vercel/models"
+	providerRegistryLiteLLMURL = server.URL + "/litellm.json"
+
+	merged := MergedProviders()
+
+	opencode := findProviderForTest(merged, "opencode")
+	if opencode == nil {
+		t.Fatal("opencode not found")
+	}
+	for _, want := range []string{"opencode/big-pickle", "opencode/nemotron-3-super-free"} {
+		if !containsString(opencode.Models, want) {
+			t.Fatalf("opencode models = %#v, want %s", opencode.Models, want)
+		}
+	}
+	opencodeGo := findProviderForTest(merged, "opencode-go")
+	if opencodeGo == nil || !containsString(opencodeGo.Models, "opencode-go/minimax-m2.7") {
+		t.Fatalf("opencode-go models = %#v, want minimax m2.7", opencodeGo)
+	}
+	newProvider := findProviderForTest(merged, "new-provider")
+	if newProvider == nil {
+		t.Fatal("new-provider from catalog not found")
+	}
+	if newProvider.EnvVar != "NEW_PROVIDER_API_KEY" {
+		t.Fatalf("new-provider env = %q, want NEW_PROVIDER_API_KEY", newProvider.EnvVar)
+	}
+	if !containsString(newProvider.Models, "new-provider/fresh-model") {
+		t.Fatalf("new-provider models = %#v, want fresh model", newProvider.Models)
+	}
+	openai := findProviderForTest(merged, "openai")
+	if openai == nil {
+		t.Fatal("openai not found")
+	}
+	if !containsString(openai.Models, "openai/gpt-catalog-test") {
+		t.Fatalf("openai models = %#v, want LiteLLM chat model", openai.Models)
+	}
+	if containsString(openai.Models, "openai/dall-e-test") {
+		t.Fatalf("openai models should not include image-generation-only LiteLLM model: %#v", openai.Models)
+	}
+}
+
+func findProviderForTest(providers []Provider, id string) *Provider {
+	for i := range providers {
+		if providers[i].ID == id {
+			return &providers[i]
+		}
+	}
+	return nil
 }
 
 func TestOpenCodeProviderIncludesFreeZenModels(t *testing.T) {

@@ -72,6 +72,9 @@ func discoverModelsImpl() (*DiscoveryResult, error) {
 		binary = findNanoClawBinary()
 	}
 	if binary == "" {
+		if result := discoverModelsFromProviderRegistry(); result != nil {
+			return result, nil
+		}
 		return nil, fmt.Errorf("nanoclaw binary not found")
 	}
 
@@ -136,7 +139,46 @@ func discoverModelsImpl() (*DiscoveryResult, error) {
 			lastErr = err
 		}
 	}
+	if result := discoverModelsFromProviderRegistry(); result != nil {
+		return result, nil
+	}
 	return nil, fmt.Errorf("nanoclaw models list: %w", lastErr)
+}
+
+func discoverModelsFromProviderRegistry() *DiscoveryResult {
+	providers := MergedProviders()
+	if len(providers) == 0 {
+		return nil
+	}
+	out := make([]DiscoveredProvider, 0, len(providers))
+	for _, provider := range providers {
+		if provider.ID == "" {
+			continue
+		}
+		models := make([]DiscoveredModel, 0, len(provider.Models))
+		for _, model := range provider.Models {
+			if strings.TrimSpace(model) == "" {
+				continue
+			}
+			models = append(models, DiscoveredModel{
+				Key:  model,
+				Name: model,
+			})
+		}
+		if len(models) == 0 {
+			continue
+		}
+		out = append(out, DiscoveredProvider{
+			ID:       provider.ID,
+			Name:     provider.Name,
+			Models:   models,
+			NeedsKey: provider.NeedsKey,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return &DiscoveryResult{Providers: out}
 }
 
 func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
@@ -264,41 +306,6 @@ func DiscoverProviderModels(providerID string) ([]string, error) {
 		}
 	}
 	return nil, fmt.Errorf("provider %q not in discovered models", providerID)
-}
-
-func MergedProviders() []Provider {
-	static := Providers
-	discovered, _ := DiscoverModels()
-
-	merged := make([]Provider, 0, len(static))
-	seen := make(map[string]bool)
-
-	for _, p := range static {
-		merged = append(merged, p)
-		seen[p.ID] = true
-	}
-
-	if discovered != nil {
-		for _, dp := range discovered.Providers {
-			if seen[dp.ID] {
-				continue
-			}
-			models := make([]string, len(dp.Models))
-			for i, m := range dp.Models {
-				models[i] = m.Key
-			}
-			merged = append(merged, Provider{
-				ID:           dp.ID,
-				Name:         dp.Name,
-				EnvVar:       "",
-				DefaultModel: dp.DefaultModel(),
-				Models:       models,
-				NeedsKey:     dp.NeedsKey,
-			})
-		}
-	}
-
-	return merged
 }
 
 func (p DiscoveredProvider) DefaultModel() string {

@@ -17,7 +17,7 @@ func TestNewWithConfigSeedsExistingValues(t *testing.T) {
 		Model:    "anthropic/claude-sonnet-4-6",
 	}
 
-	m := NewWithConfig(cfg)
+	m := newWithConfigAndProviders(cfg, setupTestProviders())
 
 	if m.cfg.Provider != cfg.Provider {
 		t.Fatalf("provider = %q, want %q", m.cfg.Provider, cfg.Provider)
@@ -46,7 +46,7 @@ func TestExistingAPIKeyCanBeKeptBlank(t *testing.T) {
 		Model:    "anthropic/claude-sonnet-4-6",
 	}
 
-	m := NewWithConfig(cfg)
+	m := newWithConfigAndProviders(cfg, setupTestProviders())
 	m.step = stepAPIKey
 	m.apiKeyInput.SetValue("")
 
@@ -61,8 +61,82 @@ func TestExistingAPIKeyCanBeKeptBlank(t *testing.T) {
 	}
 }
 
+func TestProviderPickerFiltersByTypedSearch(t *testing.T) {
+	m := newWithConfigAndProviders(nil, []config.Provider{
+		{ID: "anthropic", Name: "Anthropic", EnvVar: "ANTHROPIC_API_KEY", DefaultModel: "anthropic/claude", Models: []string{"anthropic/claude"}, NeedsKey: true},
+		{ID: "opencode", Name: "OpenCode Zen", EnvVar: "OPENCODE_API_KEY", DefaultModel: "opencode/deepseek-v4-flash-free", Models: []string{"opencode/deepseek-v4-flash-free"}, NeedsKey: true},
+	})
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = model.(*Model)
+
+	for _, r := range "open" {
+		model, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = model.(*Model)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "Filter: open") {
+		t.Fatalf("provider view should show typed filter:\n%s", view)
+	}
+	if !strings.Contains(view, "OpenCode Zen") {
+		t.Fatalf("provider filter should keep OpenCode visible:\n%s", view)
+	}
+	if strings.Contains(view, "Anthropic") {
+		t.Fatalf("provider filter should hide non-matches:\n%s", view)
+	}
+}
+
+func TestModelPickerFiltersByTypedSearchAndSelectsModel(t *testing.T) {
+	m := newWithConfigAndProviders(nil, []config.Provider{
+		{
+			ID:           "opencode",
+			Name:         "OpenCode Zen",
+			EnvVar:       "OPENCODE_API_KEY",
+			DefaultModel: "opencode/deepseek-v4-flash-free",
+			Models: []string{
+				"opencode/deepseek-v4-flash-free",
+				"opencode/minimax-m2.5",
+				"opencode/nemotron-3-super-free",
+			},
+			NeedsKey: true,
+		},
+	})
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = model.(*Model)
+
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = model.(*Model)
+	if m.step != stepModel {
+		t.Fatalf("step = %v, want model picker step", m.step)
+	}
+
+	for _, r := range "mini" {
+		model, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = model.(*Model)
+	}
+	view := m.View()
+	if !strings.Contains(view, "Filter: mini") {
+		t.Fatalf("model view should show typed filter:\n%s", view)
+	}
+	if !strings.Contains(view, "opencode/minimax-m2.5") {
+		t.Fatalf("model filter should keep MiniMax visible:\n%s", view)
+	}
+	if strings.Contains(view, "opencode/deepseek-v4-flash-free") {
+		t.Fatalf("model filter should hide non-matches:\n%s", view)
+	}
+
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = model.(*Model)
+	if m.cfg.Model != "opencode/minimax-m2.5" {
+		t.Fatalf("selected model = %q, want opencode/minimax-m2.5", m.cfg.Model)
+	}
+	if m.step != stepAPIKey {
+		t.Fatalf("step = %v, want API key step after model selection", m.step)
+	}
+}
+
 func TestSetupViewFitsNarrowTerminal(t *testing.T) {
-	m := New()
+	m := newWithConfigAndProviders(nil, setupTestProviders())
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 50, Height: 20})
 	mm := model.(*Model)
 
@@ -70,7 +144,7 @@ func TestSetupViewFitsNarrowTerminal(t *testing.T) {
 }
 
 func TestSetupProviderViewFitsShortTerminal(t *testing.T) {
-	m := New()
+	m := newWithConfigAndProviders(nil, setupTestProviders())
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 50, Height: 10})
 	mm := model.(*Model)
 
@@ -78,7 +152,7 @@ func TestSetupProviderViewFitsShortTerminal(t *testing.T) {
 }
 
 func TestSetupViewFitsUltraTinyTerminal(t *testing.T) {
-	m := New()
+	m := newWithConfigAndProviders(nil, setupTestProviders())
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 4, Height: 4})
 	mm := model.(*Model)
 
@@ -91,7 +165,7 @@ func TestSetupViewFitsVeryNarrowAPIKeyAndDoneSteps(t *testing.T) {
 		APIKey:   "sk-test",
 		Model:    "anthropic/claude-sonnet-4-6-with-a-long-name",
 	}
-	m := NewWithConfig(cfg)
+	m := newWithConfigAndProviders(cfg, setupTestProviders())
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 10})
 	mm := model.(*Model)
 
@@ -113,5 +187,33 @@ func assertSetupViewFits(t *testing.T, m *Model) {
 		if width := lipgloss.Width(line); width > m.width {
 			t.Fatalf("line %d width = %d, want <= %d:\n%s", i+1, width, m.width, view)
 		}
+	}
+}
+
+func setupTestProviders() []config.Provider {
+	return []config.Provider{
+		{
+			ID:           "anthropic",
+			Name:         "Anthropic (Claude)",
+			EnvVar:       "ANTHROPIC_API_KEY",
+			DefaultModel: "anthropic/claude-sonnet-4-6",
+			Models:       []string{"anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-6"},
+			NeedsKey:     true,
+		},
+		{
+			ID:           "opencode",
+			Name:         "OpenCode Zen",
+			EnvVar:       "OPENCODE_API_KEY",
+			DefaultModel: "opencode/deepseek-v4-flash-free",
+			Models:       []string{"opencode/deepseek-v4-flash-free", "opencode/minimax-m2.5"},
+			NeedsKey:     true,
+		},
+		{
+			ID:           "ollama",
+			Name:         "Ollama (Local)",
+			DefaultModel: "ollama/llama3.3",
+			Models:       []string{"ollama/llama3.3"},
+			NeedsKey:     false,
+		},
 	}
 }

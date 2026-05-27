@@ -2196,7 +2196,7 @@ func TestEmbeddedReconfigureCompletionSavesConfigWithoutQuitting(t *testing.T) {
 		_ = cmd()
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		app = model.(App)
 		if cmd == nil {
