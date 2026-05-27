@@ -22,6 +22,7 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 
 	fake := testutil.NewFakeJugglerTransport(t)
 	fake.RespondJSON("Browser.createBrowserContext", map[string]string{"browserContextId": "ctx-test"})

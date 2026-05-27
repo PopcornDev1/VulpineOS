@@ -23,6 +23,7 @@ type Daemon struct {
 	logFile       *os.File
 	cmd           *exec.Cmd
 	env           map[string]string
+	oneCLIShim    *LocalOneCLIShim
 	exited        bool
 	exitCh        chan error
 	waitReadyFunc func() error
@@ -84,6 +85,9 @@ func (d *Daemon) Start() error {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return fmt.Errorf("create NanoClaw data dir: %w", err)
 	}
+	if err := prepareNanoClawSourceRuntime(d.nanoclawDir); err != nil {
+		return fmt.Errorf("prepare NanoClaw source runtime: %w", err)
+	}
 	if err := os.Remove(d.socketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale NanoClaw socket: %w", err)
 	}
@@ -96,10 +100,23 @@ func (d *Daemon) Start() error {
 		"NANOCLAW_CONFIG_PATH": config.NanoClawConfigPath(),
 	}
 	d.mu.Lock()
+	providerEnv := cloneStringMap(d.env)
 	for k, v := range d.env {
 		overrides[k] = v
 	}
 	d.mu.Unlock()
+
+	var oneCLIShim *LocalOneCLIShim
+	if useLocalOneCLIShim() {
+		shim, err := StartLocalOneCLIShim(providerEnv)
+		if err != nil {
+			return fmt.Errorf("start local OneCLI shim: %w", err)
+		}
+		oneCLIShim = shim
+		overrides["ONECLI_URL"] = shim.URL()
+		overrides["ONECLI_GATEWAY_URL"] = shim.URL()
+		overrides["ONECLI_API_KEY"] = shim.AccessKey()
+	}
 
 	cmd := exec.Command(nanoclawBin, "run")
 	cmd.Env = daemonEnv(os.Environ(), overrides)
@@ -115,12 +132,16 @@ func (d *Daemon) Start() error {
 		if logFile != nil {
 			_ = logFile.Close()
 		}
+		if oneCLIShim != nil {
+			_ = oneCLIShim.Stop()
+		}
 		return fmt.Errorf("start NanoClaw daemon: %w", err)
 	}
 
 	d.mu.Lock()
 	d.cmd = cmd
 	d.logFile = logFile
+	d.oneCLIShim = oneCLIShim
 	d.exited = false
 	d.exitCh = make(chan error, 1)
 	exitCh := d.exitCh
@@ -157,6 +178,7 @@ func (d *Daemon) Stop() {
 	exitCh := d.exitCh
 	exited := d.exited
 	logFile := d.logFile
+	oneCLIShim := d.oneCLIShim
 	d.mu.Unlock()
 
 	if cmd != nil && cmd.Process != nil {
@@ -171,6 +193,9 @@ func (d *Daemon) Stop() {
 	if logFile != nil {
 		_ = logFile.Close()
 	}
+	if oneCLIShim != nil {
+		_ = oneCLIShim.Stop()
+	}
 
 	d.mu.Lock()
 	if d.cmd == cmd {
@@ -178,6 +203,7 @@ func (d *Daemon) Stop() {
 		d.exitCh = nil
 		d.exited = true
 		d.logFile = nil
+		d.oneCLIShim = nil
 	}
 	d.mu.Unlock()
 }
@@ -225,6 +251,15 @@ func ProviderRuntimeEnv(cfg *config.Config) map[string]string {
 		return nil
 	}
 	return env
+}
+
+func useLocalOneCLIShim() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("VULPINE_NANOCLAW_ONECLI_MODE"))) {
+	case "remote", "cloud", "external":
+		return false
+	default:
+		return true
+	}
 }
 
 func daemonEnv(base []string, overrides map[string]string) []string {

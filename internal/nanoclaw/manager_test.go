@@ -264,11 +264,15 @@ func TestFindNanoClawCreatesLauncherForUpstreamSource(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(srcDir, "bin"), 0700); err != nil {
 		t.Fatalf("mkdir bin: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(srcDir, "container", "agent-runner", "src"), 0700); err != nil {
+		t.Fatalf("mkdir container source: %v", err)
+	}
 	for path, data := range map[string]string{
 		filepath.Join(srcDir, "package.json"):            `{"name":"nanoclaw"}`,
 		filepath.Join(srcDir, "src", "index.ts"):         `console.log("daemon")`,
 		filepath.Join(srcDir, "src", "cli", "client.ts"): `console.log("client")`,
 		filepath.Join(srcDir, "bin", "ncl"):              "#!/bin/sh\nexit 0\n",
+		filepath.Join(srcDir, "container", "Dockerfile"): "FROM scratch\n",
 	} {
 		if err := os.WriteFile(path, []byte(data), 0700); err != nil {
 			t.Fatalf("write %s: %v", path, err)
@@ -293,9 +297,18 @@ func TestFindNanoClawCreatesLauncherForUpstreamSource(t *testing.T) {
 			t.Fatalf("launcher content does not contain %q:\n%s", want, content)
 		}
 	}
+	containerLink := filepath.Join(home, ".vulpineos", "nanoclaw", "container")
+	target, err := os.Readlink(containerLink)
+	if err != nil {
+		t.Fatalf("container assets were not linked into profile: %v", err)
+	}
+	if target != filepath.Join(srcDir, "container") {
+		t.Fatalf("container link = %q, want source container", target)
+	}
 }
 
 func TestSpawnFailsWithBadBinary(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	// Spawn should fail when given a binary that exists but isn't executable
 	// or when the process immediately fails
 	m := NewManager("/dev/null") // exists but not executable as a command
@@ -362,6 +375,7 @@ func TestRuntimeEnvForConfigOmitsMissingNanoClawGatewayToken(t *testing.T) {
 }
 
 func TestResumeWithSessionIsolatedRunsCleanupOnStartFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	badBin := filepath.Join(t.TempDir(), "nonexistent-nanoclaw-bin")
 
 	m := NewManager(badBin)

@@ -135,6 +135,80 @@ func TestStatusRefreshesVisibleState(t *testing.T) {
 	}
 }
 
+func TestStatusChecksParentWhenHelperProcessReportsHidden(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS-specific window visibility test")
+	}
+
+	original := runWindowCommand
+	defer func() { runWindowCommand = original }()
+
+	runWindowCommand = func(name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		switch {
+		case name == "ps":
+			return "123 1 camoufox\n200 123 plugin-container\n", nil
+		case strings.Contains(call, "get visible of first process whose unix id is 200"):
+			return "false\n", nil
+		case strings.Contains(call, "get visible of first process whose unix id is 123"):
+			return "true\n", nil
+		default:
+			return "", nil
+		}
+	}
+
+	w := NewWindowController(123)
+	visible, found := w.Status()
+	if !found {
+		t.Fatal("Status() found = false, want true")
+	}
+	if !visible {
+		t.Fatal("Status() visible = false, want true")
+	}
+}
+
+func TestHideAttemptsParentAfterHelperProcess(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS-specific window visibility test")
+	}
+
+	original := runWindowCommand
+	defer func() { runWindowCommand = original }()
+
+	var calls []string
+	runWindowCommand = func(name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		calls = append(calls, call)
+		switch {
+		case name == "ps":
+			return "123 1 camoufox\n200 123 plugin-container\n", nil
+		case strings.Contains(call, "set visible of first process whose unix id is 200 to false"):
+			return "", nil
+		case strings.Contains(call, "set visible of first process whose unix id is 123 to false"):
+			return "", nil
+		default:
+			return "", nil
+		}
+	}
+
+	w := NewWindowController(123)
+	if err := w.Hide(); err != nil {
+		t.Fatalf("Hide() error = %v", err)
+	}
+	var hidHelper, hidParent bool
+	for _, call := range calls {
+		if strings.Contains(call, "unix id is 200 to false") {
+			hidHelper = true
+		}
+		if strings.Contains(call, "unix id is 123 to false") {
+			hidParent = true
+		}
+	}
+	if !hidHelper || !hidParent {
+		t.Fatalf("Hide() calls = %#v, want helper and parent hide attempts", calls)
+	}
+}
+
 func TestShowReturnsUnderlyingAppleScriptError(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS-specific window visibility test")

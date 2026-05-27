@@ -20,7 +20,7 @@ var runWindowCommand = func(name string, args ...string) (string, error) {
 type WindowController struct {
 	visible        bool
 	pid            int
-	targetPID     int
+	targetPID      int
 	mu             sync.Mutex
 	contextWindows map[string][]int
 }
@@ -234,6 +234,7 @@ func (w *WindowController) hide() error {
 		return nil
 	}
 	var lastErr error
+	var hidden bool
 	for _, pid := range w.candidatePIDs() {
 		if _, err := runWindowCommand("osascript", "-e",
 			`tell application "System Events" to set visible of first process whose unix id is `+strconv.Itoa(pid)+` to false`,
@@ -241,7 +242,10 @@ func (w *WindowController) hide() error {
 			lastErr = err
 			continue
 		}
+		hidden = true
 		w.targetPID = pid
+	}
+	if hidden {
 		return nil
 	}
 	if lastErr != nil {
@@ -319,6 +323,8 @@ func (w *WindowController) refreshVisibleLocked() bool {
 	if runtime.GOOS != "darwin" {
 		return true
 	}
+	var found bool
+	var lastFoundPID int
 	for _, pid := range w.candidatePIDs() {
 		out, err := runWindowCommand("osascript", "-e",
 			`tell application "System Events" to get visible of first process whose unix id is `+strconv.Itoa(pid),
@@ -330,8 +336,17 @@ func (w *WindowController) refreshVisibleLocked() bool {
 		if !ok {
 			continue
 		}
-		w.targetPID = pid
-		w.visible = visible
+		found = true
+		lastFoundPID = pid
+		if visible {
+			w.targetPID = pid
+			w.visible = true
+			return true
+		}
+	}
+	if found {
+		w.targetPID = lastFoundPID
+		w.visible = false
 		return true
 	}
 	return false

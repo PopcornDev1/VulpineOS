@@ -1,6 +1,8 @@
 package nanoclaw
 
 import (
+	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,5 +141,98 @@ sleep 30
 		if !strings.Contains(env, want) {
 			t.Fatalf("daemon env capture %q does not contain %q", env, want)
 		}
+	}
+}
+
+func TestDaemonStartProvidesLocalOneCLIShim(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ONECLI_URL", "https://app.onecli.sh")
+	envPath := filepath.Join(t.TempDir(), "daemon.env")
+	t.Setenv("VULPINE_TEST_DAEMON_ENV_FILE", envPath)
+
+	bin := writeDaemonTestBinary(t, `#!/bin/sh
+printf 'onecli_url=%s
+onecli_gateway=%s
+onecli_key=%s
+' "$ONECLI_URL" "$ONECLI_GATEWAY_URL" "$ONECLI_API_KEY" > "$VULPINE_TEST_DAEMON_ENV_FILE"
+touch "$NANOCLAW_SOCKET"
+sleep 30
+`)
+	daemon := NewDaemon(bin)
+	daemon.SetEnv(map[string]string{
+		"OPENCODE_API_KEY": "secret-key",
+		"OPENCODE_MODEL":   "opencode/deepseek-v4-flash-free",
+	})
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(daemon.Stop)
+
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env capture: %v", err)
+	}
+	env := string(data)
+	if strings.Contains(env, "onecli_url=https://app.onecli.sh") {
+		t.Fatalf("daemon env capture %q should use local OneCLI shim", env)
+	}
+	if !strings.Contains(env, "onecli_url=http://127.0.0.1:") {
+		t.Fatalf("daemon env capture %q does not include local OneCLI URL", env)
+	}
+	if !strings.Contains(env, "onecli_gateway=http://127.0.0.1:") {
+		t.Fatalf("daemon env capture %q does not include local OneCLI gateway URL", env)
+	}
+	if strings.Contains(env, "onecli_key=\n") {
+		t.Fatalf("daemon env capture %q should include a local OneCLI access key", env)
+	}
+
+	var onecliURL, onecliKey string
+	for _, line := range strings.Split(env, "\n") {
+		if value, ok := strings.CutPrefix(line, "onecli_url="); ok {
+			onecliURL = strings.TrimSpace(value)
+		}
+		if value, ok := strings.CutPrefix(line, "onecli_key="); ok {
+			onecliKey = strings.TrimSpace(value)
+		}
+	}
+	req, err := http.NewRequest(http.MethodGet, onecliURL+"/api/container-config", nil)
+	if err != nil {
+		t.Fatalf("build container-config request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/container-config without auth: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		resp.Body.Close()
+		t.Fatalf("GET /api/container-config without auth status = %d, want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	req, err = http.NewRequest(http.MethodGet, onecliURL+"/api/container-config", nil)
+	if err != nil {
+		t.Fatalf("build authenticated container-config request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+onecliKey)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/container-config: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/container-config status = %d, want 200", resp.StatusCode)
+	}
+	var payload struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode container config: %v", err)
+	}
+	if payload.Env["OPENCODE_API_KEY"] != "secret-key" {
+		t.Fatalf("OPENCODE_API_KEY = %q, want secret-key", payload.Env["OPENCODE_API_KEY"])
+	}
+	if payload.Env["OPENCODE_MODEL"] != "opencode/deepseek-v4-flash-free" {
+		t.Fatalf("OPENCODE_MODEL = %q, want configured model", payload.Env["OPENCODE_MODEL"])
 	}
 }

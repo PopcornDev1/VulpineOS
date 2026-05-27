@@ -536,6 +536,9 @@ func ensureNanoClawSourceLauncher(srcDir string) (string, bool) {
 	if err := os.MkdirAll(launcherDir, 0700); err != nil {
 		return "", false
 	}
+	if err := ensureNanoClawSourceAssets(absSrc, config.NanoClawProfileDir()); err != nil {
+		return "", false
+	}
 	content := strings.Join([]string{
 		"#!/usr/bin/env bash",
 		"set -euo pipefail",
