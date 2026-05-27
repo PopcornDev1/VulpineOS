@@ -21,6 +21,10 @@ VulpineOS is the operating system for AI browser agents: a Firefox/Camoufox-base
   <a href="https://github.com/VulpineOS/VulpineOS/issues">Issues</a>
 </p>
 
+```bash
+curl -sL https://raw.githubusercontent.com/VulpineOS/VulpineOS/main/install.sh | bash
+```
+
 ---
 
 ## Why VulpineOS?
@@ -266,15 +270,7 @@ deployments, pass `--api-key` to use an explicit bearer access key instead.
 - Node.js 22.16+ and pnpm/corepack for NanoClaw
 - Firefox/Camoufox binary (or build from source)
 
-### Install
-
-One-liner:
-
-```bash
-curl -sL https://raw.githubusercontent.com/VulpineOS/VulpineOS/main/install.sh | bash
-```
-
-Or step-by-step:
+### Quick Start
 
 ```bash
 git clone https://github.com/VulpineOS/VulpineOS.git
