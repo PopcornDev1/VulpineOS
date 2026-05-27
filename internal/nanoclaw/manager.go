@@ -445,6 +445,18 @@ func (m *Manager) findNanoClaw() string {
 		return ""
 	}
 
+	// Check source-based installs first — these are the canonical
+	// VulpineOS-managed launchers (VULPINE_NANOCLAW_SRC or
+	// ~/.vulpineos/nanoclaw-src). They take priority over ad-hoc
+	// binaries found in cwd or parent directories.
+	for _, srcDir := range []string{
+		os.Getenv("VULPINE_NANOCLAW_SRC"),
+		filepath.Join(config.Dir(), "nanoclaw-src"),
+	} {
+		if launcher, ok := ensureNanoClawSourceLauncher(srcDir); ok {
+			return launcher
+		}
+	}
 	// Get the directory containing the vulpineos binary
 	exePath, err := os.Executable()
 	if err != nil {
@@ -479,15 +491,6 @@ func (m *Manager) findNanoClaw() string {
 				abs, _ := filepath.Abs(c)
 				return abs
 			}
-		}
-	}
-
-	for _, srcDir := range []string{
-		os.Getenv("VULPINE_NANOCLAW_SRC"),
-		filepath.Join(config.Dir(), "nanoclaw-src"),
-	} {
-		if launcher, ok := ensureNanoClawSourceLauncher(srcDir); ok {
-			return launcher
 		}
 	}
 
