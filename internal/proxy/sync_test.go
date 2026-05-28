@@ -42,6 +42,7 @@ func TestSyncFingerprintToProxy_PreservesExistingFields(t *testing.T) {
 			t.Errorf("%s = %v, want %v", key, fp[key], want)
 		}
 	}
+	assertLanguages(t, fp, []string{"en-US", "en"})
 
 	// Verify existing fields are preserved
 	if fp["navigator.userAgent"] != "Mozilla/5.0" {
@@ -83,6 +84,7 @@ func TestSyncFingerprintToProxy_EmptyFingerprint(t *testing.T) {
 	if fp["navigator.language"] != "de-DE" {
 		t.Errorf("navigator.language = %v, want de-DE (for Germany)", fp["navigator.language"])
 	}
+	assertLanguages(t, fp, []string{"de-DE", "de"})
 	if fp["webrtc:ipv4"] != "198.51.100.1" {
 		t.Errorf("webrtc:ipv4 = %v, want 198.51.100.1", fp["webrtc:ipv4"])
 	}
@@ -105,6 +107,23 @@ func TestSyncFingerprintToProxy_UnknownCountryDefaultsEnUS(t *testing.T) {
 
 	if fp["navigator.language"] != "en-US" {
 		t.Errorf("navigator.language = %v, want en-US (fallback for unmapped country)", fp["navigator.language"])
+	}
+	assertLanguages(t, fp, []string{"en-US", "en"})
+}
+
+func assertLanguages(t *testing.T, fp map[string]interface{}, want []string) {
+	t.Helper()
+	raw, ok := fp["navigator.languages"].([]interface{})
+	if !ok {
+		t.Fatalf("navigator.languages = %#v, want array", fp["navigator.languages"])
+	}
+	if len(raw) != len(want) {
+		t.Fatalf("navigator.languages len = %d, want %d (%#v)", len(raw), len(want), raw)
+	}
+	for i := range want {
+		if raw[i] != want[i] {
+			t.Fatalf("navigator.languages[%d] = %#v, want %q", i, raw[i], want[i])
+		}
 	}
 }
 

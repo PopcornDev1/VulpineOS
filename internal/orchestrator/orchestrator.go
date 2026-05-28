@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"vulpineos/internal/agentbus"
@@ -62,8 +63,9 @@ type Orchestrator struct {
 	mutationObs     *security.MutationMonitor
 
 	// Track which agent owns which context slot
-	agentToSlot   map[string]*pool.ContextSlot
-	agentToSlotMu sync.Mutex
+	agentToSlot          map[string]*pool.ContextSlot
+	persistentAgentSlots map[string]bool
+	agentToSlotMu        sync.Mutex
 }
 
 // Opts holds optional subsystem dependencies for the orchestrator.
@@ -81,12 +83,13 @@ type Opts struct {
 // New creates an orchestrator with all subsystems.
 func New(k *kernel.Kernel, client *juggler.Client, v *vault.DB, poolCfg pool.Config, nanoclawBinary string, opts ...Opts) *Orchestrator {
 	o := &Orchestrator{
-		Kernel:      k,
-		Client:      client,
-		Pool:        pool.New(client, poolCfg),
-		Vault:       v,
-		Agents:      nanoclaw.NewManager(nanoclawBinary),
-		agentToSlot: make(map[string]*pool.ContextSlot),
+		Kernel:               k,
+		Client:               client,
+		Pool:                 pool.New(client, poolCfg),
+		Vault:                v,
+		Agents:               nanoclaw.NewManager(nanoclawBinary),
+		agentToSlot:          make(map[string]*pool.ContextSlot),
+		persistentAgentSlots: make(map[string]bool),
 	}
 	if len(opts) > 0 {
 		o.AgentBus = opts[0].AgentBus
@@ -220,7 +223,9 @@ func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
 // KillAgent stops an agent and releases its context.
 func (o *Orchestrator) KillAgent(agentID string) error {
 	if err := o.Agents.Kill(agentID); err != nil {
-		return err
+		if !strings.Contains(err.Error(), "not found") {
+			return err
+		}
 	}
 
 	// Stop recording for this agent
@@ -240,16 +245,105 @@ func (o *Orchestrator) KillAgent(agentID string) error {
 		})
 	}
 
+	o.ReleaseAgentContext(agentID)
+	return nil
+}
+
+// EnsureAgentBrowserContext gives a persistent chat agent a browser context and
+// applies its current fingerprint before NanoClaw is routed into that context.
+func (o *Orchestrator) EnsureAgentBrowserContext(agent *vault.Agent) (string, error) {
+	if o == nil || o.Pool == nil || o.Client == nil {
+		return "", fmt.Errorf("orchestrator browser context pool not available")
+	}
+	if agent == nil {
+		return "", fmt.Errorf("agent not found")
+	}
+
+	meta, err := vault.ParseAgentMetadata(agent.Metadata)
+	if err != nil {
+		return "", fmt.Errorf("parse agent metadata: %w", err)
+	}
+	if meta.ContextID != "" {
+		if err := o.applyAgentToContext(meta.ContextID, agent); err == nil {
+			o.agentToSlotMu.Lock()
+			o.persistentAgentSlots[agent.ID] = true
+			o.agentToSlotMu.Unlock()
+			return meta.ContextID, nil
+		} else {
+			log.Printf("orchestrator: existing context %s for agent %s is unavailable: %v", meta.ContextID, agent.ID, err)
+		}
+	}
+
+	slot, err := o.Pool.Acquire()
+	if err != nil {
+		return "", fmt.Errorf("acquire agent context: %w", err)
+	}
+	if err := o.applyAgentToContext(slot.ContextID, agent); err != nil {
+		o.Pool.Discard(slot)
+		return "", fmt.Errorf("apply agent identity: %w", err)
+	}
+
+	meta.ContextID = slot.ContextID
+	metadata := vault.MarshalAgentMetadata(meta)
+	if o.Vault != nil {
+		if err := o.Vault.UpdateAgentMetadata(agent.ID, metadata); err != nil {
+			o.Pool.Discard(slot)
+			return "", fmt.Errorf("persist agent context: %w", err)
+		}
+	}
+	agent.Metadata = metadata
+
+	o.agentToSlotMu.Lock()
+	o.agentToSlot[agent.ID] = slot
+	o.persistentAgentSlots[agent.ID] = true
+	o.agentToSlotMu.Unlock()
+
+	return slot.ContextID, nil
+}
+
+// ReleaseAgentContext releases a persistent chat agent's browser context. It is
+// used for explicit kill/delete, not for ordinary per-turn NanoClaw completion.
+func (o *Orchestrator) ReleaseAgentContext(agentID string) {
+	if o == nil || agentID == "" {
+		return
+	}
+	contextID := ""
 	o.agentToSlotMu.Lock()
 	slot, ok := o.agentToSlot[agentID]
 	if ok {
 		delete(o.agentToSlot, agentID)
+		contextID = slot.ContextID
 	}
+	delete(o.persistentAgentSlots, agentID)
 	o.agentToSlotMu.Unlock()
-	if ok {
-		o.Pool.Release(slot)
+
+	var meta vault.AgentMetadata
+	var hasMetadata bool
+	if o.Vault != nil {
+		if agent, err := o.Vault.GetAgent(agentID); err == nil {
+			if parsed, err := vault.ParseAgentMetadata(agent.Metadata); err == nil {
+				meta = parsed
+				hasMetadata = true
+				if contextID == "" {
+					contextID = meta.ContextID
+				}
+			}
+		}
 	}
-	return nil
+
+	if ok {
+		o.Pool.Discard(slot)
+	} else if contextID != "" && o.Client != nil {
+		if _, err := o.Client.Call("", "Browser.removeBrowserContext", map[string]interface{}{
+			"browserContextId": contextID,
+		}); err != nil {
+			log.Printf("orchestrator: warning: failed to remove untracked context %s for agent %s: %v", contextID, agentID, err)
+		}
+	}
+	if o.Vault != nil && hasMetadata && meta.ContextID != "" {
+		meta.ContextID = ""
+		_ = o.Vault.UpdateAgentMetadata(agentID, vault.MarshalAgentMetadata(meta))
+	}
 }
 
 // Status returns the orchestrator's current state.
@@ -329,53 +423,9 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Ci
 		}
 	}
 
-	// Apply locale/timezone if set
-	if citizen.Locale != "" {
-		o.Client.Call("", "Browser.setLocaleOverride", map[string]interface{}{
-			"browserContextId": contextID,
-			"locale":           citizen.Locale,
-		})
-	}
-	if citizen.Timezone != "" {
-		o.Client.Call("", "Browser.setTimezoneOverride", map[string]interface{}{
-			"browserContextId": contextID,
-			"timezoneId":       citizen.Timezone,
-		})
-	}
-
-	// Apply fingerprint to the browser context via existing Juggler per-context methods.
-	// Camoufox supports per-context: user agent, viewport, device scale factor, locale,
-	// timezone, geolocation, proxy — no C++ patches needed.
 	if citizen.Fingerprint != "" {
-		var fp vault.FingerprintData
-		if err := json.Unmarshal([]byte(citizen.Fingerprint), &fp); err == nil {
-			if fp.UserAgent != "" {
-				o.Client.Call("", "Browser.setUserAgentOverride", map[string]interface{}{
-					"browserContextId": contextID,
-					"userAgent":        fp.UserAgent,
-				})
-			}
-			if fp.ScreenWidth > 0 && fp.ScreenHeight > 0 {
-				o.Client.Call("", "Browser.setDefaultViewport", map[string]interface{}{
-					"browserContextId": contextID,
-					"viewport": map[string]interface{}{
-						"width":  fp.ScreenWidth,
-						"height": fp.ScreenHeight,
-					},
-				})
-			}
-			if fp.Language != "" && citizen.Locale == "" {
-				o.Client.Call("", "Browser.setLocaleOverride", map[string]interface{}{
-					"browserContextId": contextID,
-					"locale":           fp.Language,
-				})
-			}
-			uaSummary := fp.UserAgent
-			if len(uaSummary) > 40 {
-				uaSummary = uaSummary[:40] + "..."
-			}
-			log.Printf("orchestrator: fingerprint applied to context %s (ua=%s, screen=%dx%d)",
-				contextID, uaSummary, fp.ScreenWidth, fp.ScreenHeight)
+		if err := o.applyFingerprintToContext(contextID, citizen.Fingerprint, citizen.Locale, citizen.Timezone); err != nil {
+			return err
 		}
 	}
 
@@ -384,6 +434,149 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Ci
 		o.applySecurityToContext(contextID, citizen.ID)
 	}
 
+	return nil
+}
+
+func (o *Orchestrator) applyAgentToContext(contextID string, agent *vault.Agent) error {
+	if agent == nil {
+		return fmt.Errorf("agent not found")
+	}
+	if agent.Fingerprint != "" {
+		if err := o.applyFingerprintToContext(contextID, agent.Fingerprint, agent.Locale, agent.Timezone); err != nil {
+			return err
+		}
+	}
+	if agent.ProxyConfig != "" {
+		if err := o.applyProxyToContext(contextID, agent.ProxyConfig); err != nil {
+			log.Printf("orchestrator: warning: failed to apply proxy for agent %s on context %s: %v", agent.ID, contextID, err)
+		}
+	}
+	if o.SecurityEnabled {
+		o.applySecurityToContext(contextID, agent.ID)
+	}
+	return nil
+}
+
+func (o *Orchestrator) applyFingerprintToContext(contextID, fpJSON, explicitLocale, explicitTimezone string) error {
+	raw := map[string]interface{}{}
+	if err := json.Unmarshal([]byte(fpJSON), &raw); err != nil {
+		return fmt.Errorf("parse fingerprint: %w", err)
+	}
+	var fp vault.FingerprintData
+	if err := json.Unmarshal([]byte(fpJSON), &fp); err != nil {
+		return fmt.Errorf("parse fingerprint fields: %w", err)
+	}
+
+	ua := sanitizeFingerprintUserAgent(firstNonEmpty(fp.UserAgent, stringField(raw, "navigator.userAgent")), fp.Platform)
+	if ua != "" {
+		if _, err := o.Client.Call("", "Browser.setUserAgentOverride", map[string]interface{}{
+			"browserContextId": contextID,
+			"userAgent":        ua,
+		}); err != nil {
+			return fmt.Errorf("set user agent: %w", err)
+		}
+	}
+
+	platform := firstNonEmpty(fp.Platform, stringField(raw, "navigator.platform"))
+	if platform != "" {
+		if _, err := o.Client.Call("", "Browser.setPlatformOverride", map[string]interface{}{
+			"browserContextId": contextID,
+			"platform":         platform,
+		}); err != nil {
+			return fmt.Errorf("set platform: %w", err)
+		}
+	}
+
+	width := firstPositiveInt(fp.ScreenWidth, intField(raw, "screen.width"))
+	height := firstPositiveInt(fp.ScreenHeight, intField(raw, "screen.height"))
+	deviceScale := firstPositiveFloat(fp.DeviceScale, floatField(raw, "window.devicePixelRatio"))
+	if width > 0 && height > 0 {
+		viewport := map[string]interface{}{
+			"viewportSize": map[string]interface{}{
+				"width":  width,
+				"height": height,
+			},
+		}
+		if deviceScale > 0 {
+			viewport["deviceScaleFactor"] = deviceScale
+		}
+		if _, err := o.Client.Call("", "Browser.setDefaultViewport", map[string]interface{}{
+			"browserContextId": contextID,
+			"viewport":         viewport,
+		}); err != nil {
+			return fmt.Errorf("set viewport: %w", err)
+		}
+	}
+
+	locale := firstNonEmpty(explicitLocale, fp.Language, stringField(raw, "navigator.language"))
+	if locale == "" {
+		locale = vault.DefaultLocale()
+	}
+	if locale != "" {
+		if _, err := o.Client.Call("", "Browser.setLocaleOverride", map[string]interface{}{
+			"browserContextId": contextID,
+			"locale":           locale,
+		}); err != nil {
+			return fmt.Errorf("set locale: %w", err)
+		}
+	}
+
+	languages := fp.Languages
+	if len(languages) == 0 {
+		languages = languagesField(raw, "navigator.languages")
+	}
+	if explicitLocale != "" {
+		languages = vault.LanguagesForLocale(explicitLocale)
+	}
+	if len(languages) == 0 && locale != "" {
+		languages = vault.LanguagesForLocale(locale)
+	}
+	if header := acceptLanguageHeader(languages); header != "" {
+		if _, err := o.Client.Call("", "Browser.setExtraHTTPHeaders", map[string]interface{}{
+			"browserContextId": contextID,
+			"headers": []map[string]string{
+				{"name": "Accept-Language", "value": header},
+			},
+		}); err != nil {
+			return fmt.Errorf("set accept-language: %w", err)
+		}
+	}
+
+	timezone := firstNonEmpty(explicitTimezone, fp.Timezone, stringField(raw, "timezone"))
+	if timezone == "" {
+		timezone = vault.DefaultTimezone()
+	}
+	if timezone != "" {
+		if _, err := o.Client.Call("", "Browser.setTimezoneOverride", map[string]interface{}{
+			"browserContextId": contextID,
+			"timezoneId":       timezone,
+		}); err != nil {
+			return fmt.Errorf("set timezone: %w", err)
+		}
+	}
+
+	if lat, lon, ok := geolocationFields(raw); ok {
+		geo := map[string]interface{}{
+			"latitude":  lat,
+			"longitude": lon,
+		}
+		if accuracy := floatField(raw, "geolocation:accuracy"); accuracy > 0 {
+			geo["accuracy"] = accuracy
+		}
+		if _, err := o.Client.Call("", "Browser.setGeolocationOverride", map[string]interface{}{
+			"browserContextId": contextID,
+			"geolocation":      geo,
+		}); err != nil {
+			return fmt.Errorf("set geolocation: %w", err)
+		}
+	}
+
+	uaSummary := ua
+	if len(uaSummary) > 40 {
+		uaSummary = uaSummary[:40] + "..."
+	}
+	log.Printf("orchestrator: fingerprint applied to context %s (ua=%s, screen=%dx%d)",
+		contextID, uaSummary, width, height)
 	return nil
 }
 
@@ -417,7 +610,7 @@ func (o *Orchestrator) applyProxyToContext(contextID string, proxyConfigJSON str
 	}
 	_, err := o.Client.Call("", "Browser.setContextProxy", map[string]interface{}{
 		"browserContextId": contextID,
-		"proxy":           pc.URL(),
+		"proxy":            pc.URL(),
 	})
 	return err
 }
@@ -426,16 +619,24 @@ func (o *Orchestrator) applyProxyToContext(contextID string, proxyConfigJSON str
 func (o *Orchestrator) statusRelay() {
 	for status := range o.Agents.StatusChan() {
 		if isTerminalAgentStatus(status.Status) {
-			o.agentToSlotMu.Lock()
-			slot, ok := o.agentToSlot[status.AgentID]
-			if ok {
-				delete(o.agentToSlot, status.AgentID)
-			}
-			o.agentToSlotMu.Unlock()
-			if ok {
-				o.Pool.Release(slot)
-			}
+			o.handleTerminalAgentStatus(status.AgentID)
 		}
+	}
+}
+
+func (o *Orchestrator) handleTerminalAgentStatus(agentID string) {
+	o.agentToSlotMu.Lock()
+	if o.persistentAgentSlots[agentID] {
+		o.agentToSlotMu.Unlock()
+		return
+	}
+	slot, ok := o.agentToSlot[agentID]
+	if ok {
+		delete(o.agentToSlot, agentID)
+	}
+	o.agentToSlotMu.Unlock()
+	if ok {
+		o.Pool.Release(slot)
 	}
 }
 
@@ -446,6 +647,158 @@ func isTerminalAgentStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func sanitizeFingerprintUserAgent(userAgent, platform string) string {
+	userAgent = strings.TrimSpace(userAgent)
+	if userAgent == "" || strings.Contains(userAgent, "Camoufox") {
+		return vault.DefaultUserAgentForHost(hostOSForPlatform(platform))
+	}
+	return userAgent
+}
+
+func hostOSForPlatform(platform string) string {
+	switch {
+	case strings.Contains(platform, "Win"):
+		return "win"
+	case strings.Contains(platform, "Mac"):
+		return "mac"
+	case strings.Contains(platform, "Linux"):
+		return "lin"
+	default:
+		return vault.HostOS()
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func firstPositiveInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func firstPositiveFloat(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func stringField(raw map[string]interface{}, key string) string {
+	value, _ := raw[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func intField(raw map[string]interface{}, key string) int {
+	switch value := raw[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		if n, err := value.Int64(); err == nil {
+			return int(n)
+		}
+	}
+	return 0
+}
+
+func floatField(raw map[string]interface{}, key string) float64 {
+	switch value := raw[key].(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
+	case json.Number:
+		if n, err := value.Float64(); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+func languagesField(raw map[string]interface{}, key string) []string {
+	switch value := raw[key].(type) {
+	case []interface{}:
+		out := make([]string, 0, len(value))
+		for _, item := range value {
+			if s, ok := item.(string); ok {
+				if s = strings.TrimSpace(s); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		return out
+	case []string:
+		return append([]string(nil), value...)
+	case string:
+		parts := strings.Split(value, ",")
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if s := strings.TrimSpace(part); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func acceptLanguageHeader(languages []string) string {
+	cleaned := make([]string, 0, len(languages))
+	seen := map[string]struct{}{}
+	for _, lang := range languages {
+		lang = strings.TrimSpace(lang)
+		if lang == "" {
+			continue
+		}
+		if _, ok := seen[lang]; ok {
+			continue
+		}
+		seen[lang] = struct{}{}
+		cleaned = append(cleaned, lang)
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+	parts := []string{cleaned[0]}
+	for i := 1; i < len(cleaned); i++ {
+		q := 1.0 - (float64(i) * 0.1)
+		if q < 0.1 {
+			q = 0.1
+		}
+		parts = append(parts, fmt.Sprintf("%s;q=%.1f", cleaned[i], q))
+	}
+	return strings.Join(parts, ",")
+}
+
+func geolocationFields(raw map[string]interface{}) (float64, float64, bool) {
+	lat := floatField(raw, "geolocation:latitude")
+	lon := floatField(raw, "geolocation:longitude")
+	if lat == 0 && lon == 0 {
+		return 0, 0, false
+	}
+	return lat, lon, true
 }
 
 func (o *Orchestrator) spawnScopedAgent(contextID, sopFile string) (string, error) {

@@ -210,7 +210,7 @@ func TestBrowserRouteLabelIgnoresStoppedFoxbridge(t *testing.T) {
 	}
 }
 
-func TestAgentRuntimeConfigClearsStoppedFoxbridgeURL(t *testing.T) {
+func TestAgentRuntimeConfigCreatesScopedAgentContext(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	if err := os.MkdirAll(config.NanoClawProfileDir(), 0700); err != nil {
@@ -220,9 +220,38 @@ func TestAgentRuntimeConfigClearsStoppedFoxbridgeURL(t *testing.T) {
 		t.Fatalf("write nanoclaw.json: %v", err)
 	}
 
-	app := NewApp(nil, nil, nil, nil, &config.Config{FoxbridgeCDPURL: "ws://127.0.0.1:9222"}, nil)
+	fake := testutil.NewFakeJugglerTransport(t)
+	fake.RespondJSON("Browser.createBrowserContext", map[string]string{"browserContextId": "ctx-agent-runtime"})
+	fake.RespondJSON("Browser.enable", map[string]any{})
+	fake.RespondJSON("Browser.setUserAgentOverride", map[string]any{})
+	fake.RespondJSON("Browser.setPlatformOverride", map[string]any{})
+	fake.RespondJSON("Browser.setDefaultViewport", map[string]any{})
+	fake.RespondJSON("Browser.setLocaleOverride", map[string]any{})
+	fake.RespondJSON("Browser.setTimezoneOverride", map[string]any{})
+	fake.RespondJSON("Browser.setExtraHTTPHeaders", map[string]any{})
+
+	client := juggler.NewClient(fake)
+	defer client.Close()
+
+	db := openTestVault(t)
+	fp, err := vault.GenerateFingerprint("agent-runtime")
+	if err != nil {
+		t.Fatalf("GenerateFingerprint: %v", err)
+	}
+	agent, err := db.CreateAgent("agent-runtime", "use browser", fp)
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+
+	orch := orchestrator.New(nil, client, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, "")
+	if err := orch.Pool.Start(); err != nil {
+		t.Fatalf("pool start: %v", err)
+	}
+	defer orch.Close()
+
+	app := NewApp(nil, nil, orch, db, &config.Config{FoxbridgeCDPURL: "ws://127.0.0.1:9222"}, nil)
 	app.SetFoxbridgeRunning(func() bool { return false })
-	path, cleanup, err := app.agentRuntimeConfig(&vault.Agent{ID: "agent-1", Metadata: "{}"})
+	path, cleanup, err := app.agentRuntimeConfig(agent)
 	if err != nil {
 		t.Fatalf("agentRuntimeConfig: %v", err)
 	}
@@ -233,7 +262,23 @@ func TestAgentRuntimeConfigClearsStoppedFoxbridgeURL(t *testing.T) {
 		t.Fatalf("read runtime config: %v", err)
 	}
 	if strings.Contains(string(data), "cdpUrl") {
-		t.Fatalf("runtime config kept stale cdpUrl: %s", data)
+		if strings.Contains(string(data), "ws://127.0.0.1:9222") {
+			t.Fatalf("runtime config kept stale cdpUrl: %s", data)
+		}
+	} else {
+		t.Fatalf("runtime config missing scoped cdpUrl: %s", data)
+	}
+
+	persisted, err := db.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	meta, err := vault.ParseAgentMetadata(persisted.Metadata)
+	if err != nil {
+		t.Fatalf("ParseAgentMetadata: %v", err)
+	}
+	if meta.ContextID != "ctx-agent-runtime" {
+		t.Fatalf("contextID = %q, want ctx-agent-runtime", meta.ContextID)
 	}
 }
 

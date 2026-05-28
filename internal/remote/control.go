@@ -743,17 +743,14 @@ func (api *ControlAPI) agentRuntimeConfig(agent *vault.Agent) (string, func(), e
 			return "", nil, fmt.Errorf("repair nanoclaw profile: %w", err)
 		}
 	}
-	meta, err := vault.ParseAgentMetadata(agent.Metadata)
-	if err != nil {
-		return "", nil, fmt.Errorf("parse agent metadata: %w", err)
-	}
-	if meta.ContextID == "" {
-		return nanoclaw.PrepareRuntimeConfig(config.NanoClawConfigPath())
-	}
 	if api.Orchestrator == nil {
 		return "", nil, fmt.Errorf("orchestrator not available")
 	}
-	return api.Orchestrator.PrepareScopedNanoClawConfig(meta.ContextID)
+	contextID, err := api.Orchestrator.EnsureAgentBrowserContext(agent)
+	if err != nil {
+		return "", nil, err
+	}
+	return api.Orchestrator.PrepareScopedNanoClawConfig(contextID)
 }
 
 func (api *ControlAPI) statusGet() (json.RawMessage, error) {

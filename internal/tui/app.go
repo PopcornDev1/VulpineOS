@@ -3045,6 +3045,9 @@ func (a *App) deleteAgent(agentID string) tea.Cmd {
 				return statusNotice{text: "Kill failed: " + err.Error()}
 			}
 		}
+		if a.orch != nil {
+			a.orch.ReleaseAgentContext(agentID)
+		}
 		// Remove from vault
 		if a.vault != nil {
 			a.vault.DeleteAgent(agentID)
@@ -3168,17 +3171,14 @@ func (a *App) agentRuntimeConfig(agent *vault.Agent) (string, func(), error) {
 			return "", nil, fmt.Errorf("repair nanoclaw profile: %w", err)
 		}
 	}
-	meta, err := vault.ParseAgentMetadata(agent.Metadata)
-	if err != nil {
-		return "", nil, fmt.Errorf("parse agent metadata: %w", err)
-	}
-	if meta.ContextID == "" {
-		return nanoclaw.PrepareRuntimeConfig(config.NanoClawConfigPath())
-	}
 	if a.orch == nil {
 		return "", nil, fmt.Errorf("orchestrator not available")
 	}
-	return a.orch.PrepareScopedNanoClawConfig(meta.ContextID)
+	contextID, err := a.orch.EnsureAgentBrowserContext(agent)
+	if err != nil {
+		return "", nil, err
+	}
+	return a.orch.PrepareScopedNanoClawConfig(contextID)
 }
 
 func shortContextID(contextID string) string {

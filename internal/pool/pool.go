@@ -123,7 +123,7 @@ func (p *Pool) Acquire() (*ContextSlot, error) {
 	}
 
 	// Check if we can create a new one
-p.mu.Lock()
+	p.mu.Lock()
 	if p.total < p.config.MaxActive {
 		p.total++
 		p.mu.Unlock()
@@ -187,6 +187,24 @@ func (p *Pool) Release(slot *ContextSlot) {
 	select {
 	case p.available <- slot:
 	case <-p.done:
+		p.destroySlot(slot)
+	}
+}
+
+// Discard destroys a checked-out context instead of returning it to the
+// reusable pool. Use this for contexts that have held persistent identity state.
+func (p *Pool) Discard(slot *ContextSlot) {
+	if p == nil || slot == nil {
+		return
+	}
+	p.mu.Lock()
+	_, wasActive := p.active[slot.ContextID]
+	if wasActive {
+		delete(p.active, slot.ContextID)
+	}
+	p.mu.Unlock()
+
+	if wasActive {
 		p.destroySlot(slot)
 	}
 }

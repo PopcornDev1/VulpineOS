@@ -2,6 +2,7 @@ package vault
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -20,6 +21,18 @@ func TestGenerateFingerprintPublicFallback(t *testing.T) {
 	ua, ok := data["navigator.userAgent"].(string)
 	if !ok || ua == "" {
 		t.Fatal("missing navigator.userAgent")
+	}
+	if strings.Contains(ua, "Camoufox") {
+		t.Fatalf("fallback user agent exposes Camoufox: %s", ua)
+	}
+	if !strings.Contains(ua, "Firefox/146.0") || !strings.Contains(ua, "rv:146.0") {
+		t.Fatalf("fallback user agent is not aligned with bundled Firefox 146: %s", ua)
+	}
+	if langs, ok := data["navigator.languages"].([]interface{}); !ok || len(langs) < 2 {
+		t.Fatalf("navigator.languages = %#v, want array with primary and base language", data["navigator.languages"])
+	}
+	if timezone, ok := data["timezone"].(string); !ok || timezone == "" {
+		t.Fatalf("timezone = %#v, want non-empty timezone", data["timezone"])
 	}
 
 	// Must have screen dimensions
@@ -81,6 +94,12 @@ func TestFingerprintOSConsistency(t *testing.T) {
 	}
 	if data.UserAgent == "" {
 		t.Error("UserAgent is empty")
+	}
+	if strings.Contains(data.UserAgent, "Camoufox") || !strings.Contains(data.UserAgent, "Firefox/146.0") {
+		t.Errorf("Mac user agent = %q, want Firefox 146 without Camoufox branding", data.UserAgent)
+	}
+	if data.Timezone == "" {
+		t.Error("Mac timezone is empty")
 	}
 
 	// Windows fingerprint

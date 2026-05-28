@@ -8,7 +8,11 @@ import (
 	"testing"
 
 	"vulpineos/internal/config"
+	"vulpineos/internal/juggler"
 	"vulpineos/internal/nanoclaw"
+	"vulpineos/internal/orchestrator"
+	"vulpineos/internal/pool"
+	"vulpineos/internal/testutil"
 	"vulpineos/internal/vault"
 )
 
@@ -192,6 +196,82 @@ func TestControlAPIAgentsCreateDoesNotStartFirstTurn(t *testing.T) {
 	}
 	if len(msgs) != 0 {
 		t.Fatalf("agent messages = %#v, want none before first user message", msgs)
+	}
+}
+
+func TestControlAPIAgentRuntimeConfigCreatesScopedAgentContext(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := os.MkdirAll(config.NanoClawProfileDir(), 0700); err != nil {
+		t.Fatalf("mkdir profile dir: %v", err)
+	}
+	if err := os.WriteFile(config.NanoClawConfigPath(), []byte(`{"browser":{"enabled":true,"headless":true,"cdpUrl":"ws://127.0.0.1:9222"}}`), 0600); err != nil {
+		t.Fatalf("write nanoclaw.json: %v", err)
+	}
+
+	fake := testutil.NewFakeJugglerTransport(t)
+	fake.RespondJSON("Browser.createBrowserContext", map[string]string{"browserContextId": "ctx-remote-runtime"})
+	fake.RespondJSON("Browser.enable", map[string]any{})
+	fake.RespondJSON("Browser.setUserAgentOverride", map[string]any{})
+	fake.RespondJSON("Browser.setPlatformOverride", map[string]any{})
+	fake.RespondJSON("Browser.setDefaultViewport", map[string]any{})
+	fake.RespondJSON("Browser.setLocaleOverride", map[string]any{})
+	fake.RespondJSON("Browser.setTimezoneOverride", map[string]any{})
+	fake.RespondJSON("Browser.setExtraHTTPHeaders", map[string]any{})
+
+	client := juggler.NewClient(fake)
+	defer client.Close()
+
+	db := openControlTestVault(t)
+	fp, err := vault.GenerateFingerprint("remote-runtime")
+	if err != nil {
+		t.Fatalf("GenerateFingerprint: %v", err)
+	}
+	agent, err := db.CreateAgent("remote-runtime", "use browser", fp)
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+
+	orch := orchestrator.New(nil, client, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, "")
+	if err := orch.Pool.Start(); err != nil {
+		t.Fatalf("pool start: %v", err)
+	}
+	defer orch.Close()
+
+	api := &ControlAPI{
+		Config:       &config.Config{FoxbridgeCDPURL: "ws://127.0.0.1:9222"},
+		Vault:        db,
+		Orchestrator: orch,
+		FoxbridgeRunning: func() bool {
+			return false
+		},
+	}
+	path, cleanup, err := api.agentRuntimeConfig(agent)
+	if err != nil {
+		t.Fatalf("agentRuntimeConfig: %v", err)
+	}
+	defer cleanup()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read runtime config: %v", err)
+	}
+	if !strings.Contains(string(data), "cdpUrl") {
+		t.Fatalf("runtime config missing scoped cdpUrl: %s", data)
+	}
+	if strings.Contains(string(data), "ws://127.0.0.1:9222") {
+		t.Fatalf("runtime config kept stale cdpUrl: %s", data)
+	}
+
+	persisted, err := db.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	meta, err := vault.ParseAgentMetadata(persisted.Metadata)
+	if err != nil {
+		t.Fatalf("ParseAgentMetadata: %v", err)
+	}
+	if meta.ContextID != "ctx-remote-runtime" {
+		t.Fatalf("contextID = %q, want ctx-remote-runtime", meta.ContextID)
 	}
 }
 

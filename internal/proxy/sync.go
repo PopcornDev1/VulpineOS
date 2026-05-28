@@ -75,11 +75,25 @@ func SyncFingerprintToProxy(fpJSON string, geo *GeoInfo) (string, error) {
 	fp["geolocation:accuracy"] = 50.0
 	fp["timezone"] = geo.Timezone
 	fp["webrtc:ipv4"] = geo.IP
-	fp["navigator.language"] = localeForCountry(geo.Country)
+	locale := localeForCountry(geo.Country)
+	fp["navigator.language"] = locale
+	fp["navigator.languages"] = languagesForLocale(locale)
 
 	out, err := json.Marshal(fp)
 	if err != nil {
 		return "", fmt.Errorf("marshal fingerprint: %w", err)
 	}
 	return string(out), nil
+}
+
+func languagesForLocale(locale string) []string {
+	locale = strings.TrimSpace(locale)
+	if locale == "" {
+		locale = "en-US"
+	}
+	parts := strings.Split(locale, "-")
+	if len(parts) == 0 || parts[0] == "" || parts[0] == locale {
+		return []string{locale}
+	}
+	return []string{locale, parts[0]}
 }

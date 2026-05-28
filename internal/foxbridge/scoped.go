@@ -124,6 +124,7 @@ var contextScopedBrowserMethods = map[string]struct{}{
 	"Browser.setExtraHTTPHeaders":    {},
 	"Browser.setGeolocationOverride": {},
 	"Browser.setLocaleOverride":      {},
+	"Browser.setPlatformOverride":    {},
 	"Browser.setRequestInterception": {},
 	"Browser.setTimezoneOverride":    {},
 	"Browser.setTouchOverride":       {},
