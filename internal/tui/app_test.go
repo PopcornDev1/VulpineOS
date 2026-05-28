@@ -445,6 +445,73 @@ func TestAgentCreatedKeepsChatLockedUntilAgentResponds(t *testing.T) {
 	}
 }
 
+func TestCreateAgentOpensReadyChatWithoutStartingTurn(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.conversation.SetSize(80, 20)
+
+	msg := app.createAgent("Scraper", "Scrape prices", "")()
+	created, ok := msg.(shared.AgentCreatedMsg)
+	if !ok {
+		t.Fatalf("createAgent returned %#v, want AgentCreatedMsg", msg)
+	}
+	if created.Agent.Status != "ready" {
+		t.Fatalf("created status = %q, want ready", created.Agent.Status)
+	}
+	msgs, err := db.GetMessages(created.Agent.ID)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("created agent messages = %#v, want none before first user message", msgs)
+	}
+
+	model, _ := app.Update(created)
+	app = model.(App)
+	if app.focus != FocusConversation || app.inputMode != "chat" {
+		t.Fatalf("focus/input = %d/%q, want conversation/chat", app.focus, app.inputMode)
+	}
+	if !app.conversation.IsAwake() {
+		t.Fatal("newly created ready agent should accept chat immediately")
+	}
+	if app.conversation.IsThinking() {
+		t.Fatal("newly created ready agent should not be thinking before first user message")
+	}
+	if app.pendingChatFocusAgentID != "" {
+		t.Fatalf("pendingChatFocusAgentID = %q, want empty", app.pendingChatFocusAgentID)
+	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	app = model.(App)
+	if got := app.conversation.TextInput().Value(); got != "h" {
+		t.Fatalf("chat input value = %q, want first typed user message", got)
+	}
+}
+
+func TestExistingReadyAgentWithNoMessagesOpensUnlockedChat(t *testing.T) {
+	db := openTestVault(t)
+	agent, err := db.CreateAgent("Scraper", "Scrape prices", "{}")
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	if err := db.UpdateAgentStatus(agent.ID, "ready"); err != nil {
+		t.Fatalf("UpdateAgentStatus: %v", err)
+	}
+
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.conversation.SetSize(80, 20)
+
+	if app.selectedAgentID != agent.ID {
+		t.Fatalf("selectedAgentID = %q, want ready agent", app.selectedAgentID)
+	}
+	if !app.conversation.IsAwake() {
+		t.Fatal("ready agent with no assistant history should accept chat")
+	}
+	if app.conversation.IsThinking() {
+		t.Fatal("ready agent with no messages should not be thinking")
+	}
+}
+
 func TestStartupLockedChatDoesNotAcceptInput(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
@@ -848,12 +915,12 @@ func TestRemoteControlAppLoadsAgentsAndMessages(t *testing.T) {
 
 func TestRemoteControlCreateAgentUsesControlPath(t *testing.T) {
 	control := &fakeControlClient{responses: map[string]any{
-		"agents.spawn": map[string]any{"agentId": "agent-created"},
+		"agents.create": map[string]any{"agentId": "agent-created"},
 		"agents.list": map[string]any{"agents": []map[string]any{{
 			"id":     "agent-created",
 			"name":   "Remote Builder",
 			"task":   "Build remotely",
-			"status": "active",
+			"status": "ready",
 		}}},
 	}}
 	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, control)
@@ -862,8 +929,8 @@ func TestRemoteControlCreateAgentUsesControlPath(t *testing.T) {
 	model, _ := app.Update(msg)
 	app = model.(App)
 
-	if len(control.calls) == 0 || control.calls[0].method != "agents.spawn" {
-		t.Fatalf("first control call = %+v, want agents.spawn", control.calls)
+	if len(control.calls) == 0 || control.calls[0].method != "agents.create" {
+		t.Fatalf("first control call = %+v, want agents.create", control.calls)
 	}
 	var params struct {
 		Name      string `json:"name"`
@@ -884,7 +951,7 @@ func TestRemoteControlCreateAgentUsesControlPath(t *testing.T) {
 func TestRemoteControlCreateAgentReloadsAgentsAfterSpawnError(t *testing.T) {
 	control := &fakeControlClient{
 		errors: map[string]error{
-			"agents.spawn": errors.New("runtime config missing"),
+			"agents.create": errors.New("vault unavailable"),
 		},
 		responses: map[string]any{
 			"agents.list": map[string]any{"agents": []map[string]any{{
@@ -902,8 +969,8 @@ func TestRemoteControlCreateAgentReloadsAgentsAfterSpawnError(t *testing.T) {
 	if !ok {
 		t.Fatalf("createAgent returned %#v, want remoteAgentsLoadedMsg", msg)
 	}
-	if !strings.Contains(loaded.Notice, "runtime config missing") {
-		t.Fatalf("notice = %q, want spawn error", loaded.Notice)
+	if !strings.Contains(loaded.Notice, "vault unavailable") {
+		t.Fatalf("notice = %q, want create error", loaded.Notice)
 	}
 
 	model, _ := app.Update(loaded)
@@ -911,8 +978,8 @@ func TestRemoteControlCreateAgentReloadsAgentsAfterSpawnError(t *testing.T) {
 	if app.selectedAgentID != "agent-error" {
 		t.Fatalf("selected agent = %q, want error agent", app.selectedAgentID)
 	}
-	if !strings.Contains(app.notice, "runtime config missing") {
-		t.Fatalf("app notice = %q, want spawn error", app.notice)
+	if !strings.Contains(app.notice, "vault unavailable") {
+		t.Fatalf("app notice = %q, want create error", app.notice)
 	}
 }
 

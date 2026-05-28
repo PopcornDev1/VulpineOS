@@ -320,6 +320,7 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 				if err == nil {
 					app.conversation.LoadMessages(msgs)
 				}
+				app.applyConversationStatus(agents[0].Status)
 				app.updateAgentDetail(&agents[0])
 			}
 		}
@@ -1338,6 +1339,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					a.conversation.SetThinking(false)
 				}
+				a.applyConversationStatus(msg.Agents[i].Status)
 				a.updateAgentDetail(&msg.Agents[i])
 				cmds = append(cmds, a.loadRemoteMessages(selectedID))
 				break
@@ -1366,6 +1368,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case remoteMessagesLoadedMsg:
 		if msg.AgentID == a.selectedAgentID {
 			a.conversation.LoadMessages(msg.Messages)
+			if item, ok := a.agentList.Agent(msg.AgentID); ok {
+				a.applyConversationStatus(item.Status)
+			}
 		}
 
 	case remoteSettingsLoadedMsg:
@@ -1442,12 +1447,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.conversation.SetThinking(false)
 			a.notice = "Agent created with errors — check conversation"
 			a.pendingChatFocusAgentID = ""
+		} else {
+			a.conversation.SetThinking(false)
+			a.pendingChatFocusAgentID = ""
 		}
 		agentCopy := msg.Agent
 		a.updateAgentDetail(&agentCopy)
 		a.focus = FocusConversation
 		a.inputMode = "chat"
 		a.conversation.SetAwake(msg.Agent.Status != "active")
+		a.applyConversationStatus(msg.Agent.Status)
 		a.noticeTTL = 3
 		cmds = append(cmds, a.conversation.Focus())
 		cmds = append(cmds, a.waitForEvent())
@@ -1465,9 +1474,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.selectedAgentID = newID
 				a.conversation.SetAgentID(newID)
 				if a.vault != nil {
+					status := ""
+					if agent, err := a.vault.GetAgent(newID); err == nil {
+						a.conversation.SetAgentName(agent.Name)
+						status = agent.Status
+					}
 					msgs, err := a.vault.GetMessages(newID)
 					if err == nil {
 						a.conversation.LoadMessages(msgs)
+					}
+					if status != "" {
+						a.applyConversationStatus(status)
 					}
 				}
 				a.refreshAgentDetail(newID)
@@ -1646,6 +1663,23 @@ func isLiveAgentStatus(status string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func isReadyChatStatus(status string) bool {
+	switch status {
+	case "ready", "created":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *App) applyConversationStatus(status string) {
+	a.conversation.SetAgentStatus(status)
+	if isReadyChatStatus(status) {
+		a.conversation.SetThinking(false)
+		a.conversation.SetAwake(true)
 	}
 }
 
@@ -2701,13 +2735,18 @@ func (a *App) selectCurrentAgent() tea.Cmd {
 	}
 
 	if a.vault != nil {
+		status := ""
 		agent, err := a.vault.GetAgent(newID)
 		if err == nil {
 			a.conversation.SetAgentName(agent.Name)
+			status = agent.Status
 		}
 		msgs, err := a.vault.GetMessages(newID)
 		if err == nil {
 			a.conversation.LoadMessages(msgs)
+		}
+		if status != "" {
+			a.applyConversationStatus(status)
 		}
 		a.refreshAgentDetail(newID)
 	}
@@ -2734,9 +2773,8 @@ func (a App) tick() tea.Cmd {
 	})
 }
 
-// createAgent creates an agent profile in the vault AND immediately spawns NanoClaw.
-// The agent wakes up and introduces itself — the user doesn't need to send the first message.
-// ALL errors are visible to the user — either as notices (pre-creation) or in the conversation (post-creation).
+// createAgent creates an agent profile and opens an unlocked chat. The first
+// user message starts the NanoClaw turn, matching a normal CLI chat flow.
 func (a *App) createAgent(name, description, contextID string) tea.Cmd {
 	if a.control != nil {
 		return a.createRemoteAgent(name, description, contextID)
@@ -2745,9 +2783,6 @@ func (a *App) createAgent(name, description, contextID string) tea.Cmd {
 		// Pre-creation checks — show errors as notices since there's no agent yet
 		if a.vault == nil {
 			return statusNotice{text: "ERROR: No vault available — cannot create agent"}
-		}
-		if a.orch == nil {
-			return statusNotice{text: "ERROR: No orchestrator — is the browser running?"}
 		}
 
 		// Generate fingerprint
@@ -2783,28 +2818,8 @@ func (a *App) createAgent(name, description, contextID string) tea.Cmd {
 			}
 		}
 
-		// Spawn first turn — agent introduces itself
-		introMsg := nanoclaw.IntroMessage(name, description)
-		sessionName := "vulpine-" + agent.ID
-		configPath, cleanup, configErr := a.agentRuntimeConfig(agent)
-		if configErr != nil {
-			agent.Status = "error"
-			a.vault.UpdateAgentStatus(agent.ID, "error")
-			a.vault.AppendMessage(agent.ID, "system", "Failed to prepare runtime: "+configErr.Error(), 0)
-			return shared.AgentCreatedMsg{Agent: *agent}
-		}
-		_, spawnErr := a.orch.Agents.SpawnWithSessionIsolated(agent.ID, introMsg, sessionName, configPath, cleanup)
-		if spawnErr != nil {
-			// Agent is in vault but spawn failed — show it with error status
-			// The user will see the agent in the list with error state + error in conversation
-			agent.Status = "error"
-			a.vault.UpdateAgentStatus(agent.ID, "error")
-			a.vault.AppendMessage(agent.ID, "system", "Failed to start: "+spawnErr.Error(), 0)
-		} else {
-			agent.Status = "active"
-			a.vault.UpdateAgentStatus(agent.ID, "active")
-			a.vault.AppendMessage(agent.ID, "system", "Agent starting...", 0)
-		}
+		agent.Status = "ready"
+		a.vault.UpdateAgentStatus(agent.ID, "ready")
 
 		// ALWAYS return AgentCreatedMsg so the agent shows up in the list
 		return shared.AgentCreatedMsg{Agent: *agent}
@@ -2825,7 +2840,7 @@ func (a *App) createRemoteAgent(name, description, contextID string) tea.Cmd {
 		if contextID != "" {
 			params["contextId"] = contextID
 		}
-		if err := a.control.ControlCall(ctx, "agents.spawn", params, &result); err != nil {
+		if err := a.control.ControlCall(ctx, "agents.create", params, &result); err != nil {
 			agents, listErr := a.fetchRemoteAgents(ctx)
 			if listErr != nil {
 				return statusNotice{text: "Remote agent failed: " + err.Error() + "; reload failed: " + listErr.Error()}

@@ -164,6 +164,37 @@ func TestControlAPIStatusGetHandlesTypedNilDaemon(t *testing.T) {
 	}
 }
 
+func TestControlAPIAgentsCreateDoesNotStartFirstTurn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db := openControlTestVault(t)
+	api := &ControlAPI{Vault: db}
+
+	out := callControl[struct {
+		AgentID string `json:"agentId"`
+	}](t, api, "agents.create", map[string]any{
+		"name": "Remote Builder",
+		"task": "Wait for user message",
+	})
+	if strings.TrimSpace(out.AgentID) == "" {
+		t.Fatal("agents.create returned empty agentId")
+	}
+
+	agent, err := db.GetAgent(out.AgentID)
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if agent.Status != "ready" {
+		t.Fatalf("agent status = %q, want ready", agent.Status)
+	}
+	msgs, err := db.GetMessages(out.AgentID)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("agent messages = %#v, want none before first user message", msgs)
+	}
+}
+
 func TestControlAPIAgentSessionLogRedactsSecrets(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	db := openControlTestVault(t)

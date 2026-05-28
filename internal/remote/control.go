@@ -59,6 +59,8 @@ func (api *ControlAPI) HandleMessage(method string, params json.RawMessage) (jso
 		return api.agentsGetMessages(params)
 	case "agents.getSessionLog":
 		return api.agentsGetSessionLog(params)
+	case "agents.create":
+		return api.agentsCreate(params)
 	case "agents.spawn":
 		return api.agentsSpawn(params)
 	case "agents.pause":
@@ -528,40 +530,44 @@ func (api *ControlAPI) agentsGetSessionLog(params json.RawMessage) (json.RawMess
 	})
 }
 
-func (api *ControlAPI) agentsSpawn(params json.RawMessage) (json.RawMessage, error) {
-	if api.Orchestrator == nil {
-		return nil, fmt.Errorf("orchestrator not available")
+type agentCreateParams struct {
+	Name      string `json:"name"`
+	Task      string `json:"task"`
+	ContextID string `json:"contextId"`
+}
+
+func decodeAgentCreateParams(params json.RawMessage) (agentCreateParams, error) {
+	var p agentCreateParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return p, err
 	}
+	p.Name = strings.TrimSpace(p.Name)
+	p.Task = strings.TrimSpace(p.Task)
+	p.ContextID = strings.TrimSpace(p.ContextID)
+	if p.Name == "" {
+		return p, fmt.Errorf("name is required")
+	}
+	if p.Task == "" {
+		return p, fmt.Errorf("task is required")
+	}
+	return p, nil
+}
+
+func (api *ControlAPI) createAgentRecord(p agentCreateParams) (*vault.Agent, error) {
 	if api.Vault == nil {
 		return nil, fmt.Errorf("vault not available")
 	}
-	var p struct {
-		Name      string `json:"name"`
-		Task      string `json:"task"`
-		ContextID string `json:"contextId"`
-	}
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, err
-	}
-	name := strings.TrimSpace(p.Name)
-	task := strings.TrimSpace(p.Task)
-	if name == "" {
-		return nil, fmt.Errorf("name is required")
-	}
-	if task == "" {
-		return nil, fmt.Errorf("task is required")
-	}
 
-	fp, err := vault.GenerateFingerprint(name)
+	fp, err := vault.GenerateFingerprint(p.Name)
 	if err != nil {
 		fp = "{}"
 	}
-	agent, err := api.Vault.CreateAgent(name, task, fp)
+	agent, err := api.Vault.CreateAgent(p.Name, p.Task, fp)
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(p.ContextID) != "" {
-		metadata := vault.MarshalAgentMetadata(vault.AgentMetadata{ContextID: strings.TrimSpace(p.ContextID)})
+	if p.ContextID != "" {
+		metadata := vault.MarshalAgentMetadata(vault.AgentMetadata{ContextID: p.ContextID})
 		if err := api.Vault.UpdateAgentMetadata(agent.ID, metadata); err == nil {
 			agent.Metadata = metadata
 		}
@@ -577,6 +583,35 @@ func (api *ControlAPI) agentsSpawn(params json.RawMessage) (json.RawMessage, err
 			}
 		}
 	}
+	return agent, nil
+}
+
+func (api *ControlAPI) agentsCreate(params json.RawMessage) (json.RawMessage, error) {
+	p, err := decodeAgentCreateParams(params)
+	if err != nil {
+		return nil, err
+	}
+	agent, err := api.createAgentRecord(p)
+	if err != nil {
+		return nil, err
+	}
+	agent.Status = "ready"
+	_ = api.Vault.UpdateAgentStatus(agent.ID, "ready")
+	return json.Marshal(map[string]any{"agentId": agent.ID})
+}
+
+func (api *ControlAPI) agentsSpawn(params json.RawMessage) (json.RawMessage, error) {
+	if api.Orchestrator == nil {
+		return nil, fmt.Errorf("orchestrator not available")
+	}
+	p, err := decodeAgentCreateParams(params)
+	if err != nil {
+		return nil, err
+	}
+	agent, err := api.createAgentRecord(p)
+	if err != nil {
+		return nil, err
+	}
 
 	configPath, cleanup, err := api.agentRuntimeConfig(agent)
 	if err != nil {
@@ -584,7 +619,7 @@ func (api *ControlAPI) agentsSpawn(params json.RawMessage) (json.RawMessage, err
 		_ = api.Vault.AppendMessage(agent.ID, "system", "Failed to prepare runtime: "+err.Error(), 0)
 		return json.Marshal(map[string]any{"agentId": agent.ID})
 	}
-	intro := nanoclaw.IntroMessage(name, task)
+	intro := nanoclaw.IntroMessage(p.Name, p.Task)
 	sessionName := "vulpine-" + agent.ID
 	if _, err := api.Orchestrator.Agents.SpawnWithSessionIsolated(agent.ID, intro, sessionName, configPath, cleanup); err != nil {
 		_ = api.Vault.UpdateAgentStatus(agent.ID, "error")
