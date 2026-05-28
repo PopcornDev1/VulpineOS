@@ -109,6 +109,52 @@ func TestSetAgentIDClearsDraftInput(t *testing.T) {
 	}
 }
 
+func TestInsertPastedContentUsesMarkerButKeepsPayload(t *testing.T) {
+	m := New()
+	m.SetAgentID("agent-1")
+	raw := "first line\nsecond line with enough content"
+
+	m.InsertPastedContent(raw)
+
+	if got := m.textInput.Value(); got != "[Pasted Content 42 Chars]" {
+		t.Fatalf("visible input = %q, want paste marker", got)
+	}
+	payload, display := m.InputPayloadAndDisplay()
+	if payload != raw {
+		t.Fatalf("payload = %q, want raw paste", payload)
+	}
+	if display != "[Pasted Content 42 Chars]" {
+		t.Fatalf("display = %q, want paste marker", display)
+	}
+}
+
+func TestDeletedPasteMarkerDoesNotSendHiddenPayload(t *testing.T) {
+	m := New()
+	m.SetAgentID("agent-1")
+	m.InsertPastedContent("secret pasted text")
+	m.textInput.SetValue("manual replacement")
+
+	payload, display := m.InputPayloadAndDisplay()
+	if payload != "manual replacement" || display != "manual replacement" {
+		t.Fatalf("payload/display = %q/%q, want manual replacement only", payload, display)
+	}
+}
+
+func TestAddEntryWithDisplayRendersMarkerNotRawPaste(t *testing.T) {
+	m := New()
+	m.SetSize(80, 20)
+	m.SetAgentID("agent-1")
+	m.AddEntryWithDisplay("user", "raw pasted secret", "[Pasted Content 17 Chars]")
+
+	view := m.View()
+	if strings.Contains(view, "raw pasted secret") {
+		t.Fatalf("view leaked raw paste:\n%s", view)
+	}
+	if !strings.Contains(view, "[Pasted Content 17 Chars]") {
+		t.Fatalf("view missing paste marker:\n%s", view)
+	}
+}
+
 func TestForceScrollToBottomOverridesManualScroll(t *testing.T) {
 	m := New()
 	m.SetSize(80, 6)

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"vulpineos/internal/agentprompt"
 	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
@@ -639,8 +640,9 @@ func (api *ControlAPI) agentsResume(params json.RawMessage) (json.RawMessage, er
 		return nil, fmt.Errorf("vault not available")
 	}
 	var p struct {
-		AgentID string `json:"agentId"`
-		Message string `json:"message"`
+		AgentID        string `json:"agentId"`
+		Message        string `json:"message"`
+		DisplayContent string `json:"displayContent"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
@@ -655,7 +657,7 @@ func (api *ControlAPI) agentsResume(params json.RawMessage) (json.RawMessage, er
 	}
 	message := strings.TrimSpace(p.Message)
 	if message != "" {
-		_ = api.Vault.AppendMessage(agentID, "user", message, 0)
+		_ = api.Vault.AppendMessageWithDisplay(agentID, "user", message, strings.TrimSpace(p.DisplayContent), 0)
 	} else {
 		message = "Continue from the saved session and resume the current task."
 	}
@@ -663,7 +665,11 @@ func (api *ControlAPI) agentsResume(params json.RawMessage) (json.RawMessage, er
 	if err != nil {
 		return nil, err
 	}
-	if _, err := api.Orchestrator.Agents.SpawnWithSessionIsolated(agentID, message, "vulpine-"+agentID, configPath, cleanup); err != nil {
+	turnMessage := message
+	if history, err := api.Vault.GetRecentMessages(agentID, 16); err == nil {
+		turnMessage = agentprompt.FormatTurnPrompt(history, message)
+	}
+	if _, err := api.Orchestrator.Agents.SpawnWithSessionIsolated(agentID, turnMessage, "vulpine-"+agentID, configPath, cleanup); err != nil {
 		return nil, err
 	}
 	_ = api.Vault.UpdateAgentStatus(agentID, "active")

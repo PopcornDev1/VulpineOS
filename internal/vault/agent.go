@@ -184,10 +184,15 @@ func (db *DB) DeleteAgent(id string) error {
 
 // AppendMessage inserts a message into an agent's conversation history.
 func (db *DB) AppendMessage(agentID, role, content string, tokens int) error {
+	return db.AppendMessageWithDisplay(agentID, role, content, "", tokens)
+}
+
+// AppendMessageWithDisplay inserts a message with optional operator-facing display text.
+func (db *DB) AppendMessageWithDisplay(agentID, role, content, displayContent string, tokens int) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO agent_messages (agent_id, role, content, tokens, timestamp)
-		 VALUES (?, ?, ?, ?, ?)`,
-		agentID, role, content, tokens, time.Now().Unix(),
+		`INSERT INTO agent_messages (agent_id, role, content, display_content, tokens, timestamp)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		agentID, role, content, displayContent, tokens, time.Now().Unix(),
 	)
 	if err != nil {
 		return fmt.Errorf("append message: %w", err)
@@ -198,8 +203,8 @@ func (db *DB) AppendMessage(agentID, role, content string, tokens int) error {
 // GetMessages returns all messages for an agent ordered by timestamp.
 func (db *DB) GetMessages(agentID string) ([]AgentMessage, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, agent_id, role, content, tokens, timestamp
-		 FROM agent_messages WHERE agent_id = ? ORDER BY timestamp ASC`, agentID,
+		`SELECT id, agent_id, role, content, COALESCE(display_content, ''), tokens, timestamp
+		 FROM agent_messages WHERE agent_id = ? ORDER BY timestamp ASC, id ASC`, agentID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get messages: %w", err)
@@ -210,7 +215,7 @@ func (db *DB) GetMessages(agentID string) ([]AgentMessage, error) {
 	for rows.Next() {
 		var m AgentMessage
 		var ts int64
-		if err := rows.Scan(&m.ID, &m.AgentID, &m.Role, &m.Content, &m.Tokens, &ts); err != nil {
+		if err := rows.Scan(&m.ID, &m.AgentID, &m.Role, &m.Content, &m.DisplayContent, &m.Tokens, &ts); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		m.Timestamp = time.Unix(ts, 0)
@@ -222,9 +227,9 @@ func (db *DB) GetMessages(agentID string) ([]AgentMessage, error) {
 // GetRecentMessages returns the last N messages for an agent.
 func (db *DB) GetRecentMessages(agentID string, limit int) ([]AgentMessage, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, agent_id, role, content, tokens, timestamp
+		`SELECT id, agent_id, role, content, COALESCE(display_content, ''), tokens, timestamp
 		 FROM agent_messages WHERE agent_id = ?
-		 ORDER BY timestamp DESC LIMIT ?`, agentID, limit,
+		 ORDER BY timestamp DESC, id DESC LIMIT ?`, agentID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get recent messages: %w", err)
@@ -235,7 +240,7 @@ func (db *DB) GetRecentMessages(agentID string, limit int) ([]AgentMessage, erro
 	for rows.Next() {
 		var m AgentMessage
 		var ts int64
-		if err := rows.Scan(&m.ID, &m.AgentID, &m.Role, &m.Content, &m.Tokens, &ts); err != nil {
+		if err := rows.Scan(&m.ID, &m.AgentID, &m.Role, &m.Content, &m.DisplayContent, &m.Tokens, &ts); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		m.Timestamp = time.Unix(ts, 0)

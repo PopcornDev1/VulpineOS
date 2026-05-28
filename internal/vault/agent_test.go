@@ -180,6 +180,33 @@ func TestAppendAndGetMessages(t *testing.T) {
 	}
 }
 
+func TestAppendMessageWithDisplayPersistsCanonicalAndDisplayContent(t *testing.T) {
+	db := openTestDB(t)
+
+	agent, err := db.CreateAgent("ChatBot", "chat", "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AppendMessageWithDisplay(agent.ID, "user", "raw pasted text", "[Pasted Content 15 Chars]", 0); err != nil {
+		t.Fatalf("append display message: %v", err)
+	}
+
+	msgs, err := db.GetMessages(agent.ID)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Content != "raw pasted text" {
+		t.Fatalf("content = %q, want canonical raw content", msgs[0].Content)
+	}
+	if msgs[0].DisplayContent != "[Pasted Content 15 Chars]" {
+		t.Fatalf("display content = %q, want paste marker", msgs[0].DisplayContent)
+	}
+}
+
 func TestGetRecentMessages(t *testing.T) {
 	db := openTestDB(t)
 

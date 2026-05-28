@@ -99,10 +99,11 @@ type AgentMetadata struct {
 
 // AgentMessage is a single message in an agent's conversation history.
 type AgentMessage struct {
-	ID        int       `json:"id"`
-	AgentID   string    `json:"agent_id"`
-	Role      string    `json:"role"` // user, assistant, system
-	Content   string    `json:"content"`
-	Tokens    int       `json:"tokens"`
-	Timestamp time.Time `json:"timestamp"`
+	ID             int       `json:"id"`
+	AgentID        string    `json:"agent_id"`
+	Role           string    `json:"role"` // user, assistant, system
+	Content        string    `json:"content"`
+	DisplayContent string    `json:"display_content,omitempty"`
+	Tokens         int       `json:"tokens"`
+	Timestamp      time.Time `json:"timestamp"`
 }

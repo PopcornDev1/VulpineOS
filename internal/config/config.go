@@ -706,6 +706,7 @@ This workspace is owned by VulpineOS.
 - When you take an action, state the exact action you are about to take.
 - After each action, report whether it succeeded, failed, or returned incomplete data.
 - Never claim an action succeeded when the tool returned an error, timeout, or incomplete result.
+- Never claim you already delivered a report or diagnosis unless it appears in the visible chat history.
 - Keep progress reports concrete and short.`,
 		"BOOTSTRAP.md": `# VulpineOS Bootstrap
 
@@ -769,10 +770,11 @@ Rules:
 3. After each browser action, report whether it succeeded, failed, or returned incomplete data.
 4. If the browser tool returns an auth or gateway error, report that error exactly and stop guessing.
 5. Never reply with a requested success string if the browser action failed, timed out, or returned incomplete data.
-6. On a fresh browser session, use ` + "`browser open <url>`" + ` for the first page load.
-7. ` + "`browser navigate`" + ` without a target assumes a page already exists.
-8. ` + "`browser start`" + ` starts the service but does not create a page.
-9. VulpineOS snapshots default to a compact profile. If a required target is missing from a truncated snapshot, retry with expanded limits before concluding it is absent.
+6. Never claim you already delivered a report or diagnosis unless it appears in the visible chat history.
+7. On a fresh browser session, use ` + "`browser open <url>`" + ` for the first page load.
+8. ` + "`browser navigate`" + ` without a target assumes a page already exists.
+9. ` + "`browser start`" + ` starts the service but does not create a page.
+10. VulpineOS snapshots default to a compact profile. If a required target is missing from a truncated snapshot, retry with expanded limits before concluding it is absent.
 `
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skill), 0600); err != nil {
 		return err

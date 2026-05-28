@@ -95,11 +95,12 @@ type PageLoadMsg struct {
 
 // ConversationEntryMsg is a new message in an agent's conversation.
 type ConversationEntryMsg struct {
-	AgentID   string
-	Role      string
-	Content   string
-	Tokens    int
-	Timestamp time.Time
+	AgentID        string
+	Role           string
+	Content        string
+	DisplayContent string
+	Tokens         int
+	Timestamp      time.Time
 }
 
 // AgentSelectedMsg fires when the user selects a different agent.

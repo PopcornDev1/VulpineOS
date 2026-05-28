@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 	agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
 	role       TEXT NOT NULL,
 	content    TEXT NOT NULL,
+	display_content TEXT DEFAULT '',
 	tokens     INTEGER DEFAULT 0,
 	timestamp  INTEGER NOT NULL
 );
@@ -157,8 +158,46 @@ func OpenPath(path string) (*DB, error) {
 		conn.Close()
 		return nil, fmt.Errorf("migrate vault: %w", err)
 	}
+	if err := migrateVault(conn); err != nil {
+		conn.Close()
+		return nil, err
+	}
 
 	return &DB{conn: conn}, nil
+}
+
+func migrateVault(conn *sql.DB) error {
+	if err := ensureColumn(conn, "agent_messages", "display_content", "TEXT DEFAULT ''"); err != nil {
+		return fmt.Errorf("migrate vault agent_messages.display_content: %w", err)
+	}
+	return nil
+}
+
+func ensureColumn(conn *sql.DB, table, column, definition string) error {
+	rows, err := conn.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var defaultValue interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = conn.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + definition)
+	return err
 }
 
 // Close closes the database.

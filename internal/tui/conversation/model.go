@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"fmt"
 	"math/rand"
 	"regexp"
 	"strings"
@@ -56,9 +57,15 @@ func ThinkingTick() tea.Cmd {
 
 // Entry is a single message displayed in the conversation.
 type Entry struct {
-	Role          string
-	Content       string
-	renderedLines []string // pre-rendered markdown lines (set on add)
+	Role           string
+	Content        string
+	DisplayContent string
+	renderedLines  []string // pre-rendered markdown lines (set on add)
+}
+
+type pasteSnippet struct {
+	Marker string
+	Raw    string
 }
 
 // Model holds the conversation panel state.
@@ -79,7 +86,7 @@ type Model struct {
 	phraseIdx     int  // current thinking phrase index
 	shimmerOffset int  // shimmer position for the gradient effect
 	phraseTicks   int  // ticks since last phrase change
-
+	pasteSnippets []pasteSnippet
 }
 
 // SetAgentName sets the display name for the agent.
@@ -136,7 +143,6 @@ func (m Model) IsThinking() bool {
 func New() Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type a message..."
-	ti.CharLimit = 1000
 	ti.Width = 60
 	return Model{
 		textInput:  ti,
@@ -262,6 +268,7 @@ func (m *Model) SetAgentID(id string) {
 	m.scroll = 0
 	m.autoScroll = true
 	m.awake = false
+	m.pasteSnippets = nil
 	m.textInput.Reset()
 }
 
@@ -277,9 +284,10 @@ func (m *Model) LoadMessages(msgs []vault.AgentMessage) {
 	m.awake = false
 	for _, msg := range msgs {
 		m.entries = append(m.entries, Entry{
-			Role:          msg.Role,
-			Content:       msg.Content,
-			renderedLines: renderMarkdown(msg.Content, maxWidth),
+			Role:           msg.Role,
+			Content:        msg.Content,
+			DisplayContent: msg.DisplayContent,
+			renderedLines:  renderMarkdown(messageDisplayText(msg.Content, msg.DisplayContent), maxWidth),
 		})
 		if msg.Role == "assistant" {
 			m.awake = true
@@ -290,11 +298,17 @@ func (m *Model) LoadMessages(msgs []vault.AgentMessage) {
 
 // AddEntry adds a new conversation entry.
 func (m *Model) AddEntry(role, content string) {
+	m.AddEntryWithDisplay(role, content, "")
+}
+
+// AddEntryWithDisplay adds a new conversation entry with optional operator-facing display text.
+func (m *Model) AddEntryWithDisplay(role, content, displayContent string) {
 	maxWidth := m.contentWidth()
 	m.entries = append(m.entries, Entry{
-		Role:          role,
-		Content:       content,
-		renderedLines: renderMarkdown(content, maxWidth),
+		Role:           role,
+		Content:        content,
+		DisplayContent: displayContent,
+		renderedLines:  renderMarkdown(messageDisplayText(content, displayContent), maxWidth),
 	})
 	if role == "assistant" {
 		m.awake = true
@@ -318,7 +332,7 @@ func (m Model) contentWidth() int {
 
 func (m *Model) rewrapEntries(maxWidth int) {
 	for i := range m.entries {
-		m.entries[i].renderedLines = renderMarkdown(m.entries[i].Content, maxWidth)
+		m.entries[i].renderedLines = renderMarkdown(messageDisplayText(m.entries[i].Content, m.entries[i].DisplayContent), maxWidth)
 	}
 }
 
@@ -334,9 +348,76 @@ func (m *Model) IsInputFocused() bool {
 
 // InputValue returns and clears the current input value.
 func (m *Model) InputValue() string {
-	v := strings.TrimSpace(m.textInput.Value())
-	m.textInput.Reset()
+	v, _ := m.InputPayloadAndDisplay()
 	return v
+}
+
+// InsertPastedContent inserts a compact paste marker while retaining the raw payload.
+func (m *Model) InsertPastedContent(raw string) {
+	if raw == "" {
+		return
+	}
+	marker := pasteMarker(raw)
+	m.pasteSnippets = append(m.pasteSnippets, pasteSnippet{Marker: marker, Raw: raw})
+
+	value := []rune(m.textInput.Value())
+	pos := m.textInput.Position()
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(value) {
+		pos = len(value)
+	}
+	next := make([]rune, 0, len(value)+utf8.RuneCountInString(marker))
+	next = append(next, value[:pos]...)
+	next = append(next, []rune(marker)...)
+	next = append(next, value[pos:]...)
+	m.textInput.SetValue(string(next))
+	m.textInput.SetCursor(pos + utf8.RuneCountInString(marker))
+}
+
+// InputPayloadAndDisplay returns the agent payload and operator-facing display text, then clears the input.
+func (m *Model) InputPayloadAndDisplay() (string, string) {
+	display := strings.TrimSpace(m.textInput.Value())
+	payload := m.expandPasteMarkers(display)
+	m.textInput.Reset()
+	m.pasteSnippets = nil
+	return payload, display
+}
+
+func (m Model) expandPasteMarkers(display string) string {
+	if display == "" || len(m.pasteSnippets) == 0 {
+		return display
+	}
+	var b strings.Builder
+	remaining := display
+	for _, snippet := range m.pasteSnippets {
+		idx := strings.Index(remaining, snippet.Marker)
+		if idx < 0 {
+			continue
+		}
+		b.WriteString(remaining[:idx])
+		b.WriteString(snippet.Raw)
+		remaining = remaining[idx+len(snippet.Marker):]
+	}
+	b.WriteString(remaining)
+	return b.String()
+}
+
+func pasteMarker(raw string) string {
+	count := utf8.RuneCountInString(raw)
+	label := "Chars"
+	if count == 1 {
+		label = "Char"
+	}
+	return fmt.Sprintf("[Pasted Content %d %s]", count, label)
+}
+
+func messageDisplayText(content, displayContent string) string {
+	if strings.TrimSpace(displayContent) != "" {
+		return displayContent
+	}
+	return content
 }
 
 // Focus focuses the text input.

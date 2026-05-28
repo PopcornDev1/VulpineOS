@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"vulpineos/internal/agentprompt"
 	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
@@ -458,20 +459,22 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		})
 		client.Subscribe("Vulpine.conversation", func(sid string, params json.RawMessage) {
 			var e struct {
-				AgentID string `json:"agentId"`
-				Role    string `json:"role"`
-				Content string `json:"content"`
-				Tokens  int    `json:"tokens"`
+				AgentID        string `json:"agentId"`
+				Role           string `json:"role"`
+				Content        string `json:"content"`
+				DisplayContent string `json:"displayContent"`
+				Tokens         int    `json:"tokens"`
 			}
 			if err := json.Unmarshal(params, &e); err != nil {
 				return
 			}
 			emitEvent(shared.ConversationEntryMsg{
-				AgentID:   e.AgentID,
-				Role:      e.Role,
-				Content:   e.Content,
-				Tokens:    e.Tokens,
-				Timestamp: time.Now(),
+				AgentID:        e.AgentID,
+				Role:           e.Role,
+				Content:        e.Content,
+				DisplayContent: e.DisplayContent,
+				Tokens:         e.Tokens,
+				Timestamp:      time.Now(),
 			})
 		})
 		client.Subscribe("Vulpine.runtimeEvent", func(sid string, params json.RawMessage) {
@@ -1288,7 +1291,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shared.ConversationEntryMsg:
 		// Save to vault always
 		if a.vault != nil {
-			a.vault.AppendMessage(msg.AgentID, msg.Role, msg.Content, msg.Tokens)
+			a.vault.AppendMessageWithDisplay(msg.AgentID, msg.Role, msg.Content, msg.DisplayContent, msg.Tokens)
 		}
 		// Check for rate limit / captcha / block patterns
 		if a.monitor != nil && (msg.Role == "assistant" || msg.Role == "system") {
@@ -1301,7 +1304,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// If matches selected agent, add to conversation panel + clear thinking
 		if msg.AgentID == a.selectedAgentID {
 			a.conversation.SetThinking(false)
-			a.conversation.AddEntry(msg.Role, msg.Content)
+			a.conversation.AddEntryWithDisplay(msg.Role, msg.Content, msg.DisplayContent)
 			if msg.Role == "assistant" {
 				a.conversation.ForceScrollToBottom()
 			}
@@ -1799,6 +1802,14 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	if msg.Type == tea.KeyRunes && msg.Paste {
+		if !a.conversation.Focused() {
+			a.conversation.Focus()
+		}
+		a.conversation.InsertPastedContent(string(msg.Runes))
+		return a, nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		return a, a.shutdown()
@@ -1813,18 +1824,19 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.handleTraceToggle()
 		return a, nil
 	case "enter":
-		text := a.conversation.InputValue()
+		text, displayText := a.conversation.InputPayloadAndDisplay()
 		if text != "" && a.selectedAgentID != "" {
+			displayContent := operatorDisplayContent(text, displayText)
 			// Add to conversation view + show thinking with animation
-			a.conversation.AddEntry("user", text)
+			a.conversation.AddEntryWithDisplay("user", text, displayContent)
 			a.conversation.ForceScrollToBottom()
 			a.conversation.SetThinking(true)
 			// Save to vault
 			if a.vault != nil {
-				a.vault.AppendMessage(a.selectedAgentID, "user", text, 0)
+				a.vault.AppendMessageWithDisplay(a.selectedAgentID, "user", text, displayContent, 0)
 			}
 			// Run one agent turn
-			cmd := a.sendMessageToAgent(a.selectedAgentID, text)
+			cmd := a.sendMessageToAgent(a.selectedAgentID, text, displayContent)
 			return a, tea.Batch(cmd, conversation.ThinkingTick())
 		}
 		return a, nil
@@ -1868,6 +1880,14 @@ func (a App) allowFocusedChatShortcut(msg tea.KeyMsg) bool {
 	default:
 		return false
 	}
+}
+
+func operatorDisplayContent(content, displayContent string) string {
+	displayContent = strings.TrimSpace(displayContent)
+	if displayContent == "" || displayContent == strings.TrimSpace(content) {
+		return ""
+	}
+	return displayContent
 }
 
 func (a *App) handleBrowserToggle() tea.Cmd {
@@ -2978,7 +2998,9 @@ func (a App) resumeAgent(agentID string) tea.Cmd {
 		if err != nil {
 			return statusNotice{text: "Resume failed: " + err.Error()}
 		}
-		_, err = a.orch.Agents.ResumeWithSessionIsolated(agentID, sessionName, configPath, cleanup)
+		message := "Continue from the saved session and resume the current task."
+		message = a.agentTurnPrompt(agentID, message)
+		_, err = a.orch.Agents.SpawnWithSessionIsolated(agentID, message, sessionName, configPath, cleanup)
 		if err != nil {
 			return statusNotice{text: "Resume failed: " + err.Error()}
 		}
@@ -3035,9 +3057,9 @@ func (a *App) deleteAgent(agentID string) tea.Cmd {
 // Stateless per-turn like Claude Code: spawn → load session → respond → exit.
 // NanoClaw's --session-id handles history and compaction automatically.
 // Zero memory between messages. No idle processes.
-func (a App) sendMessageToAgent(agentID, text string) tea.Cmd {
+func (a App) sendMessageToAgent(agentID, text, displayText string) tea.Cmd {
 	if a.control != nil {
-		return a.sendRemoteMessageToAgent(agentID, text)
+		return a.sendRemoteMessageToAgent(agentID, text, displayText)
 	}
 	return func() tea.Msg {
 		if a.orch == nil {
@@ -3072,7 +3094,8 @@ func (a App) sendMessageToAgent(agentID, text string) tea.Cmd {
 				Content: "Error: " + err.Error(),
 			}
 		}
-		_, err = a.orch.Agents.SpawnWithSessionIsolated(agentID, text, sessionName, configPath, cleanup)
+		turnText := a.agentTurnPrompt(agentID, text)
+		_, err = a.orch.Agents.SpawnWithSessionIsolated(agentID, turnText, sessionName, configPath, cleanup)
 		if err != nil {
 			return shared.ConversationEntryMsg{
 				AgentID: agentID,
@@ -3089,17 +3112,32 @@ func (a App) sendMessageToAgent(agentID, text string) tea.Cmd {
 	}
 }
 
-func (a App) sendRemoteMessageToAgent(agentID, text string) tea.Cmd {
+func (a App) agentTurnPrompt(agentID, text string) string {
+	if a.vault == nil {
+		return text
+	}
+	history, err := a.vault.GetRecentMessages(agentID, 16)
+	if err != nil {
+		return text
+	}
+	return agentprompt.FormatTurnPrompt(history, text)
+}
+
+func (a App) sendRemoteMessageToAgent(agentID, text, displayText string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		var result struct {
 			AgentID string `json:"agentId"`
 		}
-		if err := a.control.ControlCall(ctx, "agents.resume", map[string]any{
+		params := map[string]any{
 			"agentId": agentID,
 			"message": text,
-		}, &result); err != nil {
+		}
+		if strings.TrimSpace(displayText) != "" && displayText != text {
+			params["displayContent"] = displayText
+		}
+		if err := a.control.ControlCall(ctx, "agents.resume", params, &result); err != nil {
 			return shared.ConversationEntryMsg{
 				AgentID: agentID,
 				Role:    "system",

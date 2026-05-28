@@ -1910,6 +1910,87 @@ func TestFocusedChatAllowsCtrlViewShortcut(t *testing.T) {
 	}
 }
 
+func TestChatPasteDisplaysMarkerAndPersistsRawContent(t *testing.T) {
+	db := openTestVault(t)
+	cfg := &config.Config{}
+	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Scraper", "Scrape prices", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.SetAgentName(agent.Name)
+	app.conversation.SetAwake(true)
+	app.conversation.Focus()
+
+	raw := "raw pasted transcript content"
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(raw), Paste: true})
+	app = model.(App)
+
+	if got := app.conversation.TextInput().Value(); got != "[Pasted Content 29 Chars]" {
+		t.Fatalf("visible input = %q, want paste marker", got)
+	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+
+	msgs, err := db.GetMessages(agent.ID)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %d, want 1 user message", len(msgs))
+	}
+	if msgs[0].Content != raw {
+		t.Fatalf("persisted content = %q, want raw paste", msgs[0].Content)
+	}
+	if msgs[0].DisplayContent != "[Pasted Content 29 Chars]" {
+		t.Fatalf("display content = %q, want paste marker", msgs[0].DisplayContent)
+	}
+	view := app.conversation.View()
+	if strings.Contains(view, raw) {
+		t.Fatalf("conversation leaked raw paste:\n%s", view)
+	}
+	if !strings.Contains(view, "[Pasted Content 29 Chars]") {
+		t.Fatalf("conversation missing paste marker:\n%s", view)
+	}
+}
+
+func TestAgentTurnPromptIncludesPersistedVisibleHistory(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+
+	agent, err := db.CreateAgent("Researcher", "Diagnose browser", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if err := db.AppendMessage(agent.ID, "system", "Error: disk I/O error", 0); err != nil {
+		t.Fatalf("append system message: %v", err)
+	}
+	if err := db.AppendMessage(agent.ID, "assistant", "Let me start probing.", 0); err != nil {
+		t.Fatalf("append assistant message: %v", err)
+	}
+	if err := db.AppendMessage(agent.ID, "user", "what error did you see?", 0); err != nil {
+		t.Fatalf("append current message: %v", err)
+	}
+
+	prompt := app.agentTurnPrompt(agent.ID, "what error did you see?")
+	if !strings.Contains(prompt, "[system] Error: disk I/O error") {
+		t.Fatalf("prompt missing system error history:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "[assistant] Let me start probing.") {
+		t.Fatalf("prompt missing assistant history:\n%s", prompt)
+	}
+	if strings.Count(prompt, "what error did you see?") != 1 {
+		t.Fatalf("prompt should include current message once:\n%s", prompt)
+	}
+}
+
 func TestFocusedEmptyChatAllowsViewShortcut(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}

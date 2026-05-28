@@ -108,6 +108,7 @@ func vulpineRuntimeMessage(message string) string {
 - If the user asks for an exact reply or exact wording, perform any required action first, then send that exact reply and stop.
 - For browser tasks, once the page state proves the requested action succeeded, do not keep inspecting or retrying. Send the requested final reply.
 - If a browser/tool action fails or times out, report the exact failure instead of claiming success.
+- Do not claim you already delivered a report, diagnosis, or result unless it appears in the visible chat history included below.
 
 User message:
 ` + message
