@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,8 +122,9 @@ func TestNanoclawClientRoutesAgentMessages(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for routed payload")
 	}
-	if payload["text"] != "hello" {
-		t.Fatalf("text = %v, want hello", payload["text"])
+	text, _ := payload["text"].(string)
+	if !strings.Contains(text, "User message:\nhello") {
+		t.Fatalf("text = %v, want wrapped hello", payload["text"])
 	}
 	to, ok := payload["to"].(map[string]interface{})
 	if !ok {
@@ -186,8 +188,12 @@ func TestNanoclawClientEnqueuesRoutedAgentMessageWithoutWaitingForReply(t *testi
 
 	select {
 	case payload := <-payloadCh:
-		if payload["text"] != "hello" {
-			t.Fatalf("text = %v, want hello", payload["text"])
+		text, _ := payload["text"].(string)
+		if !strings.Contains(text, "User message:\nhello") {
+			t.Fatalf("text = %v, want wrapped user message", payload["text"])
+		}
+		if !strings.Contains(text, "send that exact reply and stop") {
+			t.Fatalf("text = %v, want exact-reply stop guard", payload["text"])
 		}
 		to, ok := payload["to"].(map[string]interface{})
 		if !ok || to["platformId"] != "vulpine:agent-1" {
@@ -238,6 +244,7 @@ func TestEnsureVulpineAgentRouteCreatesMessagingGroupAndWiring(t *testing.T) {
 CREATE TABLE agent_groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, folder TEXT NOT NULL UNIQUE, agent_provider TEXT, created_at TEXT NOT NULL);
 CREATE TABLE messaging_groups (id TEXT PRIMARY KEY, channel_type TEXT NOT NULL, platform_id TEXT NOT NULL, name TEXT, is_group INTEGER DEFAULT 0, unknown_sender_policy TEXT NOT NULL DEFAULT 'strict', created_at TEXT NOT NULL, denied_at TEXT, UNIQUE(channel_type, platform_id));
 CREATE TABLE messaging_group_agents (id TEXT PRIMARY KEY, messaging_group_id TEXT NOT NULL REFERENCES messaging_groups(id), agent_group_id TEXT NOT NULL REFERENCES agent_groups(id), session_mode TEXT DEFAULT 'shared', priority INTEGER DEFAULT 0, created_at TEXT NOT NULL, engage_mode TEXT, engage_pattern TEXT, sender_scope TEXT, ignored_message_policy TEXT, UNIQUE(messaging_group_id, agent_group_id));
+CREATE TABLE agent_destinations (agent_group_id TEXT NOT NULL REFERENCES agent_groups(id), local_name TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(agent_group_id, local_name));
 INSERT INTO agent_groups (id, name, folder, created_at) VALUES ('ag-1', 'vulpine-test', 'vulpine-test', '2026-01-01T00:00:00Z');
 `)
 	if err != nil {
@@ -265,6 +272,62 @@ INSERT INTO agent_groups (id, name, folder, created_at) VALUES ('ag-1', 'vulpine
 	}
 	if agentGroupID != "ag-1" || sessionMode != "shared" || engageMode != "pattern" || engagePattern != "." {
 		t.Fatalf("wiring = %q %q %q %q, want ag-1 shared pattern .", agentGroupID, sessionMode, engageMode, engagePattern)
+	}
+
+	var localName, targetType, targetID string
+	if err := db.QueryRow(`SELECT local_name, target_type, target_id FROM agent_destinations WHERE agent_group_id = ?`, agentGroupID).Scan(&localName, &targetType, &targetID); err != nil {
+		t.Fatalf("query destination: %v", err)
+	}
+	if localName != vulpineDestinationName("agent-1") || targetType != "channel" || targetID != mgID {
+		t.Fatalf("destination = %q %q %q, want %q channel %q", localName, targetType, targetID, vulpineDestinationName("agent-1"), mgID)
+	}
+}
+
+func TestNanoclawClientIsRunningRejectsStaleSocket(t *testing.T) {
+	socketPath := filepath.Join("/tmp", "ncl-stale-"+shortHash(t.Name())+".sock")
+	_ = os.Remove(socketPath)
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close unix socket: %v", err)
+	}
+
+	client := &NanoclawClient{socketPath: socketPath}
+	if client.IsRunning() {
+		t.Fatal("IsRunning() = true for stale socket path, want false")
+	}
+}
+
+func TestNanoclawClientIsRunningAcceptsListeningSocket(t *testing.T) {
+	socketPath := filepath.Join("/tmp", "ncl-live-"+shortHash(t.Name())+".sock")
+	_ = os.Remove(socketPath)
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer ln.Close()
+
+	done := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+		close(done)
+	}()
+
+	client := &NanoclawClient{socketPath: socketPath}
+	if !client.IsRunning() {
+		t.Fatal("IsRunning() = false for listening socket, want true")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("listener did not receive IsRunning probe")
 	}
 }
 

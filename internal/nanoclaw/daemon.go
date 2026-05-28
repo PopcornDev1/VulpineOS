@@ -85,6 +85,9 @@ func (d *Daemon) Start() error {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return fmt.Errorf("create NanoClaw data dir: %w", err)
 	}
+	if err := os.Remove(filepath.Join(dataDir, "circuit-breaker.json")); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove NanoClaw circuit breaker state: %w", err)
+	}
 	if err := prepareNanoClawSourceRuntime(d.nanoclawDir); err != nil {
 		return fmt.Errorf("prepare NanoClaw source runtime: %w", err)
 	}

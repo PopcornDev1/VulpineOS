@@ -64,6 +64,15 @@ func patchNanoClawSourceRuntime(srcDir string) error {
 	if err := patchNanoClawOpenCodeProvider(filepath.Join(srcDir, "container", "agent-runner", "src", "providers", "opencode.ts")); err != nil {
 		return fmt.Errorf("patch NanoClaw OpenCode provider: %w", err)
 	}
+	if err := patchNanoClawPollLoopRouting(filepath.Join(srcDir, "container", "agent-runner", "src", "poll-loop.ts")); err != nil {
+		return fmt.Errorf("patch NanoClaw poll loop routing: %w", err)
+	}
+	if err := patchNanoClawContainerRunnerBrowserEnv(filepath.Join(srcDir, "src", "container-runner.ts")); err != nil {
+		return fmt.Errorf("patch NanoClaw container runner browser env: %w", err)
+	}
+	if err := patchNanoClawContainerRunnerBrowserEnv(filepath.Join(srcDir, "dist", "container-runner.js")); err != nil {
+		return fmt.Errorf("patch NanoClaw compiled container runner browser env: %w", err)
+	}
 	return nil
 }
 
@@ -78,13 +87,304 @@ func patchNanoClawOpenCodeProvider(path string) error {
 	content := string(data)
 	newValue := "options: { apiKey: process.env.OPENCODE_API_KEY || 'placeholder', baseURL: proxyUrl },"
 	if strings.Contains(content, newValue) {
-		return nil
+	} else {
+		oldValue := "options: { apiKey: 'placeholder', baseURL: proxyUrl },"
+		if strings.Contains(content, oldValue) {
+			content = strings.Replace(content, oldValue, newValue, 1)
+		}
 	}
-	oldValue := "options: { apiKey: 'placeholder', baseURL: proxyUrl },"
-	if !strings.Contains(content, oldValue) {
-		return nil
+
+	createWithCWD := "const created = await client.session.create({ query: { directory: input.cwd } });"
+	if !strings.Contains(content, createWithCWD) {
+		content = strings.Replace(content, "const created = await client.session.create();", createWithCWD, 1)
 	}
-	content = strings.Replace(content, oldValue, newValue, 1)
+
+	promptWithCWD := `const promptRes = await client.session.promptAsync({
+          path: { id: sessionId },
+          query: { directory: input.cwd },
+          body: { parts: [{ type: 'text', text }] },
+        });`
+	if !strings.Contains(content, "query: { directory: input.cwd },") {
+		promptWithoutCWD := `const promptRes = await client.session.promptAsync({
+          path: { id: sessionId },
+          body: { parts: [{ type: 'text', text }] },
+        });`
+		content = strings.Replace(content, promptWithoutCWD, promptWithCWD, 1)
+	}
+	if !strings.Contains(content, "function assistantTextFromEntry") {
+		helperAnchor := `export class OpenCodeProvider implements AgentProvider {
+`
+		helper := `type OpenCodeMessageEntry = {
+  info?: {
+    role?: string;
+    finish?: string;
+    time?: { completed?: number };
+  };
+  parts?: Array<{ type?: string; text?: string }>;
+};
+
+function assistantTextFromEntry(entry: OpenCodeMessageEntry): string | null {
+  const info = entry.info;
+  if (info?.role !== 'assistant') return null;
+  if (!info.time?.completed && info.finish !== 'stop') return null;
+  let text = '';
+  for (const part of entry.parts ?? []) {
+    if (part?.type === 'text' && typeof part.text === 'string') {
+      text = part.text;
+    }
+  }
+  return text || null;
+}
+
+async function fetchCompletedAssistantText(
+  client: OpencodeClient,
+  sessionId: string,
+  directory: string,
+  promptStartedAt: number,
+): Promise<string | null> {
+  try {
+    const res = await client.session.messages({
+      path: { id: sessionId },
+      query: { directory, limit: 20 },
+    });
+    if (res.error) return null;
+    let text: string | null = null;
+    for (const entry of ((res.data ?? []) as OpenCodeMessageEntry[])) {
+      const completedAt = typeof entry.info?.time?.completed === 'number' ? entry.info.time.completed : 0;
+      if (completedAt > 0 && completedAt < promptStartedAt - 1000) continue;
+      const candidate = assistantTextFromEntry(entry);
+      if (candidate !== null) text = candidate;
+    }
+    return text;
+  } catch (err) {
+    log(` + "`Failed to fetch completed OpenCode message: ${err instanceof Error ? err.message : String(err)}`" + `);
+    return null;
+  }
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+`
+		if strings.Contains(content, helperAnchor) {
+			content = strings.Replace(content, helperAnchor, helper+helperAnchor, 1)
+		}
+	}
+	idleConst := "    const IDLE_TIMEOUT_MS = Number(process.env.OPENCODE_IDLE_TIMEOUT_MS) || 300_000;\n"
+	if strings.Contains(content, idleConst) && !strings.Contains(content, "OPENCODE_TURN_TIMEOUT_MS") {
+		content = strings.Replace(content, idleConst, idleConst+
+			"    const TURN_TIMEOUT_MS = Number(process.env.OPENCODE_TURN_TIMEOUT_MS) || 900_000;\n"+
+			"    const EVENT_POLL_INTERVAL_MS = Number(process.env.OPENCODE_EVENT_POLL_INTERVAL_MS) || 1000;\n", 1)
+	}
+	stateBlock := `        const partTextByMessageId = new Map<string, string>();
+        const roleByMessageId = new Map<string, string>();
+        let lastEventAt = Date.now();
+        let eventTimedOut = false;
+`
+	if strings.Contains(content, stateBlock) && !strings.Contains(content, "let completedAssistantText: string | null = null;") {
+		content = strings.Replace(content, stateBlock, `        const partTextByMessageId = new Map<string, string>();
+        const roleByMessageId = new Map<string, string>();
+        const promptStartedAt = Date.now();
+        const turnStartedAt = Date.now();
+        let lastEventAt = Date.now();
+        let eventTimedOut = false;
+        let completedAssistantText: string | null = null;
+`, 1)
+	}
+	if !strings.Contains(content, "let completedAssistantText: string | null = null;") &&
+		strings.Contains(content, "let eventTimedOut = false;\n") {
+		content = strings.Replace(content, "let eventTimedOut = false;\n", `let eventTimedOut = false;
+        const promptStartedAt = Date.now();
+        const turnStartedAt = Date.now();
+        let completedAssistantText: string | null = null;
+`, 1)
+	}
+	streamNext := `const { value: ev, done } = await stream.next();`
+	if strings.Contains(content, streamNext) && !strings.Contains(content, "const next = await Promise.race") {
+		content = strings.Replace(content, streamNext, `if (Date.now() - turnStartedAt > TURN_TIMEOUT_MS) {
+              try {
+                await client.session.abort({ path: { id: sessionId }, query: { directory: input.cwd } });
+              } catch (err) {
+                log(`+"`Failed to abort timed-out OpenCode session: ${err instanceof Error ? err.message : String(err)}`"+`);
+              }
+              self.activeSessionId = undefined;
+              destroySharedRuntime();
+              throw new Error(`+"`OpenCode turn timeout after ${TURN_TIMEOUT_MS}ms; session aborted`"+`);
+            }
+
+            const next = await Promise.race([
+              stream.next().then((result) => ({ type: 'event' as const, result })),
+              sleepMs(EVENT_POLL_INTERVAL_MS).then(() => ({ type: 'poll' as const })),
+            ]);
+            if (next.type === 'poll') {
+              completedAssistantText = await fetchCompletedAssistantText(client, sessionId, input.cwd, promptStartedAt);
+              if (completedAssistantText !== null) {
+                break turn;
+              }
+              continue;
+            }
+
+            const { value: ev, done } = next.result;
+`, 1)
+	}
+	if strings.Contains(content, "        let resultText = '';\n") && !strings.Contains(content, "let resultText = completedAssistantText ?? '';") {
+		content = strings.Replace(content, "        let resultText = '';\n", "        let resultText = completedAssistantText ?? '';\n", 1)
+	}
+	return os.WriteFile(path, []byte(content), 0600)
+}
+
+func patchNanoClawPollLoopRouting(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	content := string(data)
+	if !strings.Contains(content, "function isVulpineReplyAlias") {
+		oldValue := `    const dest = findByName(toName);
+    if (!dest) {
+      log(` + "`Unknown destination in <message to=\"${toName}\">, dropping block`" + `);
+      scratchpadParts.push(` + "`[dropped: unknown destination \"${toName}\"] ${body}`" + `);
+      continue;
+    }
+    sendToDestination(dest, body, routing);
+    sent++;
+`
+		newValue := `    const dest = findByName(toName);
+    if (!dest) {
+      if (isVulpineReplyAlias(toName) && sendToCurrentRouting(body, routing)) {
+        sent++;
+        continue;
+      }
+      log(` + "`Unknown destination in <message to=\"${toName}\">, dropping block`" + `);
+      scratchpadParts.push(` + "`[dropped: unknown destination \"${toName}\"] ${body}`" + `);
+      continue;
+    }
+    sendToDestination(dest, body, routing);
+    sent++;
+`
+		if strings.Contains(content, oldValue) {
+			content = strings.Replace(content, oldValue, newValue, 1)
+		}
+
+		anchor := `function sendToDestination(dest: DestinationEntry, body: string, routing: RoutingContext): void {
+`
+		insert := `function isVulpineReplyAlias(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  return normalized === 'vulpine' || normalized === 'vulpineos' || normalized === 'user' || normalized === 'operator';
+}
+
+function sendToCurrentRouting(body: string, routing: RoutingContext): boolean {
+  if (!routing.channelType || !routing.platformId) return false;
+  writeMessageOut({
+    id: generateId(),
+    in_reply_to: routing.inReplyTo,
+    kind: 'chat',
+    platform_id: routing.platformId,
+    channel_type: routing.channelType,
+    thread_id: routing.threadId,
+    content: JSON.stringify({ text: body }),
+  });
+  return true;
+}
+
+`
+		if strings.Contains(content, anchor) {
+			content = strings.Replace(content, anchor, insert+anchor, 1)
+		}
+	}
+	bareReplyOld := `  const hasUnwrapped = sent === 0 && !!scratchpad;
+  if (hasUnwrapped) {
+    log(` + "`WARNING: agent output had no <message to=\"...\"> blocks — nothing was sent`" + `);
+  }
+  return { sent, hasUnwrapped };
+`
+	if strings.Contains(content, bareReplyOld) && !strings.Contains(content, "sendToCurrentRouting(scratchpad, routing)") {
+		bareReplyNew := `  let hasUnwrapped = sent === 0 && !!scratchpad;
+  if (hasUnwrapped && sendToCurrentRouting(scratchpad, routing)) {
+    sent++;
+    hasUnwrapped = false;
+  }
+  if (hasUnwrapped) {
+    log(` + "`WARNING: agent output had no <message to=\"...\"> blocks — nothing was sent`" + `);
+  }
+  return { sent, hasUnwrapped };
+`
+		content = strings.Replace(content, bareReplyOld, bareReplyNew, 1)
+	}
+	return os.WriteFile(path, []byte(content), 0600)
+}
+
+func patchNanoClawContainerRunnerBrowserEnv(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	content := string(data)
+	if !strings.Contains(content, "function readVulpineAgentBrowserCDP") {
+		anchor := "async function buildContainerArgs(\n"
+		if !strings.Contains(content, anchor) {
+			anchor = "async function buildContainerArgs("
+		}
+		helper := `function readVulpineAgentBrowserCDP(folder: string): string | undefined {
+  try {
+    const raw = fs.readFileSync(path.join(GROUPS_DIR, folder, 'agent-browser.json'), 'utf8');
+    const cfg = JSON.parse(raw) as { cdp?: unknown; cdpUrl?: unknown };
+    const value = typeof cfg.cdp === 'string' ? cfg.cdp : typeof cfg.cdpUrl === 'string' ? cfg.cdpUrl : '';
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+`
+		if strings.HasSuffix(path, ".js") {
+			helper = `function readVulpineAgentBrowserCDP(folder) {
+    try {
+        const raw = fs.readFileSync(path.join(GROUPS_DIR, folder, 'agent-browser.json'), 'utf8');
+        const cfg = JSON.parse(raw);
+        const value = typeof cfg.cdp === 'string' ? cfg.cdp : typeof cfg.cdpUrl === 'string' ? cfg.cdpUrl : '';
+        const trimmed = value.trim();
+        return trimmed || undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+
+`
+		}
+		if strings.Contains(content, anchor) {
+			content = strings.Replace(content, anchor, helper+anchor, 1)
+		}
+	}
+	if !strings.Contains(content, "AGENT_BROWSER_CDP=${agentBrowserCDP}") {
+		for _, oldValue := range []string{
+			"  args.push('-e', `TZ=${TIMEZONE}`);\n",
+			"    args.push('-e', `TZ=${TIMEZONE}`);\n",
+		} {
+			if !strings.Contains(content, oldValue) {
+				continue
+			}
+			indent := oldValue[:strings.Index(oldValue, "args.push")]
+			newValue := oldValue + `
+` + indent + `const agentBrowserCDP = readVulpineAgentBrowserCDP(agentGroup.folder);
+` + indent + `if (agentBrowserCDP) {
+` + indent + `  args.push('-e', ` + "`AGENT_BROWSER_CDP=${agentBrowserCDP}`" + `);
+` + indent + `  args.push('-e', ` + "`AGENT_BROWSER_CDP_URL=${agentBrowserCDP}`" + `);
+` + indent + `}
+`
+			content = strings.Replace(content, oldValue, newValue, 1)
+			break
+		}
+	}
 	return os.WriteFile(path, []byte(content), 0600)
 }
 

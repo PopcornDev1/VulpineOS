@@ -85,6 +85,30 @@ func TestDaemonStartCleansUpOnReadinessFailure(t *testing.T) {
 	}
 }
 
+func TestDaemonStartClearsCircuitBreakerState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dataDir := filepath.Join(home, ".vulpineos", "nanoclaw", "data")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatalf("mkdir data dir: %v", err)
+	}
+	circuitPath := filepath.Join(dataDir, "circuit-breaker.json")
+	if err := os.WriteFile(circuitPath, []byte(`{"attempt":6}`), 0600); err != nil {
+		t.Fatalf("write circuit breaker: %v", err)
+	}
+
+	bin := writeDaemonTestBinary(t, "#!/bin/sh\ntouch \"$NANOCLAW_SOCKET\"\nsleep 30\n")
+	daemon := NewDaemon(bin)
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(daemon.Stop)
+
+	if _, err := os.Stat(circuitPath); !os.IsNotExist(err) {
+		t.Fatalf("circuit breaker state still exists after Start: %v", err)
+	}
+}
+
 func TestProviderRuntimeEnvIncludesOpenCodeSettings(t *testing.T) {
 	env := ProviderRuntimeEnv(&config.Config{
 		Provider: "opencode-go",

@@ -778,8 +778,8 @@ func TestIntegration_AgentSpawnAndRespond(t *testing.T) {
 		t.Fatalf("GenerateNanoClawConfig: %v", err)
 	}
 
-	agentID := "test-integration"
-	sessionName := "vulpine-test-integration"
+	agentID := fmt.Sprintf("test-integration-%d", time.Now().UnixNano())
+	sessionName := "vulpine-" + agentID
 
 	_, err = mgr.SpawnWithSession(agentID, "Say exactly: INTEGRATION_TEST_OK", sessionName, config.NanoClawConfigPath())
 	if err != nil {
@@ -916,8 +916,8 @@ func TestIntegration_AgentBrowserUsesScopedContext(t *testing.T) {
 	}
 	defer cleanupConfig()
 
-	agentID := "test-browser-scope"
-	sessionName := "vulpine-test-browser-scope"
+	agentID := fmt.Sprintf("test-browser-scope-%d", time.Now().UnixNano())
+	sessionName := "vulpine-" + agentID
 	task := fmt.Sprintf("Use the browser to open %s and reply exactly COOKIE:%s. Do not explain.", server.URL, token)
 
 	_, err = mgr.SpawnWithSession(agentID, task, sessionName, scopedConfig)
@@ -994,8 +994,8 @@ func TestIntegration_AgentBrowserClicksLocalPage(t *testing.T) {
 	}
 	defer cleanupConfig()
 
-	agentID := "test-browser-click"
-	sessionName := "vulpine-test-browser-click"
+	agentID := fmt.Sprintf("test-browser-click-%d", time.Now().UnixNano())
+	sessionName := "vulpine-" + agentID
 	task := fmt.Sprintf("Use the browser to open %s, click Action Button, and reply exactly STATUS:clicked. Do not explain.", server.URL)
 
 	_, err = mgr.SpawnWithSession(agentID, task, sessionName, scopedConfig)

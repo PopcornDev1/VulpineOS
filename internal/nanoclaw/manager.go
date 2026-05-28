@@ -320,6 +320,12 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 		}
 		return "", fmt.Errorf("NanoClaw daemon is not running at %s", VulpineNanoclawSocketPath())
 	}
+	if err := RepairVulpineProfileDatabaseFromConfig(nanoclawDir, configPath); err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", err
+	}
 	if err := ensureVulpineAgentRoute(nanoclawDir, agentID); err != nil {
 		if cleanup != nil {
 			cleanup()

@@ -48,8 +48,12 @@ func NewNanoclawClient(nanoclawDir string) *NanoclawClient {
 }
 
 func (c *NanoclawClient) IsRunning() bool {
-	_, err := os.Stat(c.socketPath)
-	return err == nil
+	conn, err := net.DialTimeout("unix", c.socketPath, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func (c *NanoclawClient) SendMessage(message string, onChunk func(string, bool)) error {
@@ -59,7 +63,7 @@ func (c *NanoclawClient) SendMessage(message string, onChunk func(string, bool))
 func (c *NanoclawClient) SendAgentMessage(agentID, message string, onChunk func(string, bool)) error {
 	platformID := vulpineAgentPlatformID(agentID)
 	return c.sendPayload(nanoclawSocketPayload{
-		Text: message,
+		Text: vulpineRuntimeMessage(message),
 		To: &nanoclawDeliveryAddress{
 			ChannelType: "cli",
 			PlatformID:  platformID,
@@ -78,7 +82,7 @@ func (c *NanoclawClient) SendAgentMessage(agentID, message string, onChunk func(
 func (c *NanoclawClient) EnqueueAgentMessage(agentID, message string) error {
 	platformID := vulpineAgentPlatformID(agentID)
 	return c.writePayload(nanoclawSocketPayload{
-		Text: message,
+		Text: vulpineRuntimeMessage(message),
 		To: &nanoclawDeliveryAddress{
 			ChannelType: "cli",
 			PlatformID:  platformID,
@@ -92,6 +96,21 @@ func (c *NanoclawClient) EnqueueAgentMessage(agentID, message string) error {
 		Sender:   "vulpine",
 		SenderID: "vulpine:" + agentID,
 	})
+}
+
+func vulpineRuntimeMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "Help with the assigned task."
+	}
+	return `VulpineOS runtime instructions:
+- Complete the user message below directly.
+- If the user asks for an exact reply or exact wording, perform any required action first, then send that exact reply and stop.
+- For browser tasks, once the page state proves the requested action succeeded, do not keep inspecting or retrying. Send the requested final reply.
+- If a browser/tool action fails or times out, report the exact failure instead of claiming success.
+
+User message:
+` + message
 }
 
 func (c *NanoclawClient) sendPayload(payload nanoclawSocketPayload, onChunk func(string, bool)) error {
@@ -179,6 +198,10 @@ func ensureVulpineAgentRoute(nanoclawDir, agentID string) error {
 	if err := ensureNanoClawContainerConfig(db, agentGroupID, "", ""); err != nil {
 		return err
 	}
+	hasAgentDestinations, err := tableExists(db, "agent_destinations")
+	if err != nil {
+		return fmt.Errorf("check nanoclaw agent_destinations table: %w", err)
+	}
 
 	platformID := vulpineAgentPlatformID(agentID)
 	messagingGroupID := vulpineMessagingGroupID(agentID)
@@ -217,6 +240,18 @@ ON CONFLICT(messaging_group_id, agent_group_id) DO UPDATE SET
   ignored_message_policy = excluded.ignored_message_policy`, wiringID, existingMessagingGroupID, agentGroupID, now)
 	if err != nil {
 		return fmt.Errorf("ensure nanoclaw agent wiring: %w", err)
+	}
+
+	if hasAgentDestinations {
+		_, err = tx.Exec(`
+INSERT INTO agent_destinations (agent_group_id, local_name, target_type, target_id, created_at)
+VALUES (?, ?, 'channel', ?, ?)
+ON CONFLICT(agent_group_id, local_name) DO UPDATE SET
+  target_type = excluded.target_type,
+  target_id = excluded.target_id`, agentGroupID, vulpineDestinationName(agentID), existingMessagingGroupID, now)
+		if err != nil {
+			return fmt.Errorf("ensure nanoclaw agent destination: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -281,6 +316,10 @@ func vulpineWiringID(agentID, agentGroupID string) string {
 	return "vulpine-" + shortHash(agentID+":"+agentGroupID)
 }
 
+func vulpineDestinationName(agentID string) string {
+	return "vulpine-" + shortHash(agentID)
+}
+
 func shortHash(value string) string {
 	sum := sha1.Sum([]byte(value))
 	return hex.EncodeToString(sum[:])[:16]
@@ -327,6 +366,42 @@ func RepairVulpineProfileDatabase(nanoclawDir, provider, model, cdpURL string) e
 		return err
 	}
 	return nil
+}
+
+func RepairVulpineProfileDatabaseFromConfig(nanoclawDir, configPath string) error {
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read NanoClaw runtime config: %w", err)
+	}
+	var cfg struct {
+		Agents struct {
+			Defaults struct {
+				Model struct {
+					Primary string `json:"primary"`
+				} `json:"model"`
+			} `json:"defaults"`
+		} `json:"agents"`
+		Browser struct {
+			CDPURL string `json:"cdpUrl"`
+		} `json:"browser"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("parse NanoClaw runtime config: %w", err)
+	}
+	model := strings.TrimSpace(cfg.Agents.Defaults.Model.Primary)
+	return RepairVulpineProfileDatabase(nanoclawDir, providerFromRuntimeModel(model), model, cfg.Browser.CDPURL)
+}
+
+func providerFromRuntimeModel(model string) string {
+	provider, _, ok := strings.Cut(strings.TrimSpace(model), "/")
+	if !ok {
+		return ""
+	}
+	return provider
 }
 
 func findNanoclawDir() string {
