@@ -1877,9 +1877,9 @@ func (a *App) handleBrowserToggle() tea.Cmd {
 		return nil
 	}
 
-	contextID := a.contextList.SelectedContextID()
+	contextID, notice := a.browserToggleContextID()
 	if contextID == "" {
-		a.notice = "Select a context first"
+		a.notice = notice
 		a.noticeTTL = 3
 		return nil
 	}
@@ -1887,6 +1887,61 @@ func (a *App) handleBrowserToggle() tea.Cmd {
 	a.notice = "Updating context window..."
 	a.noticeTTL = 3
 	return browserToggleCmd(a.kernel.Window(), contextID)
+}
+
+func (a App) browserToggleContextID() (string, string) {
+	if a.focus == FocusContextList {
+		if contextID := strings.TrimSpace(a.contextList.SelectedContextID()); contextID != "" {
+			return contextID, ""
+		}
+		if contextID := a.selectedAgentBrowserContextID(); contextID != "" {
+			return contextID, ""
+		}
+		return "", "Select a context first"
+	}
+
+	if a.selectedAgentID == "" && a.agentList.SelectedAgentID() == "" {
+		return "", "Select an agent first"
+	}
+	if contextID := a.selectedAgentBrowserContextID(); contextID != "" {
+		return contextID, ""
+	}
+	return "", "Selected agent has no active browser context"
+}
+
+func (a App) selectedAgentBrowserContextID() string {
+	agentID := strings.TrimSpace(a.selectedAgentID)
+	if agentID == "" {
+		agentID = strings.TrimSpace(a.agentList.SelectedAgentID())
+	}
+	if agentID == "" {
+		return ""
+	}
+
+	if contextID := strings.TrimSpace(a.liveAgentContexts[agentID]); contextID != "" {
+		return contextID
+	}
+	if a.vault != nil {
+		if agent, err := a.vault.GetAgent(agentID); err == nil {
+			if contextID := contextIDFromAgentMetadata(agent.Metadata); contextID != "" {
+				return contextID
+			}
+		}
+	}
+	if item, ok := a.agentList.Agent(agentID); ok {
+		if contextID := contextIDFromAgentMetadata(item.Metadata); contextID != "" {
+			return contextID
+		}
+	}
+	return ""
+}
+
+func contextIDFromAgentMetadata(metadata string) string {
+	meta, err := vault.ParseAgentMetadata(metadata)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(meta.ContextID)
 }
 
 func browserToggleCmd(window browserContextWindow, contextID string) tea.Cmd {

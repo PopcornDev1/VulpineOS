@@ -2769,6 +2769,128 @@ func TestBrowserToggleCmdDefersWindowWork(t *testing.T) {
 	}
 }
 
+func TestBrowserToggleContextIDUsesSelectedAgentLiveContext(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+
+	agent, err := db.CreateAgent("Browser Agent", "Use a live context", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.agentList.SetAgents([]vault.Agent{*agent})
+	app.agentList.SelectAgentID(agent.ID)
+	app.selectedAgentID = agent.ID
+	app.liveAgentContexts[agent.ID] = "ctx-agent-live"
+	app.focus = FocusAgentList
+	app.contextList, _ = app.contextList.Update(shared.TargetAttachedMsg{
+		SessionID: "session-other",
+		TargetID:  "target-other",
+		ContextID: "ctx-other",
+		URL:       "https://other.example",
+	})
+
+	contextID, notice := app.browserToggleContextID()
+	if contextID != "ctx-agent-live" || notice != "" {
+		t.Fatalf("toggle target = (%q, %q), want selected agent live context", contextID, notice)
+	}
+}
+
+func TestBrowserToggleContextIDUsesSelectedAgentPinnedContext(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+
+	agent, err := db.CreateAgent("Pinned Agent", "Use a pinned context", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if err := db.UpdateAgentMetadata(agent.ID, vault.MarshalAgentMetadata(vault.AgentMetadata{ContextID: "ctx-agent-pinned"})); err != nil {
+		t.Fatalf("update metadata: %v", err)
+	}
+	agent, err = db.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatalf("reload agent: %v", err)
+	}
+	app.agentList.SetAgents([]vault.Agent{*agent})
+	app.agentList.SelectAgentID(agent.ID)
+	app.selectedAgentID = agent.ID
+	app.focus = FocusConversation
+
+	contextID, notice := app.browserToggleContextID()
+	if contextID != "ctx-agent-pinned" || notice != "" {
+		t.Fatalf("toggle target = (%q, %q), want selected agent pinned context", contextID, notice)
+	}
+}
+
+func TestBrowserToggleContextIDUsesHighlightedContextWhenFocused(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+
+	agent, err := db.CreateAgent("Browser Agent", "Use a live context", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.agentList.SetAgents([]vault.Agent{*agent})
+	app.agentList.SelectAgentID(agent.ID)
+	app.selectedAgentID = agent.ID
+	app.liveAgentContexts[agent.ID] = "ctx-agent-live"
+	app.focus = FocusContextList
+	app.contextList, _ = app.contextList.Update(shared.TargetAttachedMsg{
+		SessionID: "session-selected",
+		TargetID:  "target-selected",
+		ContextID: "ctx-highlighted",
+		URL:       "https://selected.example",
+	})
+
+	contextID, notice := app.browserToggleContextID()
+	if contextID != "ctx-highlighted" || notice != "" {
+		t.Fatalf("toggle target = (%q, %q), want highlighted context", contextID, notice)
+	}
+}
+
+func TestBrowserToggleContextIDFallsBackToAgentContextFromContextPanel(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+
+	agent, err := db.CreateAgent("Browser Agent", "Use a live context", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.agentList.SetAgents([]vault.Agent{*agent})
+	app.agentList.SelectAgentID(agent.ID)
+	app.selectedAgentID = agent.ID
+	app.liveAgentContexts[agent.ID] = "ctx-agent-live"
+	app.focus = FocusContextList
+	app.contextList, _ = app.contextList.Update(shared.TargetAttachedMsg{
+		SessionID: "session-without-context-id",
+		TargetID:  "target-without-context-id",
+		URL:       "about:blank",
+	})
+
+	contextID, notice := app.browserToggleContextID()
+	if contextID != "ctx-agent-live" || notice != "" {
+		t.Fatalf("toggle target = (%q, %q), want selected agent live context fallback", contextID, notice)
+	}
+}
+
+func TestBrowserToggleContextIDReportsMissingAgentContext(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+
+	agent, err := db.CreateAgent("Browser Agent", "No context yet", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.agentList.SetAgents([]vault.Agent{*agent})
+	app.agentList.SelectAgentID(agent.ID)
+	app.selectedAgentID = agent.ID
+	app.focus = FocusAgentList
+
+	contextID, notice := app.browserToggleContextID()
+	if contextID != "" || notice != "Selected agent has no active browser context" {
+		t.Fatalf("toggle target = (%q, %q), want no active context notice", contextID, notice)
+	}
+}
+
 func TestBulkAgentStatusMsgMarksAgentsInterrupted(t *testing.T) {
 	db := openTestVault(t)
 
