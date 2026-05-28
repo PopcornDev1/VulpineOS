@@ -19,6 +19,7 @@ var runWindowCommand = func(name string, args ...string) (string, error) {
 // WindowController manages browser window visibility.
 type WindowController struct {
 	visible        bool
+	found          bool
 	pid            int
 	targetPID      int
 	mu             sync.Mutex
@@ -37,12 +38,29 @@ func (w *WindowController) IsVisible() bool {
 	return w.visible
 }
 
+// CachedStatus returns the latest known visible state without polling the OS.
+func (w *WindowController) CachedStatus() (bool, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if runtime.GOOS != "darwin" {
+		return w.visible, true
+	}
+	return w.visible, w.found
+}
+
 // Status returns the latest visible state and whether a window process could be found.
 func (w *WindowController) Status() (bool, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	found := w.refreshVisibleLocked()
 	return w.visible, found
+}
+
+func (w *WindowController) setCachedStatus(visible, found bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.visible = visible
+	w.found = found
 }
 
 // Toggle shows the window if hidden, hides if shown.
@@ -55,11 +73,13 @@ func (w *WindowController) Toggle() (bool, error) {
 			return w.visible, err
 		}
 		w.visible = false
+		w.found = true
 	} else {
 		if err := w.show(); err != nil {
 			return w.visible, err
 		}
 		w.visible = true
+		w.found = true
 	}
 	return w.visible, nil
 }
@@ -72,6 +92,7 @@ func (w *WindowController) Show() error {
 		return err
 	}
 	w.visible = true
+	w.found = true
 	return nil
 }
 
@@ -83,6 +104,7 @@ func (w *WindowController) Hide() error {
 		return err
 	}
 	w.visible = false
+	w.found = true
 	return nil
 }
 
@@ -132,7 +154,11 @@ func (w *WindowController) ShowContext(contextID string) error {
 	if len(pids) == 0 {
 		// Fall back to main window if no context windows registered
 		wc := NewWindowController(w.pid)
-		return wc.Show()
+		if err := wc.Show(); err != nil {
+			return err
+		}
+		w.setCachedStatus(true, true)
+		return nil
 	}
 	var lastErr error
 	for _, pid := range pids {
@@ -141,6 +167,7 @@ func (w *WindowController) ShowContext(contextID string) error {
 			lastErr = err
 			continue
 		}
+		w.setCachedStatus(true, true)
 		return nil
 	}
 	return lastErr
@@ -155,7 +182,11 @@ func (w *WindowController) HideContext(contextID string) error {
 	if len(pids) == 0 {
 		// Fall back to main window if no context windows registered
 		wc := NewWindowController(w.pid)
-		return wc.Hide()
+		if err := wc.Hide(); err != nil {
+			return err
+		}
+		w.setCachedStatus(false, true)
+		return nil
 	}
 	var lastErr error
 	for _, pid := range pids {
@@ -164,6 +195,7 @@ func (w *WindowController) HideContext(contextID string) error {
 			lastErr = err
 			continue
 		}
+		w.setCachedStatus(false, true)
 		return nil
 	}
 	return lastErr
@@ -183,6 +215,10 @@ func (w *WindowController) HideAll() error {
 			}
 		}
 		_ = contextID
+	}
+	if lastErr == nil {
+		w.visible = false
+		w.found = true
 	}
 	return lastErr
 }
@@ -321,6 +357,7 @@ func (w *WindowController) candidatePIDs() []int {
 
 func (w *WindowController) refreshVisibleLocked() bool {
 	if runtime.GOOS != "darwin" {
+		w.found = true
 		return true
 	}
 	var found bool
@@ -341,14 +378,17 @@ func (w *WindowController) refreshVisibleLocked() bool {
 		if visible {
 			w.targetPID = pid
 			w.visible = true
+			w.found = true
 			return true
 		}
 	}
 	if found {
 		w.targetPID = lastFoundPID
 		w.visible = false
+		w.found = true
 		return true
 	}
+	w.found = false
 	return false
 }
 

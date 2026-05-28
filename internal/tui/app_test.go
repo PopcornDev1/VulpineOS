@@ -2699,6 +2699,76 @@ func TestLocalKillPathsUseOrchestratorCleanup(t *testing.T) {
 	}
 }
 
+func TestBrowserWindowLabelUsesCachedStatus(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "app.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse app.go: %v", err)
+	}
+	data, err := os.ReadFile("app.go")
+	if err != nil {
+		t.Fatalf("read app.go: %v", err)
+	}
+	source := string(data)
+	for _, decl := range file.Decls {
+		start := fset.Position(decl.Pos()).Offset
+		end := fset.Position(decl.End()).Offset
+		body := source[start:end]
+		if !strings.Contains(body, "func (a *App) browserWindowLabel") {
+			continue
+		}
+		if strings.Contains(body, ".Status()") {
+			t.Fatal("browserWindowLabel should not synchronously refresh browser window status")
+		}
+		if !strings.Contains(body, ".CachedStatus()") {
+			t.Fatal("browserWindowLabel should read cached browser window status")
+		}
+		return
+	}
+	t.Fatal("browserWindowLabel function not found")
+}
+
+type fakeBrowserContextWindow struct {
+	visible bool
+	calls   []string
+}
+
+func (f *fakeBrowserContextWindow) IsContextVisible(contextID string) bool {
+	f.calls = append(f.calls, "visible:"+contextID)
+	return f.visible
+}
+
+func (f *fakeBrowserContextWindow) HideContext(contextID string) error {
+	f.calls = append(f.calls, "hide:"+contextID)
+	return nil
+}
+
+func (f *fakeBrowserContextWindow) ShowContext(contextID string) error {
+	f.calls = append(f.calls, "show:"+contextID)
+	return nil
+}
+
+func TestBrowserToggleCmdDefersWindowWork(t *testing.T) {
+	window := &fakeBrowserContextWindow{visible: true}
+
+	cmd := browserToggleCmd(window, "ctx-1")
+	if len(window.calls) != 0 {
+		t.Fatalf("browserToggleCmd ran window work before command execution: %#v", window.calls)
+	}
+
+	msg := cmd()
+	notice, ok := msg.(statusNotice)
+	if !ok {
+		t.Fatalf("browserToggleCmd returned %T, want statusNotice", msg)
+	}
+	if notice.text != "Context hidden" {
+		t.Fatalf("notice = %q, want context hidden", notice.text)
+	}
+	if strings.Join(window.calls, ",") != "visible:ctx-1,hide:ctx-1" {
+		t.Fatalf("window calls = %#v", window.calls)
+	}
+}
+
 func TestBulkAgentStatusMsgMarksAgentsInterrupted(t *testing.T) {
 	db := openTestVault(t)
 

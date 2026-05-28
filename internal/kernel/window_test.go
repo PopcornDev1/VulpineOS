@@ -167,6 +167,58 @@ func TestStatusChecksParentWhenHelperProcessReportsHidden(t *testing.T) {
 	}
 }
 
+func TestCachedStatusDoesNotRunWindowCommands(t *testing.T) {
+	original := runWindowCommand
+	defer func() { runWindowCommand = original }()
+
+	runWindowCommand = func(name string, args ...string) (string, error) {
+		t.Fatalf("CachedStatus should not run %s %#v", name, args)
+		return "", nil
+	}
+
+	w := NewWindowController(123)
+	w.visible = true
+	w.found = true
+
+	visible, found := w.CachedStatus()
+	if !found {
+		t.Fatal("CachedStatus() found = false, want true")
+	}
+	if !visible {
+		t.Fatal("CachedStatus() visible = false, want true")
+	}
+}
+
+func TestContextWindowActionsUpdateCachedStatus(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		original := runWindowCommand
+		defer func() { runWindowCommand = original }()
+		runWindowCommand = func(name string, args ...string) (string, error) {
+			if name == "ps" {
+				return "123 1 camoufox\n", nil
+			}
+			return "", nil
+		}
+	}
+
+	w := NewWindowController(123)
+	if err := w.ShowContext("missing-context"); err != nil {
+		t.Fatalf("ShowContext: %v", err)
+	}
+	visible, found := w.CachedStatus()
+	if !found || !visible {
+		t.Fatalf("CachedStatus after ShowContext = (%v, %v), want visible and found", visible, found)
+	}
+
+	if err := w.HideContext("missing-context"); err != nil {
+		t.Fatalf("HideContext: %v", err)
+	}
+	visible, found = w.CachedStatus()
+	if !found || visible {
+		t.Fatalf("CachedStatus after HideContext = (%v, %v), want hidden and found", visible, found)
+	}
+}
+
 func TestHideAttemptsParentAfterHelperProcess(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS-specific window visibility test")

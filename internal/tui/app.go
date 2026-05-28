@@ -73,6 +73,16 @@ type statusNotice struct {
 	text string
 }
 
+type browserContextWindow interface {
+	IsContextVisible(contextID string) bool
+	HideContext(contextID string) error
+	ShowContext(contextID string) error
+}
+
+type browserAllWindow interface {
+	HideAll() error
+}
+
 // eventNotice is delivered through the event channel and must re-arm
 // waitForEvent after it is displayed.
 type eventNotice struct {
@@ -975,9 +985,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "v":
-			a.handleBrowserToggle()
+			if cmd := a.handleBrowserToggle(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case "V":
-			a.handleHideAll()
+			if cmd := a.handleHideAll(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case "o", "ctrl+o":
 			cmds = append(cmds, a.handleOpenSessionLog())
 		case "enter":
@@ -1769,7 +1783,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "tab":
 			a.cycleFocus()
 		case "ctrl+v":
-			a.handleBrowserToggle()
+			return a, a.handleBrowserToggle()
 		case "ctrl+o":
 			return a, a.handleOpenSessionLog()
 		case "ctrl+t":
@@ -1792,8 +1806,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.cycleFocus()
 		return a, nil
 	case "ctrl+v":
-		a.handleBrowserToggle()
-		return a, nil
+		return a, a.handleBrowserToggle()
 	case "ctrl+o":
 		return a, a.handleOpenSessionLog()
 	case "ctrl+t":
@@ -1857,52 +1870,60 @@ func (a App) allowFocusedChatShortcut(msg tea.KeyMsg) bool {
 	}
 }
 
-func (a *App) handleBrowserToggle() {
+func (a *App) handleBrowserToggle() tea.Cmd {
 	if a.kernel == nil || a.kernel.Window() == nil {
 		a.notice = "Browser not available"
 		a.noticeTTL = 3
-		return
+		return nil
 	}
 
 	contextID := a.contextList.SelectedContextID()
 	if contextID == "" {
 		a.notice = "Select a context first"
 		a.noticeTTL = 3
-		return
+		return nil
 	}
 
-	window := a.kernel.Window()
-	visible := window.IsContextVisible(contextID)
-
-	if visible {
-		if err := window.HideContext(contextID); err != nil {
-			a.notice = "Failed to hide context: " + err.Error()
-		} else {
-			a.notice = "Context hidden"
-		}
-	} else {
-		if err := window.ShowContext(contextID); err != nil {
-			a.notice = "Failed to show context: " + err.Error()
-		} else {
-			a.notice = "Context shown — press v to hide"
-		}
-	}
+	a.notice = "Updating context window..."
 	a.noticeTTL = 3
+	return browserToggleCmd(a.kernel.Window(), contextID)
 }
 
-func (a *App) handleHideAll() {
+func browserToggleCmd(window browserContextWindow, contextID string) tea.Cmd {
+	return func() tea.Msg {
+		visible := window.IsContextVisible(contextID)
+		if visible {
+			if err := window.HideContext(contextID); err != nil {
+				return statusNotice{text: "Failed to hide context: " + err.Error()}
+			}
+			return statusNotice{text: "Context hidden"}
+		}
+		if err := window.ShowContext(contextID); err != nil {
+			return statusNotice{text: "Failed to show context: " + err.Error()}
+		}
+		return statusNotice{text: "Context shown - press v to hide"}
+	}
+}
+
+func (a *App) handleHideAll() tea.Cmd {
 	if a.kernel == nil || a.kernel.Window() == nil {
 		a.notice = "Browser not available"
 		a.noticeTTL = 3
-		return
+		return nil
 	}
 
-	if err := a.kernel.Window().HideAll(); err != nil {
-		a.notice = "Failed to hide all: " + err.Error()
-	} else {
-		a.notice = "All contexts hidden"
-	}
+	a.notice = "Hiding all contexts..."
 	a.noticeTTL = 3
+	return browserHideAllCmd(a.kernel.Window())
+}
+
+func browserHideAllCmd(window browserAllWindow) tea.Cmd {
+	return func() tea.Msg {
+		if err := window.HideAll(); err != nil {
+			return statusNotice{text: "Failed to hide all: " + err.Error()}
+		}
+		return statusNotice{text: "All contexts hidden"}
+	}
 }
 
 func (a *App) handleOpenSessionLog() tea.Cmd {
@@ -2001,7 +2022,7 @@ func (a *App) browserWindowLabel() string {
 	if w == nil {
 		return "N/A"
 	}
-	visible, found := w.Status()
+	visible, found := w.CachedStatus()
 	if !found {
 		return "N/A"
 	}
