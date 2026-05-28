@@ -108,7 +108,15 @@ func (d *Daemon) Start() error {
 
 	var oneCLIShim *LocalOneCLIShim
 	if useLocalOneCLIShim() {
-		shim, err := StartLocalOneCLIShim(providerEnv)
+		shim, err := StartDynamicLocalOneCLIShim(func() map[string]string {
+			cfg, err := config.Load()
+			if err == nil {
+				if env := ProviderRuntimeEnv(cfg); len(env) > 0 {
+					return env
+				}
+			}
+			return providerEnv
+		})
 		if err != nil {
 			return fmt.Errorf("start local OneCLI shim: %w", err)
 		}

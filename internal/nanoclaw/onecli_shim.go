@@ -20,10 +20,16 @@ type LocalOneCLIShim struct {
 	server    *http.Server
 	listener  net.Listener
 	accessKey string
-	env       map[string]string
+	envSource func() map[string]string
 }
 
 func StartLocalOneCLIShim(env map[string]string) (*LocalOneCLIShim, error) {
+	return StartDynamicLocalOneCLIShim(func() map[string]string {
+		return cloneStringMap(env)
+	})
+}
+
+func StartDynamicLocalOneCLIShim(envSource func() map[string]string) (*LocalOneCLIShim, error) {
 	accessKey, err := randomAccessKey()
 	if err != nil {
 		return nil, err
@@ -35,7 +41,7 @@ func StartLocalOneCLIShim(env map[string]string) (*LocalOneCLIShim, error) {
 	shim := &LocalOneCLIShim{
 		listener:  ln,
 		accessKey: accessKey,
-		env:       cloneStringMap(env),
+		envSource: envSource,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/agents", shim.handleAgents)
@@ -124,11 +130,18 @@ func (s *LocalOneCLIShim) handleContainerConfig(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"env":                            s.env,
+		"env":                            s.containerEnv(),
 		"caCertificate":                  "",
 		"caCertificateContainerPath":     "/tmp/onecli-proxy-ca.pem",
 		"caCertificateCombinedContainer": "/tmp/onecli-combined-ca.pem",
 	})
+}
+
+func (s *LocalOneCLIShim) containerEnv() map[string]string {
+	if s == nil || s.envSource == nil {
+		return map[string]string{}
+	}
+	return cloneStringMap(s.envSource())
 }
 
 func (s *LocalOneCLIShim) handleGatewayURL(w http.ResponseWriter, r *http.Request) {

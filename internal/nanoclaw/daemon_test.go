@@ -236,3 +236,46 @@ sleep 30
 		t.Fatalf("OPENCODE_MODEL = %q, want configured model", payload.Env["OPENCODE_MODEL"])
 	}
 }
+
+func TestLocalOneCLIShimReadsContainerEnvDynamically(t *testing.T) {
+	model := "opencode/deepseek-v4-flash-free"
+	shim, err := StartDynamicLocalOneCLIShim(func() map[string]string {
+		return map[string]string{
+			"OPENCODE_API_KEY": "secret-key",
+			"OPENCODE_MODEL":   model,
+		}
+	})
+	if err != nil {
+		t.Fatalf("StartDynamicLocalOneCLIShim: %v", err)
+	}
+	t.Cleanup(func() { _ = shim.Stop() })
+
+	readModel := func() string {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, shim.URL()+"/api/container-config", nil)
+		if err != nil {
+			t.Fatalf("build container-config request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+shim.AccessKey())
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET /api/container-config: %v", err)
+		}
+		defer resp.Body.Close()
+		var payload struct {
+			Env map[string]string `json:"env"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode container config: %v", err)
+		}
+		return payload.Env["OPENCODE_MODEL"]
+	}
+
+	if got := readModel(); got != "opencode/deepseek-v4-flash-free" {
+		t.Fatalf("initial OPENCODE_MODEL = %q", got)
+	}
+	model = "opencode/big-pickle"
+	if got := readModel(); got != "opencode/big-pickle" {
+		t.Fatalf("updated OPENCODE_MODEL = %q", got)
+	}
+}

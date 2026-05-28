@@ -50,11 +50,42 @@ func ensureNanoClawSourceAssets(srcDir, profileDir string) error {
 	if err := os.MkdirAll(profileDir, 0700); err != nil {
 		return fmt.Errorf("create NanoClaw profile dir: %w", err)
 	}
+	if err := patchNanoClawSourceRuntime(srcDir); err != nil {
+		return err
+	}
 	containerDst := filepath.Join(profileDir, "container")
 	if err := replaceSymlink(containerDst, containerSrc); err != nil {
 		return fmt.Errorf("link NanoClaw container assets: %w", err)
 	}
 	return nil
+}
+
+func patchNanoClawSourceRuntime(srcDir string) error {
+	if err := patchNanoClawOpenCodeProvider(filepath.Join(srcDir, "container", "agent-runner", "src", "providers", "opencode.ts")); err != nil {
+		return fmt.Errorf("patch NanoClaw OpenCode provider: %w", err)
+	}
+	return nil
+}
+
+func patchNanoClawOpenCodeProvider(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	content := string(data)
+	newValue := "options: { apiKey: process.env.OPENCODE_API_KEY || 'placeholder', baseURL: proxyUrl },"
+	if strings.Contains(content, newValue) {
+		return nil
+	}
+	oldValue := "options: { apiKey: 'placeholder', baseURL: proxyUrl },"
+	if !strings.Contains(content, oldValue) {
+		return nil
+	}
+	content = strings.Replace(content, oldValue, newValue, 1)
+	return os.WriteFile(path, []byte(content), 0600)
 }
 
 func replaceSymlink(dst, target string) error {
