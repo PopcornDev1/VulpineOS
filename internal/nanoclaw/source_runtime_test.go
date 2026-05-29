@@ -545,3 +545,40 @@ func TestPatchNanoClawCompiledContainerRunnerInjectsAgentBrowserCDPEnv(t *testin
 		t.Fatalf("patch should be idempotent, got:\n%s", got)
 	}
 }
+
+func TestEnsureNanoClawVulpineOSIdentitySkillCreatesFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := ensureNanoClawVulpineOSIdentitySkill(dir); err != nil {
+		t.Fatalf("ensureNanoClawVulpineOSIdentitySkill: %v", err)
+	}
+	skillDir := filepath.Join(dir, "vulpineos-identity")
+	if _, err := os.Stat(filepath.Join(skillDir, "instructions.md")); err != nil {
+		t.Fatalf("instructions.md not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Fatalf("SKILL.md not created: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(skillDir, "instructions.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "VulpineOS") {
+		t.Fatalf("instructions.md missing VulpineOS identity")
+	}
+	if !strings.Contains(string(data), "agent-browser") {
+		t.Fatalf("instructions.md missing agent-browser reference")
+	}
+	if !strings.Contains(string(data), "AGENT_BROWSER_CDP") {
+		t.Fatalf("instructions.md missing AGENT_BROWSER_CDP reference")
+	}
+}
+
+func TestEnsureNanoClawVulpineOSIdentitySkillIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	if err := ensureNanoClawVulpineOSIdentitySkill(dir); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := ensureNanoClawVulpineOSIdentitySkill(dir); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+}
