@@ -21,6 +21,8 @@ import (
 	"vulpineos/internal/security"
 	"vulpineos/internal/vault"
 	"vulpineos/internal/webhooks"
+
+	"github.com/VulpineOS/vulpine-networklab"
 )
 
 // Status describes the orchestrator's current state.
@@ -446,6 +448,9 @@ func (o *Orchestrator) applyAgentToContext(contextID string, agent *vault.Agent)
 			return err
 		}
 	}
+	if err := o.applyNetworkIdentity(contextID, agent); err != nil {
+		log.Printf("orchestrator: warning: failed to apply network identity for agent %s: %v", agent.ID, err)
+	}
 	if agent.ProxyConfig != "" {
 		if err := o.applyProxyToContext(contextID, agent.ProxyConfig); err != nil {
 			log.Printf("orchestrator: warning: failed to apply proxy for agent %s on context %s: %v", agent.ID, contextID, err)
@@ -841,4 +846,61 @@ func (o *Orchestrator) PrepareScopedNanoClawConfig(contextID string) (string, fu
 		scopedFoxbridge.Stop()
 	}
 	return scopedConfig, cleanup, nil
+}
+
+// profileFamilyForPlatform maps a platform string to a networklab profile family.
+// VulpineOS is Camoufox-based, so all profiles are Firefox variants.
+func profileFamilyForPlatform(platform string) string {
+	switch {
+	case strings.Contains(platform, "Win"), strings.Contains(platform, "Windows"):
+		return "firefox131_windows"
+	case strings.Contains(platform, "Linux"), strings.Contains(platform, "linux"):
+		return "firefox131_linux"
+	default:
+		return "firefox131_macos"
+	}
+}
+
+// applyNetworkIdentity creates a networklab identity for the agent's platform
+// and logs the intended TLS fingerprint (JA3/JA4). When the Camoufox NSS patches
+// are active, this identity is applied automatically via shared memory.
+func (o *Orchestrator) applyNetworkIdentity(contextID string, agent *vault.Agent) error {
+	if agent == nil || agent.Fingerprint == "" {
+		return nil
+	}
+	var fp vault.FingerprintData
+	if err := json.Unmarshal([]byte(agent.Fingerprint), &fp); err != nil {
+		return fmt.Errorf("parse fingerprint for network identity: %w", err)
+	}
+	family := profileFamilyForPlatform(fp.Platform)
+	nid, err := networklab.NewIdentity(family)
+	if err != nil {
+		log.Printf("orchestrator: networklab identity unavailable for %s on %s: %v", agent.ID, family, err)
+		return nil
+	}
+	hashes, err := nid.Hashes()
+	if err != nil {
+		log.Printf("orchestrator: networklab hashes unavailable for %s: %v", agent.ID, err)
+		return nil
+	}
+	log.Printf("orchestrator: agent %s network identity %s → JA3=%s JA4=%s (context=%s)",
+		agent.ID, family, hashes.JA3, hashes.JA4, contextID)
+
+	if o.Vault != nil {
+		meta, err := vault.ParseAgentMetadata(agent.Metadata)
+		if err == nil {
+			meta.NetworkIdentity = &vault.NetworkIdentityMetadata{
+				ProfileFamily: family,
+				JA3:           hashes.JA3,
+				JA4:           hashes.JA4,
+			}
+			metaJSON := vault.MarshalAgentMetadata(meta)
+			if err := o.Vault.UpdateAgentMetadata(agent.ID, metaJSON); err != nil {
+				log.Printf("orchestrator: failed to store network identity metadata for %s: %v", agent.ID, err)
+			}
+			agent.Metadata = metaJSON
+		}
+	}
+
+	return nil
 }

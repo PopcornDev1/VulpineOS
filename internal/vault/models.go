@@ -90,11 +90,19 @@ type AgentRotationMetadata struct {
 	CurrentIndex          int      `json:"currentIndex,omitempty"`
 }
 
+// NetworkIdentityMetadata records the assigned TLS/network fingerprint profile.
+type NetworkIdentityMetadata struct {
+	ProfileFamily string `json:"profileFamily,omitempty"`
+	JA3           string `json:"ja3,omitempty"`
+	JA4           string `json:"ja4,omitempty"`
+}
+
 // AgentMetadata holds optional runtime metadata for a persistent agent.
 type AgentMetadata struct {
-	ContextID     string                 `json:"contextId,omitempty"`
-	Budget        *AgentBudgetMetadata   `json:"budget,omitempty"`
-	ProxyRotation *AgentRotationMetadata `json:"proxyRotation,omitempty"`
+	ContextID       string                    `json:"contextId,omitempty"`
+	NetworkIdentity *NetworkIdentityMetadata  `json:"networkIdentity,omitempty"`
+	Budget          *AgentBudgetMetadata      `json:"budget,omitempty"`
+	ProxyRotation   *AgentRotationMetadata    `json:"proxyRotation,omitempty"`
 }
 
 // AgentMessage is a single message in an agent's conversation history.
