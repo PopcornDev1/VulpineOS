@@ -1,94 +1,6 @@
-diff --git a/security/manager/ssl/moz.build b/security/manager/ssl/moz.build
-index e99dd0644e..6eb4c4d97c 100644
---- a/security/manager/ssl/moz.build
-+++ b/security/manager/ssl/moz.build
-@@ -83,6 +83,7 @@ EXPORTS.mozilla += [
- EXPORTS.mozilla.psm += [
-     "IPCClientCertsChild.h",
-     "IPCClientCertsParent.h",
-+    "NetworkIdentityManager.h",
-     "SelectTLSClientAuthCertChild.h",
-     "SelectTLSClientAuthCertParent.h",
-     "TransportSecurityInfo.h",
-@@ -102,6 +103,7 @@ UNIFIED_SOURCES += [
-     "IPCClientCertsChild.cpp",
-     "IPCClientCertsParent.cpp",
-     "md4.c",
-+    "NetworkIdentityManager.cpp",
-     "nsCertOverrideService.cpp",
-     "nsCertTree.cpp",
-     "nsNSSCallbacks.cpp",
-diff --git a/security/manager/ssl/nsNSSIOLayer.cpp b/security/manager/ssl/nsNSSIOLayer.cpp
-index 8e77933a89..fdae640fa5 100644
---- a/security/manager/ssl/nsNSSIOLayer.cpp
-+++ b/security/manager/ssl/nsNSSIOLayer.cpp
-@@ -30,6 +30,7 @@
- #include "mozilla/psm/IPCClientCertsChild.h"
- #include "mozilla/psm/mozilla_abridged_certs_generated.h"
- #include "mozilla/psm/PIPCClientCertsChild.h"
-+#include "NetworkIdentityManager.h"
- #include "mozpkix/pkixnss.h"
- #include "mozpkix/pkixtypes.h"
- #include "mozpkix/pkixutil.h"
-@@ -1596,6 +1597,16 @@ static nsresult nsSSLIOLayerSetOptions(PRFileDesc* fd, bool forSTARTTLS,
-     }
-   }
- 
-+  // ---------------------------------------------------------------
-+  // vulpine-networklab: apply per-context network identity
-+  // ---------------------------------------------------------------
-+  {
-+    uint64_t contextId = 0;
-+    mozilla::psm::NetworkIdentityManager::ApplyIdentityToSocket(
-+        fd, contextId);
-+  }
-+  // ---------------------------------------------------------------
-+
-   // Include a modest set of named groups in supported_groups and determine how
-   // many key shares to send. Please change getKeaGroupName in
-   // nsNSSCallbacks.cpp when changing the lists here.
-diff --git a/security/manager/ssl/NetworkIdentityManager.h b/security/manager/ssl/NetworkIdentityManager.h
-new file mode 100644
-index 0000000000..d59ec3e3f6
---- /dev/null
-+++ b/security/manager/ssl/NetworkIdentityManager.h
-@@ -0,0 +1,30 @@
-+#ifndef NetworkIdentityManager_h__
-+#define NetworkIdentityManager_h__
-+
-+#include <cstdint>
-+#include "prtypes.h"
-+#include "prio.h"
-+#include "seccomon.h"
-+#include "nsError.h"
-+
-+namespace mozilla {
-+namespace psm {
-+
-+class NetworkIdentityManager {
-+public:
-+  static const char* GetIdentityForContext(uint64_t contextId);
-+  static SECStatus ApplyIdentityToSocket(PRFileDesc* fd, uint64_t contextId);
-+  static void Refresh();
-+  static nsresult Init();
-+  static void Shutdown();
-+
-+private:
-+  static char* sShmemBase;
-+  static size_t sShmemSize;
-+  static bool sInitialized;
-+};
-+
-+}  // namespace psm
-+}  // namespace mozilla
-+
-+#endif  // NetworkIdentityManager_h__
-diff --git a/security/manager/ssl/NetworkIdentityManager.cpp b/security/manager/ssl/NetworkIdentityManager.cpp
-new file mode 100644
-index 0000000000..ad1964feb0
---- /dev/null
-+++ b/security/manager/ssl/NetworkIdentityManager.cpp
-@@ -0,0 +1,184 @@
+--- /dev/null	2026-05-29 21:51:12
++++ security/manager/ssl/NetworkIdentityManager.cpp	2026-05-29 21:40:55
+@@ -0,0 +1,200 @@
 +#include "NetworkIdentityManager.h"
 +#include "mozilla/Logging.h"
 +#include "prmem.h"
@@ -247,6 +159,18 @@ index 0000000000..ad1964feb0
 +    for (int i = 0; i < cipherCount; i++) {
 +      SSL_CipherPrefSet(fd, (PRInt32)values[i], PR_TRUE);
 +    }
++    // Set cipher order to match the identity's cipher preference order.
++    // This controls the order ciphers appear in the ClientHello, which is
++    // critical for exact JA3 fingerprint matching.
++    PRUint16 order[MAX_IDENTITY_ENTRIES];
++    for (int i = 0; i < cipherCount; i++) {
++      order[i] = (PRUint16)values[i];
++    }
++    SECStatus rv = SSL_CipherSuiteOrderSet(fd, order, (PRUint16)cipherCount);
++    if (rv != SECSuccess) {
++      MOZ_LOG(gPIPNSSLog, LogLevel::Warning,
++              ("NetworkIdentityManager: SSL_CipherSuiteOrderSet failed"));
++    }
 +  }
 +
 +  int groupCount = ParseHexArray(json, "supported_groups", values, MAX_IDENTITY_ENTRIES);
@@ -277,3 +201,56 @@ index 0000000000..ad1964feb0
 +
 +}  // namespace psm
 +}  // namespace mozilla
+--- /dev/null	2026-05-29 21:51:39
++++ security/manager/ssl/NetworkIdentityManager.h	2026-05-29 20:35:12
+@@ -0,0 +1,30 @@
++#ifndef NetworkIdentityManager_h__
++#define NetworkIdentityManager_h__
++
++#include <cstdint>
++#include "prtypes.h"
++#include "prio.h"
++#include "seccomon.h"
++#include "nsError.h"
++
++namespace mozilla {
++namespace psm {
++
++class NetworkIdentityManager {
++public:
++  static const char* GetIdentityForContext(uint64_t contextId);
++  static SECStatus ApplyIdentityToSocket(PRFileDesc* fd, uint64_t contextId);
++  static void Refresh();
++  static nsresult Init();
++  static void Shutdown();
++
++private:
++  static char* sShmemBase;
++  static size_t sShmemSize;
++  static bool sInitialized;
++};
++
++}  // namespace psm
++}  // namespace mozilla
++
++#endif  // NetworkIdentityManager_h__
+diff --git a/security/manager/ssl/moz.build b/security/manager/ssl/moz.build
+index e99dd0644e..6eb4c4d97c 100644
+--- a/security/manager/ssl/moz.build
++++ b/security/manager/ssl/moz.build
+@@ -83,6 +83,7 @@ EXPORTS.mozilla += [
+ EXPORTS.mozilla.psm += [
+     "IPCClientCertsChild.h",
+     "IPCClientCertsParent.h",
++    "NetworkIdentityManager.h",
+     "SelectTLSClientAuthCertChild.h",
+     "SelectTLSClientAuthCertParent.h",
+     "TransportSecurityInfo.h",
+@@ -102,6 +103,7 @@ UNIFIED_SOURCES += [
+     "IPCClientCertsChild.cpp",
+     "IPCClientCertsParent.cpp",
+     "md4.c",
++    "NetworkIdentityManager.cpp",
+     "nsCertOverrideService.cpp",
+     "nsCertTree.cpp",
+     "nsNSSCallbacks.cpp",

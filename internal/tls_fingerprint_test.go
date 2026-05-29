@@ -220,6 +220,12 @@ func TestLiveTLSFingerprint(t *testing.T) {
 	}
 	t.Logf("Observed body length: %d", len(bodyText))
 
+	// identity JSON with hex cipher values for debugging
+	idJSON := networklab.BuildIdentityParamsJSON(nid)
+	if len(idJSON) < 500 {
+		t.Logf("Identity JSON: %s", idJSON)
+	}
+
 	// Parse TLS info for comparison
 	var apiResp map[string]interface{}
 	if err := json.Unmarshal([]byte(bodyText), &apiResp); err == nil {
@@ -227,6 +233,11 @@ func TestLiveTLSFingerprint(t *testing.T) {
 		if tlsObj != nil {
 			ciphers, _ := tlsObj["ciphers"].([]interface{})
 			t.Logf("Observed cipher count: %d", len(ciphers))
+			if len(ciphers) <= 20 {
+				t.Logf("Server ciphers (observed): %v", ciphers)
+			}
+			exts, _ := tlsObj["extensions"].([]interface{})
+			t.Logf("Server extensions (observed): %v", exts)
 		}
 	}
 }
