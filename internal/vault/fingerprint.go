@@ -68,6 +68,19 @@ func HostOS() string {
 	}
 }
 
+// DefaultPlatformForHostOS returns a platform string matching the host OS, suitable
+// for use with profileFamilyForPlatform or other platform-based profile selection.
+func DefaultPlatformForHostOS() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "MacIntel"
+	case "windows":
+		return "Win64"
+	default:
+		return "Linux x86_64"
+	}
+}
+
 // GenerateFingerprint returns a deterministic public profile config for the host OS.
 // Private builds can replace this path with a richer provider.
 func GenerateFingerprint(seed string) (string, error) {

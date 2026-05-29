@@ -195,6 +195,9 @@ func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
 		o.applySecurityToContext(slot.ContextID, session.ID)
 	}
 
+	// Apply default network identity based on host OS
+	o.applyDefaultNetworkIdentity(slot.ContextID, session.ID)
+
 	// Write SOP and spawn agent
 	sopFile, err := nanoclaw.WriteSOP(tmpl.SOP)
 	if err != nil {
@@ -950,4 +953,26 @@ func (o *Orchestrator) applyCitizenNetworkIdentity(contextID string, citizen *va
 			log.Printf("orchestrator: failed to apply proxy for citizen %s: %v", citizen.ID, err)
 		}
 	}
+}
+
+// applyDefaultNetworkIdentity creates a default networklab identity based on the
+// host OS platform and writes it to shared memory. Used by nomad sessions and
+// other ephemeral contexts that lack a stored fingerprint.
+func (o *Orchestrator) applyDefaultNetworkIdentity(contextID, ownerID string) {
+	family := profileFamilyForPlatform(vault.DefaultPlatformForHostOS())
+	nid, err := networklab.NewIdentity(family)
+	if err != nil {
+		log.Printf("orchestrator: default networklab identity unavailable for %s on %s: %v", ownerID, family, err)
+		return
+	}
+	hashes, err := nid.Hashes()
+	if err != nil {
+		log.Printf("orchestrator: default networklab hashes unavailable for %s on %s: %v", ownerID, family, err)
+		return
+	}
+	if err := networklab.WriteCurrentIdentity(nid); err != nil {
+		log.Printf("orchestrator: failed to write default network identity to shmem for %s on context %s: %v", ownerID, contextID, err)
+	}
+	log.Printf("orchestrator: nomad %s default network identity %s → JA3=%s JA4=%s (context=%s)",
+		ownerID, family, hashes.JA3, hashes.JA4, contextID)
 }
