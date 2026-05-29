@@ -87,6 +87,9 @@ checks-bundle.js
 go.work
 go.work.sum
 
+# Test binaries
+*.test
+
 # Agent instructions (local-only, mirrors .claude/CLAUDE.md for codex/other agents)
 /AGENTS.md
 
