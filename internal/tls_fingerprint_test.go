@@ -439,6 +439,137 @@ func TestLiveTLSFingerprintCreepjs(t *testing.T) {
 	}
 }
 
+func TestLiveTLSFingerprintWindows(t *testing.T) {
+	runIdentityTest(t, "firefox131_windows")
+}
+
+func TestLiveTLSFingerprintLinux(t *testing.T) {
+	runIdentityTest(t, "firefox131_linux")
+}
+
+// runIdentityTest is the shared test body for identity-based TLS fingerprint
+// tests. It creates the identity for the given family, starts a validation
+// proxy, routes the browser through it, navigates to tls.peet.ws, and
+// reports cipher count from the tls.peet.ws response.
+func runIdentityTest(t *testing.T, family string) {
+	t.Helper()
+
+	binary := skipIfNoLiveBrowser(t)
+
+	nid, err := networklab.NewIdentity(family)
+	if err != nil {
+		t.Fatalf("NewIdentity(%q): %v", family, err)
+	}
+	hashes, err := nid.Hashes()
+	if err != nil {
+		t.Fatalf("Hashes: %v", err)
+	}
+	t.Logf("Expected JA3 for %s: %s", family, hashes.JA3)
+
+	proxy, proxyHost, proxyPort := setupProxy(t, family)
+	t.Logf("Validation proxy on %s:%d", proxyHost, proxyPort)
+
+	if err := networklab.WriteCurrentIdentity(nid); err != nil {
+		t.Fatalf("WriteCurrentIdentity: %v", err)
+	}
+	t.Logf("Identity written to shmem (family=%s)", family)
+
+	k := kernel.New()
+	if err := k.Start(kernel.Config{
+		BinaryPath: binary,
+		Headless:   true,
+	}); err != nil {
+		t.Fatalf("kernel.Start: %v", err)
+	}
+	defer k.Stop()
+
+	client := k.Client()
+	setupContextTracking(client)
+
+	if _, err := client.Call("", "Browser.enable", mustJSON(map[string]interface{}{
+		"attachToDefaultContext": true,
+	})); err != nil {
+		t.Fatalf("Browser.enable: %v", err)
+	}
+
+	if _, err := client.Call("", "Browser.setBrowserProxy", mustJSON(map[string]interface{}{
+		"type":   "socks",
+		"host":   proxyHost,
+		"port":   proxyPort,
+		"bypass": []string{},
+	})); err != nil {
+		t.Fatalf("Browser.setBrowserProxy: %v", err)
+	}
+
+	sessionID, frameID := createPageWithFrame(t, client)
+	t.Logf("Session: %s, Frame: %s", sessionID, frameID)
+
+	if _, err := client.Call(sessionID, "Page.navigate", mustJSON(map[string]interface{}{
+		"url":     "https://tls.peet.ws/api/all",
+		"frameId": frameID,
+	})); err != nil {
+		t.Fatalf("Page.navigate: %v", err)
+	}
+
+	time.Sleep(4 * time.Second)
+
+	ctxID, ok := latestContext.Load(sessionID)
+	if !ok {
+		t.Fatal("no execution context")
+	}
+
+	finalURL := waitForURL(t, client, sessionID, ctxID.(string), 15*time.Second)
+	if finalURL == "" {
+		t.Fatal("timed out waiting for navigation")
+	}
+	t.Logf("Final URL: %s", finalURL)
+
+	stats := proxy.Stats()
+	t.Logf("Proxy stats: total=%d validated=%d match=%d mismatch=%d",
+		stats.TotalConns, stats.ValidatedConns, stats.MatchCount, stats.MismatchCount)
+
+	if stats.ValidatedConns == 0 {
+		t.Fatal("no connections were validated by proxy — is the browser routing through it?")
+	}
+
+	prefix := "identity applied"
+	if stats.MatchCount > 0 {
+		prefix = "JA3_MATCH"
+	}
+	t.Logf("Result (%s): %s (matches=%d mismatches=%d)", family, prefix, stats.MatchCount, stats.MismatchCount)
+
+	raw, err := client.Call(sessionID, "Runtime.evaluate", mustJSON(map[string]interface{}{
+		"expression":         "document.body.innerText",
+		"returnByValue":      true,
+		"executionContextId": ctxID.(string),
+	}))
+	if err != nil {
+		t.Fatalf("Runtime.evaluate: %v", err)
+	}
+	bodyText := extractEvalResult(raw)
+	if bodyText == "" {
+		raw2, _ := client.Call(sessionID, "Runtime.evaluate", mustJSON(map[string]interface{}{
+			"expression":         "document.documentElement.innerText",
+			"returnByValue":      true,
+			"executionContextId": ctxID.(string),
+		}))
+		bodyText = extractEvalResult(raw2)
+	}
+	if bodyText == "" {
+		t.Fatal("empty page content after navigation")
+	}
+	t.Logf("Observed body length: %d", len(bodyText))
+
+	var apiResp map[string]interface{}
+	if err := json.Unmarshal([]byte(bodyText), &apiResp); err == nil {
+		tlsObj, _ := apiResp["tls"].(map[string]interface{})
+		if tlsObj != nil {
+			ciphers, _ := tlsObj["ciphers"].([]interface{})
+			t.Logf("Observed cipher count: %d", len(ciphers))
+		}
+	}
+}
+
 func extractEvalResult(raw json.RawMessage) string {
 	if raw == nil {
 		return ""
