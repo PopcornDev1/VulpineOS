@@ -147,12 +147,28 @@ const DEFAULT_FALLBACK_MODELS = [
   'mistralai/mistral-nemo:free',
 ];
 
+const WEB_TOOL = {
+  type: 'function' as const,
+  function: {
+    name: 'web',
+    description:
+      'Fetch a web page using the Camoufox browser via CDP. Uses agent-browser internally. This is the ONLY way to access the web \u2014 wget and curl are blocked by the network proxy.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'The URL to fetch' },
+      },
+      required: ['url'],
+    },
+  },
+};
+
 const BASH_TOOL = {
   type: 'function' as const,
   function: {
     name: 'bash',
     description:
-      'Execute a bash command in the workspace. Use for any shell operation: file ops, running agent-browser for web scraping, system commands.',
+      'Execute a bash command in the workspace. For file operations, system commands, and running agent-browser for web scraping. Do NOT use wget or curl \u2014 they are blocked by the network proxy. For web access, use the web tool instead.',
     parameters: {
       type: 'object',
       properties: {
@@ -187,30 +203,24 @@ function providerAPIKey(): string | undefined {
 
 class MessageStream {
   private queue: string[] = [];
-  private waiting: (() => void) | null = null;
-  private done = false;
+  private _done = false;
 
   push(text: string): void {
     this.queue.push(text);
-    this.waiting?.();
   }
 
   end(): void {
-    this.done = true;
-    this.waiting?.();
+    this._done = true;
   }
 
-  async *[Symbol.asyncIterator](): AsyncGenerator<string> {
-    while (true) {
-      while (this.queue.length > 0) {
-        yield this.queue.shift()!;
-      }
-      if (this.done) return;
-      await new Promise<void>(r => {
-        this.waiting = r;
-      });
-      this.waiting = null;
-    }
+  drain(): string[] {
+    const items = this.queue;
+    this.queue = [];
+    return items;
+  }
+
+  get done(): boolean {
+    return this._done;
   }
 }
 
@@ -273,7 +283,7 @@ class OpenCodeProvider implements AgentProvider {
       yield { type: 'activity' };
 
       // Drain follow-up messages pushed by poll-loop
-      for await (const msg of followups) {
+      for (const msg of followups.drain()) {
         messages.push({ role: 'user', content: msg });
         yield { type: 'activity' };
       }
@@ -301,7 +311,7 @@ class OpenCodeProvider implements AgentProvider {
             body: JSON.stringify({
               model,
               messages,
-              tools: [BASH_TOOL],
+              tools: [BASH_TOOL, WEB_TOOL],
               tool_choice: 'auto',
             }),
           });
@@ -382,6 +392,25 @@ class OpenCodeProvider implements AgentProvider {
               });
               if (result.length > 50000) {
                 result = result.slice(0, 50000) + ` + "`" + `\n... [truncated ${result.length - 50000} more bytes]` + "`" + `;
+              }
+            } else if (tc.function.name === 'web') {
+              const url = String(args.url ?? '');
+              try {
+                const cdpUrl = process.env.AGENT_BROWSER_CDP || process.env.AGENT_BROWSER_CDP_URL;
+                const cmd = 'agent-browser connect ' + cdpUrl + ' && agent-browser open ' + JSON.stringify(url) + ' && agent-browser wait --load networkidle && agent-browser snapshot -i';
+                result = execSync(cmd, {
+                  cwd: '/workspace/agent',
+                  timeout: 60000,
+                  encoding: 'utf-8',
+                  maxBuffer: 50 * 1024 * 1024,
+                  signal: controller.signal,
+                });
+              } catch (_err) {
+                const errMsg = _err instanceof Error ? _err.message : String(_err);
+                result = 'agent-browser failed: ' + errMsg;
+              }
+              if (result.length > 50000) {
+                result = result.slice(0, 50000) + '\n... [truncated ' + (result.length - 50000) + ' more bytes]';
               }
             } else {
               result = ` + "`" + `Unknown tool: ${tc.function.name}` + "`" + `;
