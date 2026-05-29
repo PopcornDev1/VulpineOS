@@ -240,6 +240,10 @@ index 0000000000..ad1964feb0
 +
 +  int cipherCount = ParseHexArray(json, "cipher_suites", values, MAX_IDENTITY_ENTRIES);
 +  if (cipherCount > 0) {
++    const PRUint16* allCiphers = SSL_GetImplementedCiphers();
++    for (int i = 0; allCiphers[i]; i++) {
++      SSL_CipherPrefSet(fd, (PRInt32)allCiphers[i], PR_FALSE);
++    }
 +    for (int i = 0; i < cipherCount; i++) {
 +      SSL_CipherPrefSet(fd, (PRInt32)values[i], PR_TRUE);
 +    }
