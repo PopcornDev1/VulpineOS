@@ -242,11 +242,26 @@ func TestLiveTLSFingerprint(t *testing.T) {
 	}
 }
 
+// clearNetworkIdentity writes an empty JSON identity to shmem so the
+// browser starts with no identity applied (default Camoufox behavior).
+func clearNetworkIdentity(t *testing.T) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	path := home + "/.vulpineos/network-identities.dat"
+	if err := os.WriteFile(path, []byte("{}\n"), 0644); err != nil {
+		t.Fatalf("WriteFile %s: %v", path, err)
+	}
+}
+
 // TestLiveTLSFingerprintBaseline runs the same browser WITHOUT writing any
 // identity to shmem. The proxy should detect a mismatch since default Camoufox
 // ciphers differ from firefox131_macos.
 func TestLiveTLSFingerprintBaseline(t *testing.T) {
 	binary := skipIfNoLiveBrowser(t)
+	clearNetworkIdentity(t)
 
 	proxy, proxyHost, proxyPort := setupProxy(t, "firefox131_macos")
 	t.Logf("Validation proxy on %s:%d", proxyHost, proxyPort)

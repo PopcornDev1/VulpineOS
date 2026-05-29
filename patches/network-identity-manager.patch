@@ -254,3 +254,32 @@ index e99dd0644e..6eb4c4d97c 100644
      "nsCertOverrideService.cpp",
      "nsCertTree.cpp",
      "nsNSSCallbacks.cpp",
+diff --git a/security/manager/ssl/nsNSSIOLayer.cpp b/security/manager/ssl/nsNSSIOLayer.cpp
+index 8e77933a89..165f920f8a 100644
+--- a/security/manager/ssl/nsNSSIOLayer.cpp
++++ b/security/manager/ssl/nsNSSIOLayer.cpp
+@@ -30,6 +30,7 @@
+ #include "mozilla/psm/IPCClientCertsChild.h"
+ #include "mozilla/psm/mozilla_abridged_certs_generated.h"
+ #include "mozilla/psm/PIPCClientCertsChild.h"
++#include "NetworkIdentityManager.h"
+ #include "mozpkix/pkixnss.h"
+ #include "mozpkix/pkixtypes.h"
+ #include "mozpkix/pkixutil.h"
+@@ -1747,6 +1748,16 @@ static nsresult nsSSLIOLayerSetOptions(PRFileDesc* fd, bool forSTARTTLS,
+     }
+   }
+ 
++  // ---------------------------------------------------------------
++  // vulpine-networklab: apply per-context network identity
++  // ---------------------------------------------------------------
++  {
++    uint64_t contextId = 0;
++    mozilla::psm::NetworkIdentityManager::ApplyIdentityToSocket(
++        fd, contextId);
++  }
++  // ---------------------------------------------------------------
++
+   return NS_OK;
+ }
+ 
