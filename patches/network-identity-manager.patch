@@ -19,7 +19,7 @@ index e99dd0644e..6eb4c4d97c 100644
      "nsCertTree.cpp",
      "nsNSSCallbacks.cpp",
 diff --git a/security/manager/ssl/nsNSSIOLayer.cpp b/security/manager/ssl/nsNSSIOLayer.cpp
-index 8e77933a89..46e3520c90 100644
+index 8e77933a89..fdae640fa5 100644
 --- a/security/manager/ssl/nsNSSIOLayer.cpp
 +++ b/security/manager/ssl/nsNSSIOLayer.cpp
 @@ -30,6 +30,7 @@
@@ -30,7 +30,7 @@ index 8e77933a89..46e3520c90 100644
  #include "mozpkix/pkixnss.h"
  #include "mozpkix/pkixtypes.h"
  #include "mozpkix/pkixutil.h"
-@@ -1596,6 +1597,24 @@ static nsresult nsSSLIOLayerSetOptions(PRFileDesc* fd, bool forSTARTTLS,
+@@ -1596,6 +1597,16 @@ static nsresult nsSSLIOLayerSetOptions(PRFileDesc* fd, bool forSTARTTLS,
      }
    }
  
@@ -39,30 +39,28 @@ index 8e77933a89..46e3520c90 100644
 +  // ---------------------------------------------------------------
 +  {
 +    uint64_t contextId = 0;
-+
-+    const char* identityJSON =
-+        mozilla::psm::NetworkIdentityManager::GetIdentityForContext(contextId);
-+    if (identityJSON) {
-+      SECStatus rv = SSL_SetIdentity(fd, identityJSON);
-+      if (rv != SECSuccess) {
-+        MOZ_LOG(gPIPNSSLog, LogLevel::Warning,
-+                ("SSL_SetIdentity failed"));
-+      }
-+    }
++    mozilla::psm::NetworkIdentityManager::ApplyIdentityToSocket(
++        fd, contextId);
 +  }
 +  // ---------------------------------------------------------------
 +
    // Include a modest set of named groups in supported_groups and determine how
    // many key shares to send. Please change getKeaGroupName in
    // nsNSSCallbacks.cpp when changing the lists here.
---- a/security/manager/ssl/NetworkIdentityManager.h	2026-05-29 18:37:17
-+++ b/security/manager/ssl/NetworkIdentityManager.h	2026-05-29 17:51:46
-@@ -0,0 +1,26 @@
+diff --git a/security/manager/ssl/NetworkIdentityManager.h b/security/manager/ssl/NetworkIdentityManager.h
+new file mode 100644
+index 0000000000..d59ec3e3f6
+--- /dev/null
++++ b/security/manager/ssl/NetworkIdentityManager.h
+@@ -0,0 +1,30 @@
 +#ifndef NetworkIdentityManager_h__
 +#define NetworkIdentityManager_h__
 +
 +#include <cstdint>
 +#include "prtypes.h"
++#include "prio.h"
++#include "seccomon.h"
++#include "nsError.h"
 +
 +namespace mozilla {
 +namespace psm {
@@ -70,6 +68,7 @@ index 8e77933a89..46e3520c90 100644
 +class NetworkIdentityManager {
 +public:
 +  static const char* GetIdentityForContext(uint64_t contextId);
++  static SECStatus ApplyIdentityToSocket(PRFileDesc* fd, uint64_t contextId);
 +  static void Refresh();
 +  static nsresult Init();
 +  static void Shutdown();
@@ -84,22 +83,32 @@ index 8e77933a89..46e3520c90 100644
 +}  // namespace mozilla
 +
 +#endif  // NetworkIdentityManager_h__
---- a/security/manager/ssl/NetworkIdentityManager.cpp	2026-05-29 18:37:17
-+++ b/security/manager/ssl/NetworkIdentityManager.cpp	2026-05-29 17:51:50
-@@ -0,0 +1,104 @@
+diff --git a/security/manager/ssl/NetworkIdentityManager.cpp b/security/manager/ssl/NetworkIdentityManager.cpp
+new file mode 100644
+index 0000000000..ad1964feb0
+--- /dev/null
++++ b/security/manager/ssl/NetworkIdentityManager.cpp
+@@ -0,0 +1,184 @@
 +#include "NetworkIdentityManager.h"
 +#include "mozilla/Logging.h"
 +#include "prmem.h"
++#include "ssl.h"
++#include "sslproto.h"
++#include "keyhi.h"
++#include "sslexp.h"
 +
 +#include <fcntl.h>
 +#include <sys/mman.h>
 +#include <sys/stat.h>
 +#include <unistd.h>
++#include <string.h>
++#include <stdlib.h>
 +
-+extern mozilla::LazyLogModule gPIPSMCLog;
++extern mozilla::LazyLogModule gPIPNSSLog;
 +
 +#define SHMEM_PATH ".vulpineos/network-identities.dat"
 +#define SHMEM_DEFAULT_SIZE 65536
++#define MAX_IDENTITY_ENTRIES 64
 +
 +namespace mozilla {
 +namespace psm {
@@ -115,7 +124,7 @@ index 8e77933a89..46e3520c90 100644
 +
 +  const char* home = getenv("HOME");
 +  if (!home) {
-+    MOZ_LOG(gPIPSMCLog, LogLevel::Warning,
++    MOZ_LOG(gPIPNSSLog, LogLevel::Warning,
 +            ("NetworkIdentityManager: no HOME env var"));
 +    return NS_ERROR_FAILURE;
 +  }
@@ -129,7 +138,7 @@ index 8e77933a89..46e3520c90 100644
 +
 +  int fd = open(shmemPath, O_RDWR | O_CREAT, 0600);
 +  if (fd < 0) {
-+    MOZ_LOG(gPIPSMCLog, LogLevel::Warning,
++    MOZ_LOG(gPIPNSSLog, LogLevel::Warning,
 +            ("NetworkIdentityManager: open failed: %s", shmemPath));
 +    return NS_ERROR_FAILURE;
 +  }
@@ -149,13 +158,13 @@ index 8e77933a89..46e3520c90 100644
 +
 +  if (sShmemBase == MAP_FAILED) {
 +    sShmemBase = nullptr;
-+    MOZ_LOG(gPIPSMCLog, LogLevel::Warning,
++    MOZ_LOG(gPIPNSSLog, LogLevel::Warning,
 +            ("NetworkIdentityManager: mmap failed"));
 +    return NS_ERROR_FAILURE;
 +  }
 +
 +  sInitialized = true;
-+  MOZ_LOG(gPIPSMCLog, LogLevel::Debug,
++  MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
 +          ("NetworkIdentityManager: initialized (%s)", shmemPath));
 +  return NS_OK;
 +}
@@ -187,6 +196,79 @@ index 8e77933a89..46e3520c90 100644
 +    return sShmemBase;
 +  }
 +  return nullptr;
++}
++
++static int ParseHexArray(const char* json, const char* key,
++                         uint32_t* out, int maxCount) {
++  const char* p = strstr(json, key);
++  if (!p) return 0;
++  p = strchr(p, '[');
++  if (!p) return 0;
++  p++;
++  int count = 0;
++  while (*p && *p != ']' && count < maxCount) {
++    while (*p && (*p == ' ' || *p == ',' || *p == '\n' || *p == '\r' || *p == '\t')) p++;
++    if (*p == ']' || !*p) break;
++    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
++      p += 2;
++      unsigned long v = 0;
++      while (*p) {
++        if (*p >= '0' && *p <= '9') { v = (v << 4) + (*p - '0'); p++; }
++        else if (*p >= 'a' && *p <= 'f') { v = (v << 4) + (*p - 'a' + 10); p++; }
++        else if (*p >= 'A' && *p <= 'F') { v = (v << 4) + (*p - 'A' + 10); p++; }
++        else break;
++      }
++      out[count++] = (uint32_t)v;
++    } else {
++      p++;
++    }
++  }
++  return count;
++}
++
++SECStatus NetworkIdentityManager::ApplyIdentityToSocket(
++    PRFileDesc* fd, uint64_t contextId) {
++  const char* json = GetIdentityForContext(contextId);
++  if (!json) {
++    return SECSuccess;
++  }
++
++  MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
++          ("NetworkIdentityManager: applying identity to socket"));
++
++  uint32_t values[MAX_IDENTITY_ENTRIES];
++
++  int cipherCount = ParseHexArray(json, "cipher_suites", values, MAX_IDENTITY_ENTRIES);
++  if (cipherCount > 0) {
++    for (int i = 0; i < cipherCount; i++) {
++      SSL_CipherPrefSet(fd, (PRInt32)values[i], PR_TRUE);
++    }
++  }
++
++  int groupCount = ParseHexArray(json, "supported_groups", values, MAX_IDENTITY_ENTRIES);
++  if (groupCount > 0) {
++    SSLNamedGroup groups[MAX_IDENTITY_ENTRIES];
++    for (int i = 0; i < groupCount; i++) {
++      groups[i] = (SSLNamedGroup)values[i];
++    }
++    SSL_NamedGroupConfig(fd, groups, (unsigned int)groupCount);
++  }
++
++  int sigCount = ParseHexArray(json, "sig_algs", values, MAX_IDENTITY_ENTRIES);
++  if (sigCount > 0) {
++    SSLSignatureScheme schemes[MAX_IDENTITY_ENTRIES];
++    for (int i = 0; i < sigCount; i++) {
++      schemes[i] = (SSLSignatureScheme)values[i];
++    }
++    SSL_SignatureSchemePrefSet(fd, schemes, (unsigned int)sigCount);
++  }
++
++  int shareCount = ParseHexArray(json, "key_share_curves", values, MAX_IDENTITY_ENTRIES);
++  if (shareCount > 0) {
++    SSL_SendAdditionalKeyShares(fd, (unsigned int)shareCount);
++  }
++
++  return SECSuccess;
 +}
 +
 +}  // namespace psm
