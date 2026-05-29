@@ -126,17 +126,43 @@ func ensureNanoClawProviderIndexImport(indexPath, importLine string) error {
 	return os.WriteFile(indexPath, []byte(content), 0600)
 }
 
-const defaultOpenCodeProviderSource = `import { registerProvider } from './provider-registry.js';
+const defaultOpenCodeProviderSource = `import { execSync } from 'child_process';
+import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
-type ChatMessage = { role: 'system' | 'user'; content: string };
+type ChatMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>;
+  tool_call_id?: string;
+};
 
 const DEFAULT_FALLBACK_MODELS = [
   'openai/gpt-oss-20b:free',
-  'nousresearch/hermes-3-llama-3.1-405b:free',
-  'meta-llama/llama-3.2-3b-instruct:free',
-  'qwen/qwen-2.5-72b-instruct:free',
+  'google/gemini-2.0-flash-exp:free',
+  'mistralai/mistral-nemo:free',
 ];
+
+const BASH_TOOL = {
+  type: 'function' as const,
+  function: {
+    name: 'bash',
+    description:
+      'Execute a bash command in the workspace. Use for any shell operation: file ops, running agent-browser for web scraping, system commands.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'The bash command to execute' },
+        timeout: { type: 'number', description: 'Timeout in milliseconds (default: 30000)' },
+      },
+      required: ['command'],
+    },
+  },
+};
 
 function fallbackModels(): string[] {
   const env = process.env.OPENCODE_FALLBACK_MODELS;
@@ -159,8 +185,33 @@ function providerAPIKey(): string | undefined {
   return process.env.OPENCODE_API_KEY || process.env.OPENROUTER_API_KEY;
 }
 
-function usedModelTag(model: string): string {
-  return ` + "`" + `[using ${model}]` + "`" + `;
+class MessageStream {
+  private queue: string[] = [];
+  private waiting: (() => void) | null = null;
+  private done = false;
+
+  push(text: string): void {
+    this.queue.push(text);
+    this.waiting?.();
+  }
+
+  end(): void {
+    this.done = true;
+    this.waiting?.();
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<string> {
+    while (true) {
+      while (this.queue.length > 0) {
+        yield this.queue.shift()!;
+      }
+      if (this.done) return;
+      await new Promise<void>(r => {
+        this.waiting = r;
+      });
+      this.waiting = null;
+    }
+  }
 }
 
 class OpenCodeProvider implements AgentProvider {
@@ -174,22 +225,35 @@ class OpenCodeProvider implements AgentProvider {
 
   query(input: QueryInput): AgentQuery {
     const controller = new AbortController();
+    const stream = new MessageStream();
     return {
-      push: () => {},
-      end: () => {},
-      events: this.run(input, controller),
+      push: msg => stream.push(msg),
+      end: () => stream.end(),
+      events: this.run(input, controller, stream),
       abort: () => controller.abort(),
     };
   }
 
-  private async *run(input: QueryInput, controller: AbortController): AsyncGenerator<ProviderEvent> {
+  private async *run(
+    input: QueryInput,
+    controller: AbortController,
+    followups: MessageStream,
+  ): AsyncGenerator<ProviderEvent> {
     if (providerName() !== 'openrouter') {
-      yield { type: 'error', message: ` + "`" + `Unsupported OPENCODE_PROVIDER ${providerName()}; only openrouter is available in this NanoClaw container` + "`" + `, retryable: false };
+      yield {
+        type: 'error',
+        message: ` + "`" + `Unsupported OPENCODE_PROVIDER ${providerName()}; only openrouter available` + "`" + `,
+        retryable: false,
+      };
       return;
     }
     const apiKey = providerAPIKey();
     if (!apiKey) {
-      yield { type: 'error', message: 'OPENCODE_API_KEY or OPENROUTER_API_KEY is not configured', retryable: false };
+      yield {
+        type: 'error',
+        message: 'OPENCODE_API_KEY or OPENROUTER_API_KEY not configured',
+        retryable: false,
+      };
       return;
     }
 
@@ -200,57 +264,151 @@ class OpenCodeProvider implements AgentProvider {
     messages.push({ role: 'user', content: input.prompt });
 
     yield { type: 'init', continuation: ` + "`" + `opencode-${Date.now()}` + "`" + ` };
-    yield { type: 'activity' };
 
     const primaryModel = normalizeOpenRouterModel(this.options.model);
     const models = [primaryModel, ...fallbackModels().filter(m => m !== primaryModel)];
+    let usedModelIndex = 0;
 
-    for (let i = 0; i < models.length; i++) {
-      const model = models[i];
-      try {
-        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          signal: controller.signal,
-          headers: {
-            Authorization: ` + "`" + `Bearer ${apiKey}` + "`" + `,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://vulpineos.com',
-            'X-Title': 'VulpineOS',
-          },
-          body: JSON.stringify({ model, messages }),
-        });
+    while (true) {
+      yield { type: 'activity' };
+
+      // Drain follow-up messages pushed by poll-loop
+      for await (const msg of followups) {
+        messages.push({ role: 'user', content: msg });
         yield { type: 'activity' };
-        const body = await res.text();
-        if (!res.ok) {
-          if (res.status === 429 && i < models.length - 1) {
-            continue;
-          }
-          yield { type: 'error', message: ` + "`" + `OpenRouter returned ${res.status}: ${body}` + "`" + `, retryable: res.status >= 500 || res.status === 429 };
-          return;
-        }
-        const parsed = JSON.parse(body) as { choices?: Array<{ message?: { content?: string } }> };
-        let text = parsed.choices?.[0]?.message?.content || '';
-        if (i > 0) {
-          text = ` + "`" + `[Rate-limited. Switched to ${model}]\n\n${text}` + "`" + `;
-        }
-        yield { type: 'result', text };
-        return;
-      } catch (err) {
-        if (err instanceof Error && (err.name === 'AbortError' || controller.signal.aborted)) {
+      }
+
+      let response: unknown;
+      let modelFound = false;
+
+      for (let i = usedModelIndex; i < models.length; i++) {
+        const model = models[i];
+        if (controller.signal.aborted) {
           yield { type: 'error', message: 'Request aborted', retryable: false };
           return;
         }
-        if (i < models.length - 1) {
-          continue;
+
+        try {
+          const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+              Authorization: ` + "`" + `Bearer ${apiKey}` + "`" + `,
+              'Content-Type': 'application/json',
+              'HTTP-Referer': 'https://vulpineos.com',
+              'X-Title': 'VulpineOS',
+            },
+            body: JSON.stringify({
+              model,
+              messages,
+              tools: [BASH_TOOL],
+              tool_choice: 'auto',
+            }),
+          });
+
+          yield { type: 'activity' };
+
+          if (!res.ok) {
+            const body = await res.text();
+            if (res.status === 429 && i < models.length - 1) {
+              continue;
+            }
+            yield {
+              type: 'error',
+              message: ` + "`" + `OpenRouter returned ${res.status}: ${body}` + "`" + `,
+              retryable: res.status >= 500 || res.status === 429,
+            };
+            return;
+          }
+
+          response = (await res.json()) as {
+            choices?: Array<{
+              finish_reason: string;
+              message: ChatMessage & { tool_calls?: ChatMessage['tool_calls'] };
+            }>;
+          };
+          usedModelIndex = i;
+          modelFound = true;
+          break;
+        } catch (err) {
+          if (err instanceof Error && (err.name === 'AbortError' || controller.signal.aborted)) {
+            yield { type: 'error', message: 'Request aborted', retryable: false };
+            return;
+          }
+          if (i < models.length - 1) continue;
+          yield {
+            type: 'error',
+            message: err instanceof Error ? err.message : String(err),
+            retryable: false,
+          };
+          return;
         }
-        yield { type: 'error', message: err instanceof Error ? err.message : String(err), retryable: false };
+      }
+
+      if (!modelFound) return;
+
+      const choices = (response as { choices?: Array<{ finish_reason: string; message: ChatMessage & { tool_calls?: ChatMessage['tool_calls'] } }> }).choices;
+      const choice = choices?.[0];
+      if (!choice) {
+        yield { type: 'error', message: 'Empty response from OpenRouter', retryable: false };
         return;
       }
+
+      const message = choice.message;
+
+      // Tool calls: execute each one, append results, loop
+      if (choice.finish_reason === 'tool_calls' && message.tool_calls?.length) {
+        messages.push({
+          role: 'assistant',
+          content: message.content || null,
+          tool_calls: message.tool_calls,
+        });
+
+        for (const tc of message.tool_calls) {
+          if (tc.type !== 'function') continue;
+
+          let result: string;
+          try {
+            const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+            if (tc.function.name === 'bash') {
+              const command = String(args.command ?? '');
+              const timeout = typeof args.timeout === 'number' ? args.timeout : 30000;
+              result = execSync(command, {
+                cwd: '/workspace/agent',
+                timeout,
+                encoding: 'utf-8',
+                maxBuffer: 50 * 1024 * 1024,
+                signal: controller.signal,
+              });
+              if (result.length > 50000) {
+                result = result.slice(0, 50000) + ` + "`" + `\n... [truncated ${result.length - 50000} more bytes]` + "`" + `;
+              }
+            } else {
+              result = ` + "`" + `Unknown tool: ${tc.function.name}` + "`" + `;
+            }
+          } catch (err) {
+            result = ` + "`" + `Error: ${err instanceof Error ? err.message : String(err)}` + "`" + `;
+          }
+
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: result });
+          yield { type: 'activity' };
+        }
+
+        continue;
+      }
+
+      // Text response
+      let text = message.content || '';
+      if (usedModelIndex > 0) {
+        text = ` + "`" + `[Switched to ${models[usedModelIndex]}]\n\n${text}` + "`" + `;
+      }
+      yield { type: 'result', text };
+      return;
     }
   }
 }
 
-registerProvider('opencode', (options) => new OpenCodeProvider(options));
+registerProvider('opencode', options => new OpenCodeProvider(options));
 `
 
 func patchNanoClawDockerfile(path string) error {

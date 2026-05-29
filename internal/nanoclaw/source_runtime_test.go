@@ -89,7 +89,7 @@ func TestPatchNanoClawSourceRuntimeCreatesOpenCodeProviderWhenMissing(t *testing
 		"OPENCODE_FALLBACK_MODELS",
 		"DEFAULT_FALLBACK_MODELS",
 		"openrouter",
-		"Rate-limited. Switched to",
+		"Switched to",
 		"res.status === 429 && i < models.length - 1",
 	} {
 		if !strings.Contains(string(provider), want) {
