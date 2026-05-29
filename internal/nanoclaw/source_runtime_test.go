@@ -86,7 +86,11 @@ func TestPatchNanoClawSourceRuntimeCreatesOpenCodeProviderWhenMissing(t *testing
 		"OPENCODE_PROVIDER",
 		"OPENCODE_MODEL",
 		"OPENCODE_API_KEY",
+		"OPENCODE_FALLBACK_MODELS",
+		"DEFAULT_FALLBACK_MODELS",
 		"openrouter",
+		"Rate-limited. Switched to",
+		"res.status === 429 && i < models.length - 1",
 	} {
 		if !strings.Contains(string(provider), want) {
 			t.Fatalf("created opencode provider missing %q:\n%s", want, provider)
@@ -99,6 +103,35 @@ func TestPatchNanoClawSourceRuntimeCreatesOpenCodeProviderWhenMissing(t *testing
 	}
 	if strings.Count(string(index), "import './opencode.js';") != 1 {
 		t.Fatalf("provider index should import opencode once:\n%s", index)
+	}
+}
+
+func TestEnsureNanoClawOpenCodeProviderAlwaysOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	providerPath := filepath.Join(dir, "opencode.ts")
+	indexPath := filepath.Join(dir, "index.ts")
+	if err := os.WriteFile(indexPath, []byte("import './claude.js';\n"), 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	stale := "stale provider content"
+	if err := os.WriteFile(providerPath, []byte(stale), 0600); err != nil {
+		t.Fatalf("write stale provider: %v", err)
+	}
+
+	if err := ensureNanoClawOpenCodeProvider(providerPath, indexPath); err != nil {
+		t.Fatalf("ensureNanoClawOpenCodeProvider: %v", err)
+	}
+
+	data, err := os.ReadFile(providerPath)
+	if err != nil {
+		t.Fatalf("read provider: %v", err)
+	}
+	if string(data) == stale {
+		t.Fatalf("ensureNanoClawOpenCodeProvider did not overwrite existing file")
+	}
+	if !strings.Contains(string(data), "DEFAULT_FALLBACK_MODELS") {
+		t.Fatalf("overwritten provider missing fallback logic:\n%s", data)
 	}
 }
 

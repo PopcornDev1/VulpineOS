@@ -87,16 +87,11 @@ func ensureNanoClawOpenCodeProvider(providerPath, indexPath string) error {
 	if strings.TrimSpace(providerPath) == "" {
 		return nil
 	}
-	if _, err := os.Stat(providerPath); err != nil {
-		if !os.IsNotExist(err) {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(providerPath), 0700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(providerPath, []byte(defaultOpenCodeProviderSource), 0600); err != nil {
-			return err
-		}
+	if err := os.MkdirAll(filepath.Dir(providerPath), 0700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(providerPath, []byte(defaultOpenCodeProviderSource), 0600); err != nil {
+		return err
 	}
 	return ensureNanoClawProviderIndexImport(indexPath, "import './opencode.js';")
 }
@@ -133,6 +128,21 @@ import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryIn
 
 type ChatMessage = { role: 'system' | 'user'; content: string };
 
+const DEFAULT_FALLBACK_MODELS = [
+  'openai/gpt-oss-20b:free',
+  'nousresearch/hermes-3-llama-3.1-405b:free',
+  'meta-llama/llama-3.2-3b-instruct:free',
+  'qwen/qwen-2.5-72b-instruct:free',
+];
+
+function fallbackModels(): string[] {
+  const env = process.env.OPENCODE_FALLBACK_MODELS;
+  if (env) {
+    return env.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  return DEFAULT_FALLBACK_MODELS;
+}
+
 function normalizeOpenRouterModel(model: string | undefined): string {
   const value = model || process.env.OPENCODE_MODEL || 'openai/gpt-oss-20b:free';
   return value.replace(/^openrouter\//, '');
@@ -144,6 +154,10 @@ function providerName(): string {
 
 function providerAPIKey(): string | undefined {
   return process.env.OPENCODE_API_KEY || process.env.OPENROUTER_API_KEY;
+}
+
+function usedModelTag(model: string): string {
+  return ` + "`" + `[using ${model}]` + "`" + `;
 }
 
 class OpenCodeProvider implements AgentProvider {
@@ -185,28 +199,50 @@ class OpenCodeProvider implements AgentProvider {
     yield { type: 'init', continuation: ` + "`" + `opencode-${Date.now()}` + "`" + ` };
     yield { type: 'activity' };
 
-    try {
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          Authorization: ` + "`" + `Bearer ${apiKey}` + "`" + `,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': 'https://vulpineos.com',
-          'X-Title': 'VulpineOS',
-        },
-        body: JSON.stringify({ model: normalizeOpenRouterModel(this.options.model), messages }),
-      });
-      yield { type: 'activity' };
-      const body = await res.text();
-      if (!res.ok) {
-        yield { type: 'error', message: ` + "`" + `OpenRouter returned ${res.status}: ${body}` + "`" + `, retryable: res.status >= 500 || res.status === 429 };
+    const primaryModel = normalizeOpenRouterModel(this.options.model);
+    const models = [primaryModel, ...fallbackModels().filter(m => m !== primaryModel)];
+
+    for (let i = 0; i < models.length; i++) {
+      const model = models[i];
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            Authorization: ` + "`" + `Bearer ${apiKey}` + "`" + `,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://vulpineos.com',
+            'X-Title': 'VulpineOS',
+          },
+          body: JSON.stringify({ model, messages }),
+        });
+        yield { type: 'activity' };
+        const body = await res.text();
+        if (!res.ok) {
+          if (res.status === 429 && i < models.length - 1) {
+            continue;
+          }
+          yield { type: 'error', message: ` + "`" + `OpenRouter returned ${res.status}: ${body}` + "`" + `, retryable: res.status >= 500 || res.status === 429 };
+          return;
+        }
+        const parsed = JSON.parse(body) as { choices?: Array<{ message?: { content?: string } }> };
+        let text = parsed.choices?.[0]?.message?.content || '';
+        if (i > 0) {
+          text = ` + "`" + `[Rate-limited. Switched to ${model}]\n\n${text}` + "`" + `;
+        }
+        yield { type: 'result', text };
+        return;
+      } catch (err) {
+        if (err instanceof Error && (err.name === 'AbortError' || controller.signal.aborted)) {
+          yield { type: 'error', message: 'Request aborted', retryable: false };
+          return;
+        }
+        if (i < models.length - 1) {
+          continue;
+        }
+        yield { type: 'error', message: err instanceof Error ? err.message : String(err), retryable: false };
         return;
       }
-      const parsed = JSON.parse(body) as { choices?: Array<{ message?: { content?: string } }> };
-      yield { type: 'result', text: parsed.choices?.[0]?.message?.content || '' };
-    } catch (err) {
-      yield { type: 'error', message: err instanceof Error ? err.message : String(err), retryable: false };
     }
   }
 }
