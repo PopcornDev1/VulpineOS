@@ -1,0 +1,111 @@
+diff --git a/security/nss/lib/ssl/ssl.def b/security/nss/lib/ssl/ssl.def
+index 75c37f2bed..84a8b9fc99 100644
+--- a/security/nss/lib/ssl/ssl.def
++++ b/security/nss/lib/ssl/ssl.def
+@@ -68,7 +68,8 @@ SSL_RevealURL;
+ SSL_SecurityStatus;
+ SSL_SetPKCS11PinArg;
+ SSL_SetSockPeerID;
+-SSL_SetURL;
++ SSL_SetURL;
++ SSL_SetIdentity;
+ ;+    local:
+ ;+*;
+ ;+};
+diff --git a/security/nss/lib/ssl/ssl.h b/security/nss/lib/ssl/ssl.h
+index 2b7df26de5..3354f331c2 100644
+--- a/security/nss/lib/ssl/ssl.h
++++ b/security/nss/lib/ssl/ssl.h
+@@ -1252,6 +1252,9 @@ SSL_IMPORT SECStatus SSL_RedoHandshake(PRFileDesc *fd);
+  */
+ SSL_IMPORT SECStatus SSL_SetURL(PRFileDesc *fd, const char *url);
+ 
++/* vulpine-networklab: set per-context TLS identity from JSON */
++SSL_IMPORT SECStatus SSL_SetIdentity(PRFileDesc *fd, const char *identityJSON);
++
+ /*
+  * Allow an application to define a set of trust anchors for peer
+  * cert validation.
+diff --git a/security/nss/lib/ssl/ssl3con.c b/security/nss/lib/ssl/ssl3con.c
+index 173eca7b1f..0c5ff5bec1 100644
+--- a/security/nss/lib/ssl/ssl3con.c
++++ b/security/nss/lib/ssl/ssl3con.c
+@@ -5909,6 +5909,28 @@ ssl3_SendClientHello(sslSocket *ss, sslClientHelloType type)
+             ssl_renegotiation_info_xtn;
+     }
+ 
++    /* --------------------------------------------------------- */
++    /* vulpine-networklab: override with identity params if set   */
++    /* --------------------------------------------------------- */
++    if (ss->identityBlob) {
++        /* Parse identity JSON and override cipher suites,
++         * supported groups, signature algorithms, and key shares.
++         * For now, this is a stub that logs the identity presence.
++         * Full parsing and parameter override will be implemented
++         * when a JSON parsing library is available in the NSS build.
++         *
++         * The identity blob format:
++         * {
++         *   "cipher_suites": [0x1301, 0x1302, ...],
++         *   "supported_groups": [0x001D, 0x0017, ...],
++         *   "sig_algs": [0x0403, 0x0804, ...],
++         *   "key_share_curves": [0x001D]
++         * }
++         */
++        SSL_TRC(3, ("SSL_SetIdentity: identity blob present for %s",
++                    ss->url ? ss->url : "unknown"));
++    }
++
+     flags = 0;
+     rv = ssl3_FlushHandshake(ss, flags);
+     if (rv != SECSuccess) {
+diff --git a/security/nss/lib/ssl/sslimpl.h b/security/nss/lib/ssl/sslimpl.h
+index 08b905ecb1..fe97523e35 100644
+--- a/security/nss/lib/ssl/sslimpl.h
++++ b/security/nss/lib/ssl/sslimpl.h
+@@ -1212,6 +1212,12 @@ struct sslSocketStr {
+ 
+     /* An out-of-band PSK. */
+     sslPsk *psk;
++
++    /* vulpine-networklab: per-context TLS identity */
++    /* JSON-encoded network identity blob, or NULL if not set.
++     * Set via SSL_SetIdentity() from the Gecko layer when a
++     * browser context is activated. */
++    char *identityBlob;
+ };
+ 
+ struct sslSelfEncryptKeysStr {
+diff --git a/security/nss/lib/ssl/sslsecur.c b/security/nss/lib/ssl/sslsecur.c
+index 755f1218e0..ab5e7d3734 100644
+--- a/security/nss/lib/ssl/sslsecur.c
++++ b/security/nss/lib/ssl/sslsecur.c
+@@ -1169,6 +1169,28 @@ SSL_SetURL(PRFileDesc *fd, const char *url)
+     return rv;
+ }
+ 
++SECStatus
++SSL_SetIdentity(PRFileDesc *fd, const char *identityJSON)
++{
++    sslSocket *ss;
++    ss = ssl_FindSocket(fd);
++    if (!ss) {
++        PORT_SetError(SEC_ERROR_INVALID_ARGS);
++        return SECFailure;
++    }
++    /* Free any existing identity blob */
++    if (ss->identityBlob) {
++        PORT_Free(ss->identityBlob);
++    }
++    /* Copy the identity JSON string */
++    ss->identityBlob = PORT_Strdup(identityJSON);
++    if (!ss->identityBlob) {
++        PORT_SetError(SEC_ERROR_NO_MEMORY);
++        return SECFailure;
++    }
++    return SECSuccess;
++}
++
+ /*
+  * Allow the application to pass the set of trust anchors
+  */

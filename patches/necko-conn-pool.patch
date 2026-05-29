@@ -1,0 +1,189 @@
+diff --git a/netwerk/protocol/http/nsHttpChannel.cpp b/netwerk/protocol/http/nsHttpChannel.cpp
+index 1a76f06043..727483ff9c 100644
+--- a/netwerk/protocol/http/nsHttpChannel.cpp
++++ b/netwerk/protocol/http/nsHttpChannel.cpp
+@@ -922,11 +922,9 @@ nsresult nsHttpChannel::OnBeforeConnect() {
+   // SecurityInfo.sys.mjs
+   mLoadInfo->SetHstsStatus(isSecureURI);
+ 
+-  RefPtr<mozilla::dom::BrowsingContext> bc;
+-  mLoadInfo->GetBrowsingContext(getter_AddRefs(bc));
+   // If bypassing the cache and we're forced offline
+   // we can just return the error here.
+-  if (bc && bc->Top()->GetForceOffline() &&
++  if (IsForcedOffline() &&
+       BYPASS_LOCAL_CACHE(mLoadFlags, LoadPreferCacheLoadOverBypass())) {
+     return NS_ERROR_OFFLINE;
+   }
+@@ -1039,9 +1037,7 @@ nsresult nsHttpChannel::MaybeUseHTTPSRRForUpgrade(bool aShouldUpgrade,
+     return aStatus;
+   }
+ 
+-  RefPtr<mozilla::dom::BrowsingContext> bc;
+-  mLoadInfo->GetBrowsingContext(getter_AddRefs(bc));
+-  bool forceOffline = bc && bc->Top()->GetForceOffline();
++  bool forceOffline = IsForcedOffline();
+ 
+   if (mURI->SchemeIs("https") || aShouldUpgrade || !LoadUseHTTPSSVC() ||
+       forceOffline) {
+@@ -1518,15 +1514,14 @@ nsresult nsHttpChannel::ContinueConnect() {
+                      "CORS preflight must have been finished by the time we "
+                      "do the rest of ContinueConnect");
+ 
+-  RefPtr<mozilla::dom::BrowsingContext> bc;
+-  mLoadInfo->GetBrowsingContext(getter_AddRefs(bc));
++  bool isForcedOffline = IsForcedOffline();
+ 
+   // we may or may not have a cache entry at this point
+   if (mCacheEntry) {
+     // read straight from the cache if possible...
+     if (CachedContentIsValid()) {
+       // If we're forced offline, and set to bypass the cache, return offline.
+-      if (bc && bc->Top()->GetForceOffline() &&
++      if (isForcedOffline &&
+           BYPASS_LOCAL_CACHE(mLoadFlags, LoadPreferCacheLoadOverBypass())) {
+         return NS_ERROR_OFFLINE;
+       }
+@@ -1568,7 +1563,7 @@ nsresult nsHttpChannel::ContinueConnect() {
+   }
+ 
+   // We're about to hit the network. Don't if we're forced offline.
+-  if (bc && bc->Top()->GetForceOffline()) {
++  if (isForcedOffline) {
+     return NS_ERROR_OFFLINE;
+   }
+ 
+@@ -1676,12 +1671,9 @@ void nsHttpChannel::SpeculativeConnect() {
+   // don't speculate if we are offline, when doing http upgrade (i.e.
+   // websockets bootstrap), or if we can't do keep-alive (because then we
+   // couldn't reuse the speculative connection anyhow).
+-  RefPtr<mozilla::dom::BrowsingContext> bc;
+-  mLoadInfo->GetBrowsingContext(getter_AddRefs(bc));
+-
+   if (gIOService->IsOffline() || mUpgradeProtocolCallback ||
+       !(mCaps & NS_HTTP_ALLOW_KEEPALIVE) ||
+-      (bc && bc->Top()->GetForceOffline())) {
++      IsForcedOffline()) {
+     return;
+   }
+ 
+@@ -4674,9 +4666,6 @@ nsresult nsHttpChannel::OpenCacheEntryInternal(bool isHttps) {
+   uint32_t cacheEntryOpenFlags;
+   bool offline = gIOService->IsOffline();
+ 
+-  RefPtr<mozilla::dom::BrowsingContext> bc;
+-  mLoadInfo->GetBrowsingContext(getter_AddRefs(bc));
+-
+   bool maybeRCWN = false;
+ 
+   nsAutoCString cacheControlRequestHeader;
+@@ -4687,7 +4676,7 @@ nsresult nsHttpChannel::OpenCacheEntryInternal(bool isHttps) {
+     return NS_OK;
+   }
+ 
+-  bool forceOffline = bc && bc->Top()->GetForceOffline();
++  bool forceOffline = IsForcedOffline();
+   if (offline || (mLoadFlags & INHIBIT_CACHING) || forceOffline) {
+     if (BYPASS_LOCAL_CACHE(mLoadFlags, LoadPreferCacheLoadOverBypass()) &&
+         !offline && !forceOffline) {
+@@ -7772,6 +7761,11 @@ nsresult nsHttpChannel::BeginConnect() {
+         .Add();
+   }
+ 
++  // VulpineOS: isolate connection pool per browser context
++  if (mConnectionInfo) {
++    mConnectionInfo->SetOriginContextId(mLoadInfo->GetInnerWindowID());
++  }
++
+   bool trrEnabled = false;
+   auto dnsStrategy = GetProxyDNSStrategy();
+   bool httpsRRAllowed =
+@@ -7975,6 +7969,20 @@ void nsHttpChannel::MaybeStartDNSPrefetch() {
+   }
+ }
+ 
++bool nsHttpChannel::IsForcedOffline() {
++  RefPtr<mozilla::dom::BrowsingContext> bc;
++  mLoadInfo->GetBrowsingContext(getter_AddRefs(bc));
++  if (bc && bc->Top()->GetForceOffline())
++    return true;
++
++  RefPtr<mozilla::dom::BrowsingContext> wbc;
++  mLoadInfo->GetWorkerAssociatedBrowsingContext(getter_AddRefs(wbc));
++  if (wbc && wbc->Top()->GetForceOffline())
++    return true;
++
++  return false;
++}
++
+ NS_IMETHODIMP
+ nsHttpChannel::GetEncodedBodySize(uint64_t* aEncodedBodySize) {
+   if (mCacheEntry && !LoadCacheEntryIsWriteOnly()) {
+diff --git a/netwerk/protocol/http/nsHttpConnectionInfo.cpp b/netwerk/protocol/http/nsHttpConnectionInfo.cpp
+index 13d386eecb..b35a9fafa2 100644
+--- a/netwerk/protocol/http/nsHttpConnectionInfo.cpp
++++ b/netwerk/protocol/http/nsHttpConnectionInfo.cpp
+@@ -280,11 +280,20 @@ void nsHttpConnectionInfo::BuildHashKey() {
+     mHashKey.AppendLiteral("}");
+   }
+ 
++  // VulpineOS: partition connection pool per browser context
++  mHashKey.AppendLiteral("$ctx=");
++  mHashKey.AppendInt(static_cast<int64_t>(mOriginContextId));
++
+   nsAutoCString originAttributes;
+   mOriginAttributes.CreateSuffix(originAttributes);
+   mHashKey.Append(originAttributes);
+ }
+ 
++void nsHttpConnectionInfo::SetOriginContextId(uint64_t aOriginContextId) {
++  mOriginContextId = aOriginContextId;
++  RebuildHashKey();
++}
++
+ void nsHttpConnectionInfo::RebuildHashKey() {
+   // Create copies of all properties stored in our hash key.
+   bool isAnonymous = GetAnonymous();
+@@ -350,6 +359,7 @@ already_AddRefed<nsHttpConnectionInfo> nsHttpConnectionInfo::Clone() const {
+   clone->SetHasIPHintAddress(HasIPHintAddress());
+   clone->SetEchConfig(GetEchConfig());
+   clone->SetWebTransportId(GetWebTransportId());
++  clone->SetOriginContextId(mOriginContextId);
+   MOZ_ASSERT(clone->Equals(this));
+ 
+   return clone.forget();
+@@ -637,6 +647,9 @@ void nsHttpConnectionInfo::BuildOriginFrameHashKey(nsACString& newKey,
+   ci->GetOriginAttributes().CreateSuffix(suffix);
+   newKey.Append(suffix);
+   newKey.AppendLiteral("]viaORIGIN.FRAME");
++  // VulpineOS: partition coalescing by context ID
++  newKey.AppendLiteral("$ctx=");
++  newKey.AppendInt(static_cast<int64_t>(ci->OriginContextId()));
+ }
+ 
+ }  // namespace net
+diff --git a/netwerk/protocol/http/nsHttpConnectionInfo.h b/netwerk/protocol/http/nsHttpConnectionInfo.h
+index 920267460e..ee30abf65f 100644
+--- a/netwerk/protocol/http/nsHttpConnectionInfo.h
++++ b/netwerk/protocol/http/nsHttpConnectionInfo.h
+@@ -288,6 +288,9 @@ class nsHttpConnectionInfo final : public ARefBase {
+ 
+   static uint64_t GenerateNewWebTransportId();
+ 
++  uint64_t OriginContextId() const { return mOriginContextId; }
++  void SetOriginContextId(uint64_t aOriginContextId);
++
+  private:
+   void Init(const nsACString& host, int32_t port, const nsACString& npnToken,
+             const nsACString& username, nsProxyInfo* proxyInfo,
+@@ -337,6 +340,10 @@ class nsHttpConnectionInfo final : public ARefBase {
+   uint64_t mWebTransportId = 0;  // current dedicated Id only used for
+                                  // Webtransport, zero means not dedicated
+ 
++  // vulpine-networklab: isolates the connection pool per browser context.
++  // Zero means "default pool" (backward compatible).
++  uint64_t mOriginContextId{0};
++
+   // for RefPtr
+   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(nsHttpConnectionInfo, override)
+ };

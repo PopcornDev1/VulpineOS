@@ -1,0 +1,193 @@
+diff --git a/security/manager/ssl/moz.build b/security/manager/ssl/moz.build
+index e99dd0644e..6eb4c4d97c 100644
+--- a/security/manager/ssl/moz.build
++++ b/security/manager/ssl/moz.build
+@@ -83,6 +83,7 @@ EXPORTS.mozilla += [
+ EXPORTS.mozilla.psm += [
+     "IPCClientCertsChild.h",
+     "IPCClientCertsParent.h",
++    "NetworkIdentityManager.h",
+     "SelectTLSClientAuthCertChild.h",
+     "SelectTLSClientAuthCertParent.h",
+     "TransportSecurityInfo.h",
+@@ -102,6 +103,7 @@ UNIFIED_SOURCES += [
+     "IPCClientCertsChild.cpp",
+     "IPCClientCertsParent.cpp",
+     "md4.c",
++    "NetworkIdentityManager.cpp",
+     "nsCertOverrideService.cpp",
+     "nsCertTree.cpp",
+     "nsNSSCallbacks.cpp",
+diff --git a/security/manager/ssl/nsNSSIOLayer.cpp b/security/manager/ssl/nsNSSIOLayer.cpp
+index 8e77933a89..46e3520c90 100644
+--- a/security/manager/ssl/nsNSSIOLayer.cpp
++++ b/security/manager/ssl/nsNSSIOLayer.cpp
+@@ -30,6 +30,7 @@
+ #include "mozilla/psm/IPCClientCertsChild.h"
+ #include "mozilla/psm/mozilla_abridged_certs_generated.h"
+ #include "mozilla/psm/PIPCClientCertsChild.h"
++#include "NetworkIdentityManager.h"
+ #include "mozpkix/pkixnss.h"
+ #include "mozpkix/pkixtypes.h"
+ #include "mozpkix/pkixutil.h"
+@@ -1596,6 +1597,24 @@ static nsresult nsSSLIOLayerSetOptions(PRFileDesc* fd, bool forSTARTTLS,
+     }
+   }
+ 
++  // ---------------------------------------------------------------
++  // vulpine-networklab: apply per-context network identity
++  // ---------------------------------------------------------------
++  {
++    uint64_t contextId = 0;
++
++    const char* identityJSON =
++        mozilla::psm::NetworkIdentityManager::GetIdentityForContext(contextId);
++    if (identityJSON) {
++      SECStatus rv = SSL_SetIdentity(fd, identityJSON);
++      if (rv != SECSuccess) {
++        MOZ_LOG(gPIPNSSLog, LogLevel::Warning,
++                ("SSL_SetIdentity failed"));
++      }
++    }
++  }
++  // ---------------------------------------------------------------
++
+   // Include a modest set of named groups in supported_groups and determine how
+   // many key shares to send. Please change getKeaGroupName in
+   // nsNSSCallbacks.cpp when changing the lists here.
+--- a/security/manager/ssl/NetworkIdentityManager.h	2026-05-29 18:37:17
++++ b/security/manager/ssl/NetworkIdentityManager.h	2026-05-29 17:51:46
+@@ -0,0 +1,26 @@
++#ifndef NetworkIdentityManager_h__
++#define NetworkIdentityManager_h__
++
++#include <cstdint>
++#include "prtypes.h"
++
++namespace mozilla {
++namespace psm {
++
++class NetworkIdentityManager {
++public:
++  static const char* GetIdentityForContext(uint64_t contextId);
++  static void Refresh();
++  static nsresult Init();
++  static void Shutdown();
++
++private:
++  static char* sShmemBase;
++  static size_t sShmemSize;
++  static bool sInitialized;
++};
++
++}  // namespace psm
++}  // namespace mozilla
++
++#endif  // NetworkIdentityManager_h__
+--- a/security/manager/ssl/NetworkIdentityManager.cpp	2026-05-29 18:37:17
++++ b/security/manager/ssl/NetworkIdentityManager.cpp	2026-05-29 17:51:50
+@@ -0,0 +1,104 @@
++#include "NetworkIdentityManager.h"
++#include "mozilla/Logging.h"
++#include "prmem.h"
++
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++extern mozilla::LazyLogModule gPIPSMCLog;
++
++#define SHMEM_PATH ".vulpineos/network-identities.dat"
++#define SHMEM_DEFAULT_SIZE 65536
++
++namespace mozilla {
++namespace psm {
++
++char* NetworkIdentityManager::sShmemBase = nullptr;
++size_t NetworkIdentityManager::sShmemSize = 0;
++bool NetworkIdentityManager::sInitialized = false;
++
++nsresult NetworkIdentityManager::Init() {
++  if (sInitialized) {
++    return NS_OK;
++  }
++
++  const char* home = getenv("HOME");
++  if (!home) {
++    MOZ_LOG(gPIPSMCLog, LogLevel::Warning,
++            ("NetworkIdentityManager: no HOME env var"));
++    return NS_ERROR_FAILURE;
++  }
++
++  char dirPath[1024];
++  snprintf(dirPath, sizeof(dirPath), "%s/.vulpineos", home);
++  mkdir(dirPath, 0700);
++
++  char shmemPath[1024];
++  snprintf(shmemPath, sizeof(shmemPath), "%s/%s", home, SHMEM_PATH);
++
++  int fd = open(shmemPath, O_RDWR | O_CREAT, 0600);
++  if (fd < 0) {
++    MOZ_LOG(gPIPSMCLog, LogLevel::Warning,
++            ("NetworkIdentityManager: open failed: %s", shmemPath));
++    return NS_ERROR_FAILURE;
++  }
++
++  struct stat st;
++  if (fstat(fd, &st) < 0) {
++    close(fd);
++    return NS_ERROR_FAILURE;
++  }
++  if (st.st_size < SHMEM_DEFAULT_SIZE) {
++    ftruncate(fd, SHMEM_DEFAULT_SIZE);
++  }
++  sShmemSize = SHMEM_DEFAULT_SIZE;
++
++  sShmemBase = (char*)mmap(nullptr, sShmemSize, PROT_READ, MAP_SHARED, fd, 0);
++  close(fd);
++
++  if (sShmemBase == MAP_FAILED) {
++    sShmemBase = nullptr;
++    MOZ_LOG(gPIPSMCLog, LogLevel::Warning,
++            ("NetworkIdentityManager: mmap failed"));
++    return NS_ERROR_FAILURE;
++  }
++
++  sInitialized = true;
++  MOZ_LOG(gPIPSMCLog, LogLevel::Debug,
++          ("NetworkIdentityManager: initialized (%s)", shmemPath));
++  return NS_OK;
++}
++
++void NetworkIdentityManager::Shutdown() {
++  if (sShmemBase && sInitialized) {
++    munmap(sShmemBase, sShmemSize);
++    sShmemBase = nullptr;
++    sInitialized = false;
++  }
++}
++
++void NetworkIdentityManager::Refresh() {
++  if (!sInitialized) {
++    Init();
++  }
++}
++
++const char* NetworkIdentityManager::GetIdentityForContext(
++    uint64_t contextId) {
++  if (!sInitialized && NS_FAILED(Init())) {
++    return nullptr;
++  }
++  if (!sShmemBase || sShmemSize == 0) {
++    return nullptr;
++  }
++
++  if (sShmemBase[0] != '\0') {
++    return sShmemBase;
++  }
++  return nullptr;
++}
++
++}  // namespace psm
++}  // namespace mozilla
