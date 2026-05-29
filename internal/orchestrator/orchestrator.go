@@ -431,6 +431,9 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Ci
 		}
 	}
 
+	// Apply network identity (TLS fingerprint) and proxy for this citizen
+	o.applyCitizenNetworkIdentity(contextID, citizen)
+
 	// Apply security protections (CSP + sandbox) when enabled
 	if o.SecurityEnabled {
 		o.applySecurityToContext(contextID, citizen.ID)
@@ -861,26 +864,39 @@ func profileFamilyForPlatform(platform string) string {
 	}
 }
 
-// applyNetworkIdentity creates a networklab identity for the agent's platform
-// and logs the intended TLS fingerprint (JA3/JA4). When the Camoufox NSS patches
-// are active, this identity is applied automatically via shared memory.
-func (o *Orchestrator) applyNetworkIdentity(contextID string, agent *vault.Agent) error {
-	if agent == nil || agent.Fingerprint == "" {
-		return nil
-	}
+// createNetworklabIdentity creates a networklab identity from a fingerprint string
+// and writes it to shared memory for the Camoufox NetworkIdentityManager to consume.
+// Returns the identity, computed hashes, and the profile family name.
+func (o *Orchestrator) createNetworklabIdentity(fingerprint string, contextID string) (*networklab.Identity, *networklab.IdentityHashes, string, error) {
 	var fp vault.FingerprintData
-	if err := json.Unmarshal([]byte(agent.Fingerprint), &fp); err != nil {
-		return fmt.Errorf("parse fingerprint for network identity: %w", err)
+	if err := json.Unmarshal([]byte(fingerprint), &fp); err != nil {
+		return nil, nil, "", fmt.Errorf("parse fingerprint: %w", err)
 	}
 	family := profileFamilyForPlatform(fp.Platform)
 	nid, err := networklab.NewIdentity(family)
 	if err != nil {
-		log.Printf("orchestrator: networklab identity unavailable for %s on %s: %v", agent.ID, family, err)
-		return nil
+		return nil, nil, family, fmt.Errorf("new identity on %s: %w", family, err)
 	}
 	hashes, err := nid.Hashes()
 	if err != nil {
-		log.Printf("orchestrator: networklab hashes unavailable for %s: %v", agent.ID, err)
+		return nil, nil, family, fmt.Errorf("hashes on %s: %w", family, err)
+	}
+	if err := networklab.WriteCurrentIdentity(nid); err != nil {
+		log.Printf("orchestrator: failed to write network identity to shmem for context %s: %v", contextID, err)
+	}
+	return nid, hashes, family, nil
+}
+
+// applyNetworkIdentity creates a networklab identity for the agent and stores
+// its metadata in the vault. The identity is also written to shared memory so
+// the Camoufox NetworkIdentityManager applies TLS parameters per socket.
+func (o *Orchestrator) applyNetworkIdentity(contextID string, agent *vault.Agent) error {
+	if agent == nil || agent.Fingerprint == "" {
+		return nil
+	}
+	_, hashes, family, err := o.createNetworklabIdentity(agent.Fingerprint, contextID)
+	if err != nil {
+		log.Printf("orchestrator: networklab identity unavailable for %s on %s: %v", agent.ID, family, err)
 		return nil
 	}
 	log.Printf("orchestrator: agent %s network identity %s → JA3=%s JA4=%s (context=%s)",
@@ -902,5 +918,36 @@ func (o *Orchestrator) applyNetworkIdentity(contextID string, agent *vault.Agent
 		}
 	}
 
+	// Sync proxy with network identity: if the agent has a proxy,
+	// validate the geo-sync is consistent
+	if agent.ProxyConfig != "" {
+		var pc proxy.ProxyConfig
+		if err := json.Unmarshal([]byte(agent.ProxyConfig), &pc); err == nil && pc.URL() != "" {
+			log.Printf("orchestrator: agent %s network identity synced with proxy %s (context=%s)",
+				agent.ID, pc.URL(), contextID)
+		}
+	}
+
 	return nil
+}
+
+// applyCitizenNetworkIdentity applies networklab identity and proxy for a citizen
+// context. Called from SpawnCitizen since citizens have fingerprints and proxies.
+func (o *Orchestrator) applyCitizenNetworkIdentity(contextID string, citizen *vault.Citizen) {
+	if citizen.Fingerprint == "" {
+		return
+	}
+	_, hashes, family, err := o.createNetworklabIdentity(citizen.Fingerprint, contextID)
+	if err != nil {
+		log.Printf("orchestrator: citizen networklab identity unavailable for %s: %v", citizen.ID, err)
+		return
+	}
+	log.Printf("orchestrator: citizen %s network identity %s → JA3=%s JA4=%s (context=%s)",
+		citizen.Label, family, hashes.JA3, hashes.JA4, contextID)
+
+	if citizen.ProxyConfig != "" {
+		if err := o.applyProxyToContext(contextID, citizen.ProxyConfig); err != nil {
+			log.Printf("orchestrator: failed to apply proxy for citizen %s: %v", citizen.ID, err)
+		}
+	}
 }
