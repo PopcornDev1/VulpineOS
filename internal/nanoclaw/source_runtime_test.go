@@ -34,6 +34,74 @@ func TestRelaxBunFrozenLockfileNoop(t *testing.T) {
 	}
 }
 
+func TestPatchNanoClawDockerfileInstallsRipgrep(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Dockerfile")
+	in := "RUN apt-get update && apt-get install -y --no-install-recommends \\\n        curl \\\n        git \\\n        tini \\\n    && rm -rf /var/lib/apt/lists/*\n"
+	if err := os.WriteFile(path, []byte(in), 0600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if err := patchNanoClawDockerfile(path); err != nil {
+		t.Fatalf("patchNanoClawDockerfile: %v", err)
+	}
+	if err := patchNanoClawDockerfile(path); err != nil {
+		t.Fatalf("patchNanoClawDockerfile second run: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read patched Dockerfile: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "        ripgrep \\\n") {
+		t.Fatalf("patched Dockerfile missing ripgrep:\n%s", got)
+	}
+	if strings.Count(got, "ripgrep") != 1 {
+		t.Fatalf("patch should be idempotent, got:\n%s", got)
+	}
+}
+
+func TestPatchNanoClawSourceRuntimeCreatesOpenCodeProviderWhenMissing(t *testing.T) {
+	srcDir := t.TempDir()
+	providersDir := filepath.Join(srcDir, "container", "agent-runner", "src", "providers")
+	if err := os.MkdirAll(providersDir, 0700); err != nil {
+		t.Fatalf("mkdir providers: %v", err)
+	}
+	indexPath := filepath.Join(providersDir, "index.ts")
+	if err := os.WriteFile(indexPath, []byte("import './claude.js';\nimport './mock.js';\n"), 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	if err := patchNanoClawSourceRuntime(srcDir); err != nil {
+		t.Fatalf("patchNanoClawSourceRuntime: %v", err)
+	}
+	if err := patchNanoClawSourceRuntime(srcDir); err != nil {
+		t.Fatalf("patchNanoClawSourceRuntime second run: %v", err)
+	}
+
+	provider, err := os.ReadFile(filepath.Join(providersDir, "opencode.ts"))
+	if err != nil {
+		t.Fatalf("opencode provider was not created: %v", err)
+	}
+	for _, want := range []string{
+		"registerProvider('opencode'",
+		"OPENCODE_PROVIDER",
+		"OPENCODE_MODEL",
+		"OPENCODE_API_KEY",
+		"openrouter",
+	} {
+		if !strings.Contains(string(provider), want) {
+			t.Fatalf("created opencode provider missing %q:\n%s", want, provider)
+		}
+	}
+
+	index, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read provider index: %v", err)
+	}
+	if strings.Count(string(index), "import './opencode.js';") != 1 {
+		t.Fatalf("provider index should import opencode once:\n%s", index)
+	}
+}
+
 func TestPatchNanoClawOpenCodeProviderUsesInjectedAPIKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode.ts")
 	in := `const providerOptions = { opencode: { options: { apiKey: 'placeholder', baseURL: proxyUrl }, models: {} } };
@@ -167,6 +235,106 @@ export class OpenCodeProvider implements AgentProvider {
 		}
 	}
 	if strings.Count(got, "function assistantTextFromEntry") != 1 {
+		t.Fatalf("patch should be idempotent, got:\n%s", got)
+	}
+}
+
+func TestPatchNanoClawOpenCodeProviderHandlesOpenRouterFreeModelErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.ts")
+	in := `function buildOpenCodeConfig(options: ProviderOptions): Record<string, unknown> {
+  const provider = process.env.OPENCODE_PROVIDER || 'anthropic';
+  const model = process.env.OPENCODE_MODEL;
+  const smallModel = process.env.OPENCODE_SMALL_MODEL;
+  const supportsToolCalls = model !== 'openrouter/free';
+  const mcp = mcpServersToOpenCodeConfig(options.mcpServers);
+  return {
+    ...(smallModel ? { small_model: smallModel } : {}),
+    ...(model === 'openrouter/free' ? { tools: { bash: false } } : {}),
+    mcp,
+  };
+}
+
+type OpenCodeMessageEntry = {
+  info?: {
+    role?: string;
+    finish?: string;
+    time?: { completed?: number };
+    error?: { name?: string; data?: { message?: string } };
+  };
+  parts?: Array<{ type?: string; text?: string }>;
+};
+
+function assistantTextFromEntry(entry: OpenCodeMessageEntry): string | null {
+  const info = entry.info;
+  if (info?.role !== 'assistant') return null;
+  if (!info.time?.completed && info.finish !== 'stop') return null;
+  let text = '';
+  for (const part of entry.parts ?? []) {
+    if (part?.type === 'text' && typeof part.text === 'string') {
+      text = part.text;
+    }
+  }
+  return text || null;
+}
+
+async function fetchCompletedAssistantText(
+  client: OpencodeClient,
+  sessionId: string,
+  directory: string,
+  promptStartedAt: number,
+): Promise<string | null> {
+  try {
+    const res = await client.session.messages({
+      path: { id: sessionId },
+      query: { directory, limit: 20 },
+    });
+    if (res.error) return null;
+    let text: string | null = null;
+    for (const entry of ((res.data ?? []) as OpenCodeMessageEntry[])) {
+      const completedAt = typeof entry.info?.time?.completed === 'number' ? entry.info.time.completed : 0;
+      if (completedAt > 0 && completedAt < promptStartedAt - 1000) continue;
+      const candidate = assistantTextFromEntry(entry);
+      if (candidate !== null) text = candidate;
+    }
+    return text;
+  } catch (err) {
+    log(` + "`Failed to fetch completed OpenCode message: ${err instanceof Error ? err.message : String(err)}`" + `);
+    return null;
+  }
+}
+`
+	if err := os.WriteFile(path, []byte(in), 0600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	if err := patchNanoClawOpenCodeProvider(path); err != nil {
+		t.Fatalf("patchNanoClawOpenCodeProvider: %v", err)
+	}
+	if err := patchNanoClawOpenCodeProvider(path); err != nil {
+		t.Fatalf("patchNanoClawOpenCodeProvider second run: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read patched fixture: %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		"!(provider === 'openrouter' && model?.includes(':free'))",
+		"const effectiveSmallModel = smallModel || (!supportsToolCalls ? model : undefined);",
+		"const disabledTools = Object.fromEntries(",
+		"['invalid', 'question', 'bash', 'read', 'glob', 'grep', 'edit', 'write', 'task', 'webfetch', 'todowrite', 'websearch', 'skill', 'apply_patch']",
+		"...(effectiveSmallModel ? { small_model: effectiveSmallModel } : {}),",
+		"...(!supportsToolCalls ? { tools: disabledTools } : {}),",
+		"...(!supportsToolCalls ? { agent: { build: { tools: disabledTools, maxSteps: 1 }, plan: { tools: disabledTools, maxSteps: 1 } } } : {}),",
+		"mcp: supportsToolCalls ? mcp : {},",
+		"function assistantErrorFromEntry",
+		"entry.info?.error?.data?.message",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("patched provider missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Count(got, "function assistantErrorFromEntry") != 1 {
 		t.Fatalf("patch should be idempotent, got:\n%s", got)
 	}
 }

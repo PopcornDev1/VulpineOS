@@ -298,7 +298,7 @@ func TestFindNanoClawCreatesLauncherForUpstreamSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read launcher: %v", err)
 	}
-	for _, want := range []string{"VULPINE_NANOCLAW_HOME", "dist/index.js", "src/index.ts", "src/cli/client.ts"} {
+	for _, want := range []string{"VULPINE_NANOCLAW_HOME", "VULPINE_NODE_BIN", "/opt/homebrew/opt/node@22/bin/node", "\"$NODE_BIN\" \"${SRC}/dist/index.js\"", "dist/index.js", "src/index.ts", "src/cli/client.ts"} {
 		if !strings.Contains(string(content), want) {
 			t.Fatalf("launcher content does not contain %q:\n%s", want, content)
 		}
@@ -310,6 +310,48 @@ func TestFindNanoClawCreatesLauncherForUpstreamSource(t *testing.T) {
 	}
 	if target != filepath.Join(srcDir, "container") {
 		t.Fatalf("container link = %q, want source container", target)
+	}
+}
+
+func TestFindNanoClawRewritesLegacySourceLauncherWithoutNodePin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	srcDir := filepath.Join(home, ".vulpineos", "nanoclaw-src")
+	if err := os.MkdirAll(filepath.Join(srcDir, "src", "cli"), 0700); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(srcDir, "container", "agent-runner", "src"), 0700); err != nil {
+		t.Fatalf("mkdir container source: %v", err)
+	}
+	for path, data := range map[string]string{
+		filepath.Join(srcDir, "package.json"):            `{"name":"nanoclaw"}`,
+		filepath.Join(srcDir, "src", "index.ts"):         `console.log("daemon")`,
+		filepath.Join(srcDir, "src", "cli", "client.ts"): `console.log("client")`,
+		filepath.Join(srcDir, "container", "Dockerfile"): "FROM scratch\n",
+	} {
+		if err := os.WriteFile(path, []byte(data), 0700); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	launcherPath := filepath.Join(home, ".vulpineos", "nanoclaw", "nanoclaw")
+	if err := os.MkdirAll(filepath.Dir(launcherPath), 0700); err != nil {
+		t.Fatalf("mkdir launcher dir: %v", err)
+	}
+	legacy := "#!/usr/bin/env bash\nVULPINE_NANOCLAW_HOME=1\nexec node \"${SRC}/dist/index.js\" \"$@\"\n"
+	if err := os.WriteFile(launcherPath, []byte(legacy), 0700); err != nil {
+		t.Fatalf("write legacy launcher: %v", err)
+	}
+
+	got := NewManager("").findNanoClaw()
+	if got != launcherPath {
+		t.Fatalf("findNanoClaw() = %q, want %q", got, launcherPath)
+	}
+	content, err := os.ReadFile(launcherPath)
+	if err != nil {
+		t.Fatalf("read rewritten launcher: %v", err)
+	}
+	if !strings.Contains(string(content), "VULPINE_NODE_BIN") {
+		t.Fatalf("legacy launcher was not rewritten with Node pin:\n%s", content)
 	}
 }
 

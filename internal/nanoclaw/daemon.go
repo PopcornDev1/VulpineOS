@@ -248,8 +248,7 @@ func ProviderRuntimeEnv(cfg *config.Config) map[string]string {
 	if provider := config.GetProvider(providerID); provider != nil && strings.TrimSpace(provider.EnvVar) != "" && apiKey != "" {
 		env[strings.TrimSpace(provider.EnvVar)] = apiKey
 	}
-	switch providerID {
-	case "opencode", "opencode-go":
+	if providerID != "" {
 		env["OPENCODE_PROVIDER"] = providerID
 		if model != "" {
 			env["OPENCODE_MODEL"] = model

@@ -61,7 +61,14 @@ func ensureNanoClawSourceAssets(srcDir, profileDir string) error {
 }
 
 func patchNanoClawSourceRuntime(srcDir string) error {
-	if err := patchNanoClawOpenCodeProvider(filepath.Join(srcDir, "container", "agent-runner", "src", "providers", "opencode.ts")); err != nil {
+	if err := patchNanoClawDockerfile(filepath.Join(srcDir, "container", "Dockerfile")); err != nil {
+		return fmt.Errorf("patch NanoClaw Dockerfile: %w", err)
+	}
+	providersDir := filepath.Join(srcDir, "container", "agent-runner", "src", "providers")
+	if err := ensureNanoClawOpenCodeProvider(filepath.Join(providersDir, "opencode.ts"), filepath.Join(providersDir, "index.ts")); err != nil {
+		return fmt.Errorf("ensure NanoClaw OpenCode provider: %w", err)
+	}
+	if err := patchNanoClawOpenCodeProvider(filepath.Join(providersDir, "opencode.ts")); err != nil {
 		return fmt.Errorf("patch NanoClaw OpenCode provider: %w", err)
 	}
 	if err := patchNanoClawPollLoopRouting(filepath.Join(srcDir, "container", "agent-runner", "src", "poll-loop.ts")); err != nil {
@@ -76,6 +83,161 @@ func patchNanoClawSourceRuntime(srcDir string) error {
 	return nil
 }
 
+func ensureNanoClawOpenCodeProvider(providerPath, indexPath string) error {
+	if strings.TrimSpace(providerPath) == "" {
+		return nil
+	}
+	if _, err := os.Stat(providerPath); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(providerPath), 0700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(providerPath, []byte(defaultOpenCodeProviderSource), 0600); err != nil {
+			return err
+		}
+	}
+	return ensureNanoClawProviderIndexImport(indexPath, "import './opencode.js';")
+}
+
+func ensureNanoClawProviderIndexImport(indexPath, importLine string) error {
+	indexPath = strings.TrimSpace(indexPath)
+	importLine = strings.TrimSpace(importLine)
+	if indexPath == "" || importLine == "" {
+		return nil
+	}
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := os.MkdirAll(filepath.Dir(indexPath), 0700); err != nil {
+				return err
+			}
+			return os.WriteFile(indexPath, []byte(importLine+"\n"), 0600)
+		}
+		return err
+	}
+	content := string(data)
+	if strings.Contains(content, importLine) {
+		return nil
+	}
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	content += importLine + "\n"
+	return os.WriteFile(indexPath, []byte(content), 0600)
+}
+
+const defaultOpenCodeProviderSource = `import { registerProvider } from './provider-registry.js';
+import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
+
+type ChatMessage = { role: 'system' | 'user'; content: string };
+
+function normalizeOpenRouterModel(model: string | undefined): string {
+  const value = model || process.env.OPENCODE_MODEL || 'openai/gpt-oss-20b:free';
+  return value.replace(/^openrouter\//, '');
+}
+
+function providerName(): string {
+  return process.env.OPENCODE_PROVIDER || 'openrouter';
+}
+
+function providerAPIKey(): string | undefined {
+  return process.env.OPENCODE_API_KEY || process.env.OPENROUTER_API_KEY;
+}
+
+class OpenCodeProvider implements AgentProvider {
+  readonly supportsNativeSlashCommands = false;
+
+  constructor(private readonly options: ProviderOptions = {}) {}
+
+  isSessionInvalid(): boolean {
+    return false;
+  }
+
+  query(input: QueryInput): AgentQuery {
+    const controller = new AbortController();
+    return {
+      push: () => {},
+      end: () => {},
+      events: this.run(input, controller),
+      abort: () => controller.abort(),
+    };
+  }
+
+  private async *run(input: QueryInput, controller: AbortController): AsyncGenerator<ProviderEvent> {
+    if (providerName() !== 'openrouter') {
+      yield { type: 'error', message: ` + "`" + `Unsupported OPENCODE_PROVIDER ${providerName()}; only openrouter is available in this NanoClaw container` + "`" + `, retryable: false };
+      return;
+    }
+    const apiKey = providerAPIKey();
+    if (!apiKey) {
+      yield { type: 'error', message: 'OPENCODE_API_KEY or OPENROUTER_API_KEY is not configured', retryable: false };
+      return;
+    }
+
+    const messages: ChatMessage[] = [];
+    if (input.systemContext?.instructions) {
+      messages.push({ role: 'system', content: input.systemContext.instructions });
+    }
+    messages.push({ role: 'user', content: input.prompt });
+
+    yield { type: 'init', continuation: ` + "`" + `opencode-${Date.now()}` + "`" + ` };
+    yield { type: 'activity' };
+
+    try {
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Authorization: ` + "`" + `Bearer ${apiKey}` + "`" + `,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://vulpineos.com',
+          'X-Title': 'VulpineOS',
+        },
+        body: JSON.stringify({ model: normalizeOpenRouterModel(this.options.model), messages }),
+      });
+      yield { type: 'activity' };
+      const body = await res.text();
+      if (!res.ok) {
+        yield { type: 'error', message: ` + "`" + `OpenRouter returned ${res.status}: ${body}` + "`" + `, retryable: res.status >= 500 || res.status === 429 };
+        return;
+      }
+      const parsed = JSON.parse(body) as { choices?: Array<{ message?: { content?: string } }> };
+      yield { type: 'result', text: parsed.choices?.[0]?.message?.content || '' };
+    } catch (err) {
+      yield { type: 'error', message: err instanceof Error ? err.message : String(err), retryable: false };
+    }
+  }
+}
+
+registerProvider('opencode', (options) => new OpenCodeProvider(options));
+`
+
+func patchNanoClawDockerfile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	content := string(data)
+	if strings.Contains(content, "\n        ripgrep \\\n") {
+		return nil
+	}
+	for _, oldValue := range []string{
+		"        git \\\n        tini \\\n",
+		"        git \\\n        tini \\\r\n",
+	} {
+		if strings.Contains(content, oldValue) {
+			content = strings.Replace(content, oldValue, "        git \\\n        ripgrep \\\n        tini \\\n", 1)
+			return os.WriteFile(path, []byte(content), 0600)
+		}
+	}
+	return nil
+}
+
 func patchNanoClawOpenCodeProvider(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -85,6 +247,50 @@ func patchNanoClawOpenCodeProvider(path string) error {
 		return err
 	}
 	content := string(data)
+	content = strings.Replace(content,
+		"const supportsToolCalls = model !== 'openrouter/free';",
+		"const supportsToolCalls = !(provider === 'openrouter' && model?.includes(':free'));",
+		1,
+	)
+	if strings.Contains(content, "const supportsToolCalls = !(provider === 'openrouter' && model?.includes(':free'));\n") &&
+		!strings.Contains(content, "const effectiveSmallModel = smallModel || (!supportsToolCalls ? model : undefined);") {
+		content = strings.Replace(content,
+			"const supportsToolCalls = !(provider === 'openrouter' && model?.includes(':free'));\n",
+			"const supportsToolCalls = !(provider === 'openrouter' && model?.includes(':free'));\n  const effectiveSmallModel = smallModel || (!supportsToolCalls ? model : undefined);\n",
+			1,
+		)
+	}
+	if strings.Contains(content, "const effectiveSmallModel = smallModel || (!supportsToolCalls ? model : undefined);\n") &&
+		!strings.Contains(content, "const disabledTools = Object.fromEntries(") {
+		content = strings.Replace(content,
+			"const effectiveSmallModel = smallModel || (!supportsToolCalls ? model : undefined);\n",
+			"const effectiveSmallModel = smallModel || (!supportsToolCalls ? model : undefined);\n  const disabledTools = Object.fromEntries(\n    ['invalid', 'question', 'bash', 'read', 'glob', 'grep', 'edit', 'write', 'task', 'webfetch', 'todowrite', 'websearch', 'skill', 'apply_patch']\n      .map((tool) => [tool, false]),\n  );\n",
+			1,
+		)
+	}
+	content = strings.Replace(content,
+		"...(smallModel ? { small_model: smallModel } : {}),",
+		"...(effectiveSmallModel ? { small_model: effectiveSmallModel } : {}),",
+		1,
+	)
+	content = strings.Replace(content,
+		"...(model === 'openrouter/free' ? { tools: { bash: false } } : {}),",
+		"...(!supportsToolCalls ? { tools: { bash: false } } : {}),",
+		1,
+	)
+	content = strings.Replace(content,
+		"...(!supportsToolCalls ? { tools: { bash: false } } : {}),",
+		"...(!supportsToolCalls ? { tools: disabledTools } : {}),",
+		1,
+	)
+	if strings.Contains(content, "...(!supportsToolCalls ? { tools: disabledTools } : {}),") &&
+		!strings.Contains(content, "agent: { build: { tools: disabledTools, maxSteps: 1 }, plan: { tools: disabledTools, maxSteps: 1 } }") {
+		content = strings.Replace(content,
+			"...(!supportsToolCalls ? { tools: disabledTools } : {}),",
+			"...(!supportsToolCalls ? { tools: disabledTools } : {}),\n    ...(!supportsToolCalls ? { agent: { build: { tools: disabledTools, maxSteps: 1 }, plan: { tools: disabledTools, maxSteps: 1 } } } : {}),",
+			1,
+		)
+	}
 	newValue := "options: { apiKey: process.env.OPENCODE_API_KEY || 'placeholder', baseURL: proxyUrl },"
 	if strings.Contains(content, newValue) {
 	} else {
@@ -119,6 +325,7 @@ func patchNanoClawOpenCodeProvider(path string) error {
     role?: string;
     finish?: string;
     time?: { completed?: number };
+    error?: { name?: string; data?: { message?: string } };
   };
   parts?: Array<{ type?: string; text?: string }>;
 };
@@ -134,6 +341,14 @@ function assistantTextFromEntry(entry: OpenCodeMessageEntry): string | null {
     }
   }
   return text || null;
+}
+
+function assistantErrorFromEntry(entry: OpenCodeMessageEntry): string | null {
+  const info = entry.info;
+  if (info?.role !== 'assistant') return null;
+  if (!info.time?.completed && info.finish !== 'stop') return null;
+  const message = entry.info?.error?.data?.message || entry.info?.error?.name;
+  return typeof message === 'string' && message ? ` + "`Error: ${message}`" + ` : null;
 }
 
 async function fetchCompletedAssistantText(
@@ -152,6 +367,8 @@ async function fetchCompletedAssistantText(
     for (const entry of ((res.data ?? []) as OpenCodeMessageEntry[])) {
       const completedAt = typeof entry.info?.time?.completed === 'number' ? entry.info.time.completed : 0;
       if (completedAt > 0 && completedAt < promptStartedAt - 1000) continue;
+      const error = assistantErrorFromEntry(entry);
+      if (error !== null) text = error;
       const candidate = assistantTextFromEntry(entry);
       if (candidate !== null) text = candidate;
     }
@@ -170,6 +387,30 @@ function sleepMs(ms: number): Promise<void> {
 		if strings.Contains(content, helperAnchor) {
 			content = strings.Replace(content, helperAnchor, helper+helperAnchor, 1)
 		}
+	}
+	if strings.Contains(content, "type OpenCodeMessageEntry = {") &&
+		!strings.Contains(content, "error?: { name?: string; data?: { message?: string } };") {
+		content = strings.Replace(content,
+			"  };\n  parts?: Array<{ type?: string; text?: string }>;",
+			"    error?: { name?: string; data?: { message?: string } };\n  };\n  parts?: Array<{ type?: string; text?: string }>;",
+			1,
+		)
+	}
+	if strings.Contains(content, "function assistantTextFromEntry") &&
+		!strings.Contains(content, "function assistantErrorFromEntry") {
+		content = strings.Replace(content,
+			"async function fetchCompletedAssistantText(",
+			"function assistantErrorFromEntry(entry: OpenCodeMessageEntry): string | null {\n  const info = entry.info;\n  if (info?.role !== 'assistant') return null;\n  if (!info.time?.completed && info.finish !== 'stop') return null;\n  const message = entry.info?.error?.data?.message || entry.info?.error?.name;\n  return typeof message === 'string' && message ? `Error: ${message}` : null;\n}\n\nasync function fetchCompletedAssistantText(",
+			1,
+		)
+	}
+	if strings.Contains(content, "const candidate = assistantTextFromEntry(entry);") &&
+		!strings.Contains(content, "const error = assistantErrorFromEntry(entry);") {
+		content = strings.Replace(content,
+			"const candidate = assistantTextFromEntry(entry);",
+			"const error = assistantErrorFromEntry(entry);\n      if (error !== null) text = error;\n      const candidate = assistantTextFromEntry(entry);",
+			1,
+		)
 	}
 	idleConst := "    const IDLE_TIMEOUT_MS = Number(process.env.OPENCODE_IDLE_TIMEOUT_MS) || 300_000;\n"
 	if strings.Contains(content, idleConst) && !strings.Contains(content, "OPENCODE_TURN_TIMEOUT_MS") {
@@ -230,6 +471,9 @@ function sleepMs(ms: number): Promise<void> {
 	}
 	if strings.Contains(content, "        let resultText = '';\n") && !strings.Contains(content, "let resultText = completedAssistantText ?? '';") {
 		content = strings.Replace(content, "        let resultText = '';\n", "        let resultText = completedAssistantText ?? '';\n", 1)
+	}
+	if strings.Contains(content, "    mcp,\n") && !strings.Contains(content, "mcp: supportsToolCalls ? mcp : {},") {
+		content = strings.Replace(content, "    mcp,\n", "    mcp: supportsToolCalls ? mcp : {},\n", 1)
 	}
 	return os.WriteFile(path, []byte(content), 0600)
 }

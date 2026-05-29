@@ -479,11 +479,12 @@ ON CONFLICT(agent_group_id) DO UPDATE SET
 }
 
 func nanoClawContainerProvider(provider string) string {
-	switch strings.TrimSpace(provider) {
-	case "opencode-go":
-		return "opencode"
+	provider = strings.TrimSpace(provider)
+	switch provider {
+	case "", "claude", "mock", "codex", "opencode":
+		return provider
 	default:
-		return strings.TrimSpace(provider)
+		return "opencode"
 	}
 }
 

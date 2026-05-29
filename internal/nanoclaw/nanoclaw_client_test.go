@@ -455,3 +455,53 @@ VALUES ('ag-1', 'claude', 'old-model', '2026-01-01T00:00:00Z', '["vulpine-browse
 		t.Fatalf("browser cdp = %q, want host.docker.internal route", browser["cdp"])
 	}
 }
+
+func TestRepairVulpineProfileDatabaseRoutesOpenRouterThroughOpenCodeRunner(t *testing.T) {
+	nanoclawDir := t.TempDir()
+	dataDir := filepath.Join(nanoclawDir, "data")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatalf("mkdir data: %v", err)
+	}
+	dbPath := filepath.Join(dataDir, "v2.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`
+CREATE TABLE agent_groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, folder TEXT NOT NULL UNIQUE, agent_provider TEXT, created_at TEXT NOT NULL);
+CREATE TABLE container_configs (
+  agent_group_id TEXT PRIMARY KEY REFERENCES agent_groups(id) ON DELETE CASCADE,
+  provider TEXT,
+  model TEXT,
+  effort TEXT,
+  image_tag TEXT,
+  assistant_name TEXT,
+  max_messages_per_prompt INTEGER,
+  skills TEXT NOT NULL DEFAULT '"all"',
+  mcp_servers TEXT NOT NULL DEFAULT '{}',
+  packages_apt TEXT NOT NULL DEFAULT '[]',
+  packages_npm TEXT NOT NULL DEFAULT '[]',
+  additional_mounts TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL,
+  cli_scope TEXT NOT NULL DEFAULT 'group'
+);
+INSERT INTO agent_groups (id, name, folder, created_at) VALUES ('ag-1', 'existing', 'existing', '2026-01-01T00:00:00Z');
+`)
+	if err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+
+	model := "openrouter/nousresearch/hermes-3-llama-3.1-405b:free"
+	if err := RepairVulpineProfileDatabase(nanoclawDir, "openrouter", model, ""); err != nil {
+		t.Fatalf("RepairVulpineProfileDatabase: %v", err)
+	}
+
+	var provider, gotModel string
+	if err := db.QueryRow(`SELECT provider, model FROM container_configs WHERE agent_group_id = 'ag-1'`).Scan(&provider, &gotModel); err != nil {
+		t.Fatalf("query updated config: %v", err)
+	}
+	if provider != "opencode" || gotModel != model {
+		t.Fatalf("provider/model = %q/%q, want opencode/%s", provider, gotModel, model)
+	}
+}

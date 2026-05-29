@@ -31,13 +31,27 @@ set -euo pipefail
 
 SRC="${VULPINE_NANOCLAW_SRC:-${HOME}/.vulpineos/nanoclaw-src}"
 PROFILE="${VULPINE_NANOCLAW_HOME:-${HOME}/.vulpineos/nanoclaw}"
+NODE_BIN="${VULPINE_NODE_BIN:-node}"
+if [ "$NODE_BIN" = "node" ]; then
+  for _nc in \
+    "$HOME/.nvm/versions/node"/v22*/bin/node \
+    "$HOME/.asdf/installs/nodejs"/22*/bin/node \
+    "$HOME/.fnm/node-versions"/v22*/installation/bin/node \
+    "/opt/homebrew/opt/node@22/bin/node" \
+    "/home/linuxbrew/.linuxbrew/opt/node@22/bin/node"; do
+    if [ -x "$_nc" ]; then NODE_BIN="$_nc"; break; fi
+  done
+  unset _nc
+fi
+NODE_DIR="$(dirname "$NODE_BIN")"
+PATH="$NODE_DIR:$PATH"
 mkdir -p "$PROFILE"
 cd "$PROFILE"
 
 run_tsx() {
     local tsx_bin="${SRC}/node_modules/.bin/tsx"
     if [ -x "$tsx_bin" ]; then
-        exec "$tsx_bin" "$@"
+        exec "$NODE_BIN" "$tsx_bin" "$@"
     fi
     exec pnpm --dir "$SRC" exec tsx "$@"
 }
@@ -45,13 +59,13 @@ run_tsx() {
 if [ "${1:-}" = "run" ]; then
     shift
     if [ -f "${SRC}/dist/index.js" ]; then
-        exec node "${SRC}/dist/index.js" "$@"
+        exec "$NODE_BIN" "${SRC}/dist/index.js" "$@"
     fi
     run_tsx "${SRC}/src/index.ts" "$@"
 fi
 
 if [ -f "${SRC}/dist/cli/client.js" ]; then
-    exec node "${SRC}/dist/cli/client.js" "$@"
+    exec "$NODE_BIN" "${SRC}/dist/cli/client.js" "$@"
 fi
 run_tsx "${SRC}/src/cli/client.ts" "$@"
 EOF

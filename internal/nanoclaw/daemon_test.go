@@ -127,6 +127,27 @@ func TestProviderRuntimeEnvIncludesOpenCodeSettings(t *testing.T) {
 	}
 }
 
+func TestProviderRuntimeEnvRoutesOpenRouterThroughOpenCode(t *testing.T) {
+	env := ProviderRuntimeEnv(&config.Config{
+		Provider: "openrouter",
+		Model:    "openrouter/nousresearch/hermes-3-llama-3.1-405b:free",
+		APIKey:   "openrouter-key",
+	})
+
+	if env["OPENCODE_PROVIDER"] != "openrouter" {
+		t.Fatalf("OPENCODE_PROVIDER = %q, want openrouter", env["OPENCODE_PROVIDER"])
+	}
+	if env["OPENCODE_MODEL"] != "openrouter/nousresearch/hermes-3-llama-3.1-405b:free" {
+		t.Fatalf("OPENCODE_MODEL = %q, want OpenRouter model", env["OPENCODE_MODEL"])
+	}
+	if env["OPENCODE_API_KEY"] != "openrouter-key" {
+		t.Fatalf("OPENCODE_API_KEY was not propagated from OpenRouter key")
+	}
+	if env["OPENROUTER_API_KEY"] != "openrouter-key" {
+		t.Fatalf("OPENROUTER_API_KEY was not propagated")
+	}
+}
+
 func TestDaemonStartMergesProviderRuntimeEnv(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
