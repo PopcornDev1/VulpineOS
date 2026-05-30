@@ -212,6 +212,12 @@ var Providers = []Provider{
 		Models:       []string{"github-copilot/claude-sonnet-4-6", "github-copilot/gpt-4.1"},
 		NeedsKey:     true},
 
+	// --- OAuth providers (no API key required from user) ---
+	{ID: "openai-oauth", Name: "OpenAI (ChatGPT Plus)", EnvVar: "OPENAI_ACCESS_TOKEN",
+		DefaultModel: "openai/gpt-4.1",
+		Models:       []string{"openai/gpt-4.1", "openai/gpt-4.1-mini", "openai/o3"},
+		NeedsKey:     false},
+
 	// --- Local providers (no API key) ---
 	{ID: "ollama", Name: "Ollama (Local)", EnvVar: "",
 		DefaultModel: "ollama/llama3.3",
@@ -359,9 +365,17 @@ func (c *Config) HydrateFromNanoClawProfile() bool {
 		}
 	}
 	if providerID := providerIDFromModel(c.Model); providerID != "" {
-		if strings.TrimSpace(c.Provider) == "" || strings.TrimSpace(c.APIKey) == "" {
+		if strings.TrimSpace(c.Provider) == "" {
 			c.Provider = providerID
 			changed = true
+		} else if strings.TrimSpace(c.APIKey) == "" {
+			// Overwrite provider when API key is missing AND the current
+			// provider requires one — but NOT for OAuth providers that
+			// intentionally have no static API key (NeedsKey=false).
+			if p := GetProvider(strings.TrimSpace(c.Provider)); p != nil && p.NeedsKey {
+				c.Provider = providerID
+				changed = true
+			}
 		}
 	}
 	if strings.TrimSpace(c.APIKey) == "" {
@@ -415,6 +429,11 @@ func (c *Config) GenerateNanoClawConfig(vulpineosBinary, camoufoxBinary string) 
 	if provider.EnvVar != "" && apiKey != "" {
 		env[provider.EnvVar] = apiKey
 	}
+	if providerID == "openai-oauth" {
+		if token := readOpenAIOAuthAccessToken(); token != "" {
+			env["OPENAI_API_KEY"] = token
+		}
+	}
 
 	// Build skills entries from global skills config
 	skillEntries := map[string]interface{}{}
@@ -434,8 +453,9 @@ func (c *Config) GenerateNanoClawConfig(vulpineosBinary, camoufoxBinary string) 
 	}
 
 	config := map[string]interface{}{
-		"channels": map[string]interface{}{},
-		"env":      env,
+		"channels":  map[string]interface{}{},
+		"provider":  providerID,
+		"env":       env,
 		"agents": map[string]interface{}{
 			"defaults": map[string]interface{}{
 				"workspace": NanoClawWorkspaceDir(),
@@ -521,6 +541,21 @@ func RepairNanoClawProfile(cdpURL string) error {
 	}
 
 	return writePrivateFile(NanoClawConfigPath(), data)
+}
+
+// readOpenAIOAuthAccessToken reads the access token from the OAuth credentials file.
+func readOpenAIOAuthAccessToken() string {
+	data, err := os.ReadFile(filepath.Join(Dir(), "credentials", "openai-oauth.json"))
+	if err != nil {
+		return ""
+	}
+	var creds struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil || creds.AccessToken == "" {
+		return ""
+	}
+	return creds.AccessToken
 }
 
 func writePrivateFile(path string, data []byte) error {

@@ -1,0 +1,76 @@
+---
+title: "Foxbridge — CDP-to-Firefox Protocol Proxy via Juggler and BiDi"
+description: "Foxbridge translates Chrome DevTools Protocol to Firefox. Run Puppeteer, OpenClaw, and any CDP tool against Camoufox with zero detection."
+---
+
+# Foxbridge
+
+<div style={{ marginTop: '16px', marginBottom: '32px' }}>
+  <img src="/FoxbridgeBanner.jpg" alt="Foxbridge" style={{ width: '100%', borderRadius: '8px' }} />
+</div>
+
+**CDP-to-Firefox Protocol Proxy — via Juggler and WebDriver BiDi**
+
+Run Puppeteer, OpenClaw, and any Chrome DevTools Protocol client against Firefox-based browsers. Foxbridge accepts CDP from the client and translates it to Firefox's native protocols — either Juggler (pipe transport) or WebDriver BiDi (WebSocket). Any tool built for Chrome can control Camoufox or standard Firefox without modification.
+
+**Repository:** [VulpineOS/foxbridge](https://github.com/VulpineOS/foxbridge)
+
+## Why Foxbridge?
+
+AI agent tools speak CDP natively. Firefox uses completely different protocols. Without foxbridge, agents can't use Camoufox's anti-detect fingerprinting — they're stuck with Chrome, which is trivially detectable.
+
+Foxbridge eliminates this gap: it presents a CDP WebSocket that looks exactly like Chrome to the client, but every command is translated and routed through Firefox.
+
+## Architecture
+
+```
+CDP Client (Puppeteer, OpenClaw, etc.)
+  │
+  ▼ WebSocket (ws://localhost:9222)
+┌────────────────────────────────────┐
+│ foxbridge                          │
+│  ├── CDP Server (port 9222)        │
+│  ├── Bridge (CDP → Juggler/BiDi)   │
+│  └── Backend (Juggler or BiDi)     │
+└────────────────────────────────────┘
+  │
+  ▼ Pipe FD 3/4 (Juggler) or WebSocket (BiDi)
+┌────────────────────────────────────┐
+│ Firefox / Camoufox                 │
+└────────────────────────────────────┘
+```
+
+## CDP Coverage Snapshot
+
+The authoritative answer now comes from:
+
+```bash
+foxbridge doctor
+```
+
+Current snapshot on `main`:
+
+- `662` upstream CDP methods in the bundled protocol snapshot
+- `89` implemented methods
+- `203` stubbed compatibility methods
+- `370` missing methods
+- `8` foxbridge-only extensions
+
+The most complete areas today are `DOM`, `Page`, `Target`, `Network`, `Fetch`, `Runtime`, `Input`, `Emulation`, `IO`, and `Performance`. Compatibility stubs still exist for unimplemented or low-priority domains, and product-specific `Page.*` extensions are reported separately by the doctor command.
+
+## Part of VulpineOS
+
+Foxbridge is a core component of [VulpineOS](https://vulpineos.com) — operate stealth and secure OpenClaw agents at scale. In VulpineOS, foxbridge runs as an **embedded CDP server** sharing a single Camoufox instance with the kernel, enabling agents to browse with per-agent fingerprints and context isolation.
+
+- [VulpineOS Documentation](https://docs.vulpineos.com)
+- [VulpineOS Repository](https://github.com/VulpineOS/VulpineOS)
+
+---
+
+## See also
+
+- [Quick Start](/quick-start) — Install and run foxbridge in 2 minutes
+- [Architecture](/architecture) — How CDP-to-Firefox translation works under the hood
+- [CDP Domain Coverage](/cdp-coverage) — Current coverage snapshot and major supported areas
+- [VulpineOS Integration](/vulpineos) — Embedded foxbridge for AI browser agents
+- [Foxbridge vs Alternatives](/comparison) — Compare with native BiDi, Playwright, and Chrome

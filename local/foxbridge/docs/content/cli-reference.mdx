@@ -1,0 +1,142 @@
+---
+title: "CLI Reference — Foxbridge Command Line Options"
+description: "All foxbridge CLI flags: --binary, --port, --backend, --headless, --bidi-port, --bidi-url, and more."
+---
+
+# CLI Reference
+
+## Usage
+
+```bash
+foxbridge [flags]
+foxbridge doctor [--format text|json]
+foxbridge replay --recording /path/to/trace.jsonl [--port 9222 | --socket /tmp/foxbridge.sock]
+```
+
+## Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--port` | int | `9222` | CDP WebSocket server port |
+| `--socket` | string | (none) | Unix-domain socket path for the CDP HTTP/WebSocket server |
+| `--binary` | string | (auto-detect) | Path to Firefox or Camoufox binary |
+| `--headless` | bool | `false` | Run browser in headless mode |
+| `--profile` | string | (temporary) | Firefox profile directory |
+| `--backend` | string | `juggler` | Backend protocol: `juggler` or `bidi` |
+| `--bidi-url` | string | (none) | BiDi WebSocket URL (skip browser launch) |
+| `--bidi-port` | int | `9223` | Port for BiDi WebSocket when auto-launching |
+| `--record` | string | (none) | Path to write a JSONL CDP wire capture |
+| `--deterministic-time` | int | `0` | Base epoch in milliseconds for deterministic `Date.now` / `performance.now` injection |
+| `--deterministic-seed` | uint | `0` | Seed for deterministic `Math.random` / `crypto.getRandomValues` injection |
+
+## Doctor Command
+
+```bash
+foxbridge doctor
+foxbridge doctor --format json
+```
+
+Prints a protocol coverage report against the committed upstream CDP snapshot bundled with foxbridge. This is the most current way to answer which methods are implemented, stubbed, missing, or exposed as foxbridge extensions.
+
+## Examples
+
+### Default (Juggler + Camoufox)
+
+```bash
+foxbridge --binary /path/to/camoufox --port 9222 --headless
+```
+
+Launches Camoufox with Juggler pipe transport and starts the CDP server on port 9222.
+
+### BiDi + Firefox
+
+```bash
+foxbridge --backend bidi --binary /path/to/firefox --port 9222 --bidi-port 9224 --headless
+```
+
+Launches Firefox with BiDi WebSocket on port 9224, connects to it, and starts the CDP server on port 9222.
+
+### Connect to Existing BiDi Endpoint
+
+```bash
+foxbridge --backend bidi --bidi-url ws://localhost:9224/session/abc --port 9222
+```
+
+Skips browser launch entirely. Connects to an already-running Firefox BiDi endpoint.
+
+### Serve over a Unix Socket
+
+```bash
+foxbridge --binary /path/to/camoufox --socket /tmp/foxbridge.sock --headless
+```
+
+Skips TCP port allocation and serves CDP discovery plus WebSocket traffic through a Unix domain socket. Clients should keep using the normal browser WebSocket path, for example `ws://localhost/devtools/browser/foxbridge`, but must dial it with their library's Unix-socket transport or `socketPath` option.
+
+### Deterministic Runtime for Snapshot Tests
+
+```bash
+foxbridge --binary /path/to/camoufox --deterministic-time 1700000000000 --deterministic-seed 42 --headless
+```
+
+Injects a deterministic runtime prelude into page sessions so `Date.now`, `performance.now`, `Math.random`, and `crypto.getRandomValues` return repeatable values. This is useful for low-flake screenshot, snapshot, and fixture-capture workflows.
+
+### Record a Live Session
+
+```bash
+foxbridge --binary /path/to/camoufox --record ./trace.jsonl --headless
+```
+
+Writes each inbound and outbound CDP frame to a JSONL file. This is intended for bug reproduction, fixture capture, and regression tests against a known client session.
+
+### Replay a Captured Session
+
+```bash
+foxbridge replay --recording ./trace.jsonl --port 9222
+```
+
+Starts a lightweight replay server that serves the captured discovery endpoints and replays the recorded browser-level CDP exchange. No browser process is launched.
+
+### Custom Profile
+
+```bash
+foxbridge --binary /path/to/camoufox --profile ~/.foxbridge-profile --headless
+```
+
+Uses a persistent Firefox profile directory for cookies and storage.
+
+## Binary Auto-Detection
+
+When `--binary` is not specified, foxbridge searches for browser binaries in the following order:
+
+1. `camoufox` in `$PATH`
+2. Platform-specific default locations for Firefox
+
+## Startup Sequence
+
+1. Parse flags and select backend (Juggler or BiDi)
+2. Launch browser process (or connect to `--bidi-url`)
+3. Enable `Browser` domain with `attachToDefaultContext: true`
+4. Set up event subscriptions (Juggler/BiDi events to CDP)
+5. Optionally enable JSONL wire recording if `--record` is set
+6. Start CDP WebSocket server on `--port`
+7. Wait for SIGINT/SIGTERM or browser exit
+
+## CDP Endpoints
+
+Once running, foxbridge exposes standard Chrome DevTools Protocol HTTP endpoints:
+
+| Endpoint | Description |
+|----------|-------------|
+| `http://localhost:9222/json/version` | Browser version info |
+| `http://localhost:9222/json/list` | Open targets/tabs |
+| `ws://localhost:9222/devtools/browser/foxbridge` | Browser-level WebSocket |
+
+In Unix-socket mode, the same HTTP paths and WebSocket paths are exposed, but the connection rides over the configured socket path instead of a TCP port.
+
+---
+
+## See also
+
+- [Quick Start](/quick-start) — Install and run foxbridge in 2 minutes
+- [Juggler Backend](/juggler-backend) — Pipe transport for Camoufox
+- [BiDi Backend](/bidi-backend) — WebDriver BiDi support for Firefox

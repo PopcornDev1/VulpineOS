@@ -379,7 +379,8 @@ func RepairVulpineProfileDatabaseFromConfig(nanoclawDir, configPath string) erro
 		return fmt.Errorf("read NanoClaw runtime config: %w", err)
 	}
 	var cfg struct {
-		Agents struct {
+		Provider string `json:"provider"`
+		Agents   struct {
 			Defaults struct {
 				Model struct {
 					Primary string `json:"primary"`
@@ -393,8 +394,12 @@ func RepairVulpineProfileDatabaseFromConfig(nanoclawDir, configPath string) erro
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("parse NanoClaw runtime config: %w", err)
 	}
+	provider := strings.TrimSpace(cfg.Provider)
 	model := strings.TrimSpace(cfg.Agents.Defaults.Model.Primary)
-	return RepairVulpineProfileDatabase(nanoclawDir, providerFromRuntimeModel(model), model, cfg.Browser.CDPURL)
+	if provider == "" {
+		provider = providerFromRuntimeModel(model)
+	}
+	return RepairVulpineProfileDatabase(nanoclawDir, provider, model, cfg.Browser.CDPURL)
 }
 
 func providerFromRuntimeModel(model string) string {
@@ -483,6 +488,8 @@ func nanoClawContainerProvider(provider string) string {
 	switch provider {
 	case "", "claude", "mock", "codex", "opencode":
 		return provider
+	case "openai-oauth":
+		return "codex"
 	default:
 		return "opencode"
 	}

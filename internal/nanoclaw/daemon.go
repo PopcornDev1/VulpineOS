@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"vulpineos/internal/auth"
 	"vulpineos/internal/config"
 )
 
@@ -245,8 +246,18 @@ func ProviderRuntimeEnv(cfg *config.Config) map[string]string {
 	providerID := strings.TrimSpace(cfg.Provider)
 	model := strings.TrimSpace(cfg.Model)
 	apiKey := strings.TrimSpace(cfg.APIKey)
-	if provider := config.GetProvider(providerID); provider != nil && strings.TrimSpace(provider.EnvVar) != "" && apiKey != "" {
-		env[strings.TrimSpace(provider.EnvVar)] = apiKey
+
+	switch providerID {
+	case "openai-oauth":
+		if token, err := auth.ValidAccessToken(); err == nil && token != "" {
+			apiKey = token
+			env["OPENAI_API_KEY"] = token
+			env["OPENAI_ACCESS_TOKEN"] = token
+		}
+	default:
+		if provider := config.GetProvider(providerID); provider != nil && strings.TrimSpace(provider.EnvVar) != "" && apiKey != "" {
+			env[strings.TrimSpace(provider.EnvVar)] = apiKey
+		}
 	}
 	if providerID != "" {
 		env["OPENCODE_PROVIDER"] = providerID

@@ -461,6 +461,7 @@ VALUES ('ag-1', 'claude', 'old-model', '2026-01-01T00:00:00Z', '"all"', '{}', '[
 
 	configPath := filepath.Join(t.TempDir(), "nanoclaw.json")
 	if err := os.WriteFile(configPath, []byte(`{
+  "provider": "opencode",
   "agents":{"defaults":{"model":{"primary":"opencode/deepseek-v4-free"}}},
   "browser":{"enabled":true,"headless":true,"cdpUrl":"ws://127.0.0.1:45555/devtools/browser/scoped"}
 }`), 0600); err != nil {

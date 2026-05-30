@@ -1,9 +1,9 @@
-github.com/VulpineOS/foxbridge v0.1.2-0.20260429081009-86aa95f27df5 h1:rkF98qThI1frV+5+uudkPACezu5Mi+fT0cu/KtqU/Lw=
-github.com/VulpineOS/foxbridge v0.1.2-0.20260429081009-86aa95f27df5/go.mod h1:WEAs/DHBRgEPBZ9nYxI7Fql+ZQsgMP00Fh2hdjiLbBc=
 github.com/VulpineOS/foxbridge v0.1.2-0.20260528130025-7dee166567d8 h1:xoWOtWerzyFutxc93CbbDDPBj5E+iinXhyzoOHhq2bw=
 github.com/VulpineOS/foxbridge v0.1.2-0.20260528130025-7dee166567d8/go.mod h1:WEAs/DHBRgEPBZ9nYxI7Fql+ZQsgMP00Fh2hdjiLbBc=
 github.com/VulpineOS/mobilebridge v0.1.0 h1:nyAkPYnFcMui6i53lr+3bstf4XcTurAFdSANbMHFgiw=
 github.com/VulpineOS/mobilebridge v0.1.0/go.mod h1:/dYC0xaP6T5YDaJcWvOfj0d1KmSkKbJoTC+p1nKUxkE=
+github.com/VulpineOS/vulpine-networklab v0.0.0-20260530001223-fe4deb2a5ad5 h1:6PdKzp+dhXgGAkUa3wVE6S8VgZzlJNJp7ZwKvOSERn0=
+github.com/VulpineOS/vulpine-networklab v0.0.0-20260530001223-fe4deb2a5ad5/go.mod h1:m1W6MPz9wqKADpRBK2gFRk4OvFRMOhik1f4jUExw5Z0=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
 github.com/atotto/clipboard v0.1.4/go.mod h1:ZY9tmq7sm5xIbd9bOK4onWV4S6X0u6GY7Vn0Yu86PYI=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=
@@ -48,8 +48,6 @@ github.com/mattn/go-localereader v0.0.1 h1:ygSAOl7ZXTx4RdPYinUpg6W99U8jWvWi9Ye2J
 github.com/mattn/go-localereader v0.0.1/go.mod h1:8fBrzywKY7BI3czFoHkuzRoWE9C+EiG4R1k4Cjx5p88=
 github.com/mattn/go-runewidth v0.0.19 h1:v++JhqYnZuu5jSKrk9RbgF5v4CGUjqRfBm05byFGLdw=
 github.com/mattn/go-runewidth v0.0.19/go.mod h1:XBkDxAl56ILZc9knddidhrOlY5R/pDhgLpndooCuJAs=
-github.com/mattn/go-sqlite3 v1.14.44 h1:3VSe+xafpbzsLbdr2AWlAZk9yRHiBhTBakioXaCKTF8=
-github.com/mattn/go-sqlite3 v1.14.44/go.mod h1:pjEuOr8IwzLJP2MfGeTb0A35jauH+C2kbHKBr7yXKVQ=
 github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 h1:ZK8zHtRHOkbHy6Mmr5D264iyp3TiX5OmNcI5cIARiQI=
 github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6/go.mod h1:CJlz5H+gyd6CUWT45Oy4q24RdLyn7Md9Vj2/ldJBSIo=
 github.com/muesli/cancelreader v0.2.2 h1:3I4Kt4BQjOR54NavqnDogx/MIoWBFa0StPA8ELUXHmA=

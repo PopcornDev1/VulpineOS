@@ -1,0 +1,113 @@
+---
+title: "Quick Start — Install Foxbridge CDP Proxy for Firefox"
+description: "Install foxbridge and connect Puppeteer or OpenClaw to Firefox in under 2 minutes. Supports Camoufox and standard Firefox."
+---
+
+# Quick Start
+
+## Installation
+
+```bash
+go install github.com/VulpineOS/foxbridge/cmd/foxbridge@latest
+```
+
+## Usage
+
+### With Camoufox (Juggler backend)
+
+```bash
+foxbridge --binary /path/to/camoufox --port 9222 --headless
+```
+
+### With Firefox (BiDi backend)
+
+```bash
+foxbridge --backend bidi --binary /path/to/firefox --port 9222 --bidi-port 9224 --headless
+```
+
+### With a Unix Socket
+
+```bash
+foxbridge --binary /path/to/camoufox --socket /tmp/foxbridge.sock --headless
+curl --unix-socket /tmp/foxbridge.sock http://localhost/json/version
+```
+
+This avoids allocating a local TCP port. HTTP discovery still works through the socket, and WebSocket clients should connect to the normal foxbridge path using their library's Unix-socket transport support.
+
+### Deterministic Runtime for Repeatable Captures
+
+```bash
+foxbridge --binary /path/to/camoufox --deterministic-time 1700000000000 --deterministic-seed 42 --headless
+```
+
+This injects deterministic `Date.now`, `performance.now`, `Math.random`, and `crypto.getRandomValues` shims into page sessions so screenshot and snapshot tests can run with lower flake.
+
+### Record and Replay a CDP Session
+
+```bash
+foxbridge --binary /path/to/camoufox --record ./trace.jsonl --headless
+foxbridge replay --recording ./trace.jsonl --port 9222
+```
+
+Use this when you need to capture a real client session once, then replay the same browser-level traffic later for debugging or regression tests without launching a browser.
+
+### Connect with Puppeteer
+
+```javascript
+const puppeteer = require('puppeteer-core');
+
+const browser = await puppeteer.connect({
+  browserWSEndpoint: 'ws://127.0.0.1:9222/devtools/browser/foxbridge',
+  defaultViewport: null,
+});
+
+const page = await browser.newPage();
+await page.goto('https://example.com');
+console.log(await page.title()); // "Example Domain"
+
+await page.screenshot({ path: 'screenshot.png' });
+await browser.disconnect();
+```
+
+### Connect with OpenClaw
+
+In your `openclaw.json`:
+
+```json
+{
+  "browser": {
+    "cdpUrl": "ws://127.0.0.1:9222",
+    "enabled": true,
+    "headless": true
+  }
+}
+```
+
+## Embedded Mode (VulpineOS)
+
+When used inside VulpineOS, foxbridge runs as an embedded Go library — no separate process. VulpineOS wraps the kernel's Juggler client with foxbridge's bridge and CDP server:
+
+```go
+import (
+    "github.com/VulpineOS/foxbridge/pkg/bridge"
+    "github.com/VulpineOS/foxbridge/pkg/cdp"
+)
+
+// Create bridge wrapping the Juggler client
+sessions := cdp.NewSessionManager()
+server := cdp.NewServer(9222, handler, sessions)
+b := bridge.New(jugglerBackend, sessions, server)
+b.SetupEventSubscriptions()
+// CDP now available at ws://127.0.0.1:9222
+```
+
+See the [VulpineOS integration page](/vulpineos) for the full architecture.
+
+---
+
+## See also
+
+- [Architecture](/architecture) — How CDP-to-Firefox translation works under the hood
+- [Puppeteer Integration](/puppeteer) — Full Puppeteer compatibility guide
+- [OpenClaw Integration](/openclaw) — Use OpenClaw AI agents with Camoufox
+- [CLI Reference](/cli-reference) — All foxbridge command line options
