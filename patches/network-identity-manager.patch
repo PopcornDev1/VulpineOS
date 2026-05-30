@@ -1,239 +1,3 @@
---- /dev/null	2026-05-29 21:51:12
-+++ security/manager/ssl/NetworkIdentityManager.cpp	2026-05-29 21:40:55
-@@ -0,0 +1,200 @@
-+#include "NetworkIdentityManager.h"
-+#include "mozilla/Logging.h"
-+#include "prmem.h"
-+#include "ssl.h"
-+#include "sslproto.h"
-+#include "keyhi.h"
-+#include "sslexp.h"
-+
-+#include <fcntl.h>
-+#include <sys/mman.h>
-+#include <sys/stat.h>
-+#include <unistd.h>
-+#include <string.h>
-+#include <stdlib.h>
-+
-+extern mozilla::LazyLogModule gPIPNSSLog;
-+
-+#define SHMEM_PATH ".vulpineos/network-identities.dat"
-+#define SHMEM_DEFAULT_SIZE 65536
-+#define MAX_IDENTITY_ENTRIES 64
-+
-+namespace mozilla {
-+namespace psm {
-+
-+char* NetworkIdentityManager::sShmemBase = nullptr;
-+size_t NetworkIdentityManager::sShmemSize = 0;
-+bool NetworkIdentityManager::sInitialized = false;
-+
-+nsresult NetworkIdentityManager::Init() {
-+  if (sInitialized) {
-+    return NS_OK;
-+  }
-+
-+  const char* home = getenv("HOME");
-+  if (!home) {
-+    MOZ_LOG(gPIPNSSLog, LogLevel::Warning,
-+            ("NetworkIdentityManager: no HOME env var"));
-+    return NS_ERROR_FAILURE;
-+  }
-+
-+  char dirPath[1024];
-+  snprintf(dirPath, sizeof(dirPath), "%s/.vulpineos", home);
-+  mkdir(dirPath, 0700);
-+
-+  char shmemPath[1024];
-+  snprintf(shmemPath, sizeof(shmemPath), "%s/%s", home, SHMEM_PATH);
-+
-+  int fd = open(shmemPath, O_RDWR | O_CREAT, 0600);
-+  if (fd < 0) {
-+    MOZ_LOG(gPIPNSSLog, LogLevel::Warning,
-+            ("NetworkIdentityManager: open failed: %s", shmemPath));
-+    return NS_ERROR_FAILURE;
-+  }
-+
-+  struct stat st;
-+  if (fstat(fd, &st) < 0) {
-+    close(fd);
-+    return NS_ERROR_FAILURE;
-+  }
-+  if (st.st_size < SHMEM_DEFAULT_SIZE) {
-+    ftruncate(fd, SHMEM_DEFAULT_SIZE);
-+  }
-+  sShmemSize = SHMEM_DEFAULT_SIZE;
-+
-+  sShmemBase = (char*)mmap(nullptr, sShmemSize, PROT_READ, MAP_SHARED, fd, 0);
-+  close(fd);
-+
-+  if (sShmemBase == MAP_FAILED) {
-+    sShmemBase = nullptr;
-+    MOZ_LOG(gPIPNSSLog, LogLevel::Warning,
-+            ("NetworkIdentityManager: mmap failed"));
-+    return NS_ERROR_FAILURE;
-+  }
-+
-+  sInitialized = true;
-+  MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
-+          ("NetworkIdentityManager: initialized (%s)", shmemPath));
-+  return NS_OK;
-+}
-+
-+void NetworkIdentityManager::Shutdown() {
-+  if (sShmemBase && sInitialized) {
-+    munmap(sShmemBase, sShmemSize);
-+    sShmemBase = nullptr;
-+    sInitialized = false;
-+  }
-+}
-+
-+void NetworkIdentityManager::Refresh() {
-+  if (!sInitialized) {
-+    Init();
-+  }
-+}
-+
-+const char* NetworkIdentityManager::GetIdentityForContext(
-+    uint64_t contextId) {
-+  if (!sInitialized && NS_FAILED(Init())) {
-+    return nullptr;
-+  }
-+  if (!sShmemBase || sShmemSize == 0) {
-+    return nullptr;
-+  }
-+
-+  if (sShmemBase[0] != '\0') {
-+    return sShmemBase;
-+  }
-+  return nullptr;
-+}
-+
-+static int ParseHexArray(const char* json, const char* key,
-+                         uint32_t* out, int maxCount) {
-+  const char* p = strstr(json, key);
-+  if (!p) return 0;
-+  p = strchr(p, '[');
-+  if (!p) return 0;
-+  p++;
-+  int count = 0;
-+  while (*p && *p != ']' && count < maxCount) {
-+    while (*p && (*p == ' ' || *p == ',' || *p == '\n' || *p == '\r' || *p == '\t')) p++;
-+    if (*p == ']' || !*p) break;
-+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-+      p += 2;
-+      unsigned long v = 0;
-+      while (*p) {
-+        if (*p >= '0' && *p <= '9') { v = (v << 4) + (*p - '0'); p++; }
-+        else if (*p >= 'a' && *p <= 'f') { v = (v << 4) + (*p - 'a' + 10); p++; }
-+        else if (*p >= 'A' && *p <= 'F') { v = (v << 4) + (*p - 'A' + 10); p++; }
-+        else break;
-+      }
-+      out[count++] = (uint32_t)v;
-+    } else {
-+      p++;
-+    }
-+  }
-+  return count;
-+}
-+
-+SECStatus NetworkIdentityManager::ApplyIdentityToSocket(
-+    PRFileDesc* fd, uint64_t contextId) {
-+  const char* json = GetIdentityForContext(contextId);
-+  if (!json) {
-+    return SECSuccess;
-+  }
-+
-+  MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
-+          ("NetworkIdentityManager: applying identity to socket"));
-+
-+  uint32_t values[MAX_IDENTITY_ENTRIES];
-+
-+  int cipherCount = ParseHexArray(json, "cipher_suites", values, MAX_IDENTITY_ENTRIES);
-+  if (cipherCount > 0) {
-+    const PRUint16* allCiphers = SSL_GetImplementedCiphers();
-+    for (int i = 0; allCiphers[i]; i++) {
-+      SSL_CipherPrefSet(fd, (PRInt32)allCiphers[i], PR_FALSE);
-+    }
-+    for (int i = 0; i < cipherCount; i++) {
-+      SSL_CipherPrefSet(fd, (PRInt32)values[i], PR_TRUE);
-+    }
-+    // Set cipher order to match the identity's cipher preference order.
-+    // This controls the order ciphers appear in the ClientHello, which is
-+    // critical for exact JA3 fingerprint matching.
-+    PRUint16 order[MAX_IDENTITY_ENTRIES];
-+    for (int i = 0; i < cipherCount; i++) {
-+      order[i] = (PRUint16)values[i];
-+    }
-+    SECStatus rv = SSL_CipherSuiteOrderSet(fd, order, (PRUint16)cipherCount);
-+    if (rv != SECSuccess) {
-+      MOZ_LOG(gPIPNSSLog, LogLevel::Warning,
-+              ("NetworkIdentityManager: SSL_CipherSuiteOrderSet failed"));
-+    }
-+  }
-+
-+  int groupCount = ParseHexArray(json, "supported_groups", values, MAX_IDENTITY_ENTRIES);
-+  if (groupCount > 0) {
-+    SSLNamedGroup groups[MAX_IDENTITY_ENTRIES];
-+    for (int i = 0; i < groupCount; i++) {
-+      groups[i] = (SSLNamedGroup)values[i];
-+    }
-+    SSL_NamedGroupConfig(fd, groups, (unsigned int)groupCount);
-+  }
-+
-+  int sigCount = ParseHexArray(json, "sig_algs", values, MAX_IDENTITY_ENTRIES);
-+  if (sigCount > 0) {
-+    SSLSignatureScheme schemes[MAX_IDENTITY_ENTRIES];
-+    for (int i = 0; i < sigCount; i++) {
-+      schemes[i] = (SSLSignatureScheme)values[i];
-+    }
-+    SSL_SignatureSchemePrefSet(fd, schemes, (unsigned int)sigCount);
-+  }
-+
-+  int shareCount = ParseHexArray(json, "key_share_curves", values, MAX_IDENTITY_ENTRIES);
-+  if (shareCount > 0) {
-+    SSL_SendAdditionalKeyShares(fd, (unsigned int)shareCount);
-+  }
-+
-+  return SECSuccess;
-+}
-+
-+}  // namespace psm
-+}  // namespace mozilla
---- /dev/null	2026-05-29 21:51:39
-+++ security/manager/ssl/NetworkIdentityManager.h	2026-05-29 20:35:12
-@@ -0,0 +1,30 @@
-+#ifndef NetworkIdentityManager_h__
-+#define NetworkIdentityManager_h__
-+
-+#include <cstdint>
-+#include "prtypes.h"
-+#include "prio.h"
-+#include "seccomon.h"
-+#include "nsError.h"
-+
-+namespace mozilla {
-+namespace psm {
-+
-+class NetworkIdentityManager {
-+public:
-+  static const char* GetIdentityForContext(uint64_t contextId);
-+  static SECStatus ApplyIdentityToSocket(PRFileDesc* fd, uint64_t contextId);
-+  static void Refresh();
-+  static nsresult Init();
-+  static void Shutdown();
-+
-+private:
-+  static char* sShmemBase;
-+  static size_t sShmemSize;
-+  static bool sInitialized;
-+};
-+
-+}  // namespace psm
-+}  // namespace mozilla
-+
-+#endif  // NetworkIdentityManager_h__
 diff --git a/security/manager/ssl/moz.build b/security/manager/ssl/moz.build
 index e99dd0644e..6eb4c4d97c 100644
 --- a/security/manager/ssl/moz.build
@@ -283,3 +47,164 @@ index 8e77933a89..165f920f8a 100644
    return NS_OK;
  }
  
+diff --git a/security/nss/lib/ssl/ssl3ext.c b/security/nss/lib/ssl/ssl3ext.c
+index 30b6289da7..6890f7bb82 100644
+--- a/security/nss/lib/ssl/ssl3ext.c
++++ b/security/nss/lib/ssl/ssl3ext.c
+@@ -876,6 +876,62 @@ ssl_ConstructExtensions(sslSocket *ss, sslBuffer *buf, SSLHandshakeType message)
+         goto loser;
+     }
+ 
++    /* vulpine-networklab: reorder extensions per identity
++     * Parse the built extension buffer and reorder entries to match
++     * the identity's extension order list. Entries not in the identity
++     * list are dropped. Types in the identity list not found in the
++     * buffer are silently skipped. */
++    if (ss->identityExtCount > 0 && ss->identityExtOrder && buf->len > 0) {
++        /* Parse buffer into entries */
++        unsigned int entryCount = 0;
++        struct { PRUint16 type; unsigned int offset; unsigned int length; } entries[64];
++        unsigned int pos = 0;
++        while (pos + 4 <= buf->len && entryCount < 64) {
++            PRUint16 etype = (PRUint16)((buf->buf[pos] << 8) | buf->buf[pos + 1]);
++            unsigned int elen = (unsigned int)((buf->buf[pos + 2] << 8) | buf->buf[pos + 3]);
++            if (pos + 4 + elen > buf->len) break;
++            entries[entryCount].type = etype;
++            entries[entryCount].offset = pos;
++            entries[entryCount].length = 4 + elen;
++            entryCount++;
++            pos += 4 + elen;
++        }
++        /* Build reordered buffer */
++        PRUint8 *newBuf = (PRUint8 *)PORT_Alloc(buf->len);
++        if (newBuf) {
++            unsigned int newPos = 0;
++            PRBool used[64];
++            PORT_Memset(used, 0, sizeof(used));
++            for (unsigned int i = 0; i < ss->identityExtCount; i++) {
++                PRUint16 wantType = ss->identityExtOrder[i];
++                for (unsigned int j = 0; j < entryCount; j++) {
++                    if (!used[j] && entries[j].type == wantType) {
++                        PORT_Memcpy(newBuf + newPos,
++                                    buf->buf + entries[j].offset,
++                                    entries[j].length);
++                        newPos += entries[j].length;
++                        used[j] = PR_TRUE;
++                        break;
++                    }
++                }
++            }
++            /* Add any remaining unused extensions at the end */
++            for (unsigned int j = 0; j < entryCount; j++) {
++                if (!used[j]) {
++                    PORT_Memcpy(newBuf + newPos,
++                                buf->buf + entries[j].offset,
++                                entries[j].length);
++                    newPos += entries[j].length;
++                    used[j] = PR_TRUE;
++                }
++            }
++            PORT_Free(buf->buf);
++            buf->buf = newBuf;
++            buf->len = newPos;
++            buf->space = buf->len;
++        }
++    }
++
+     return SECSuccess;
+ 
+ loser:
+diff --git a/security/nss/lib/ssl/sslexp.h b/security/nss/lib/ssl/sslexp.h
+index b205bc6460..c572813c74 100644
+--- a/security/nss/lib/ssl/sslexp.h
++++ b/security/nss/lib/ssl/sslexp.h
+@@ -1107,6 +1107,14 @@ typedef struct SSLMaskingContextStr {
+ #define SSL_SetESNIKeyPair(a, b, c, d) SSL_DEPRECATED_EXPERIMENTAL_API
+ #define SSL_EncodeEchConfig(a, b, c, d, e, f, g, h, i) SSL_DEPRECATED_EXPERIMENTAL_API
+ 
++/* vulpine-networklab: control extension set and order per identity */
++#define SSL_IdentityExtensionOrderSet(fd, extensions, count)            \
++    SSL_EXPERIMENTAL_API("SSL_IdentityExtensionOrderSet",               \
++                         (PRFileDesc * _fd,                             \
++                          const PRUint16 *_extensions,                  \
++                          unsigned int _count),                         \
++                         (fd, extensions, count))
++
+ SEC_END_PROTOS
+ 
+ #endif /* __sslexp_h_ */
+diff --git a/security/nss/lib/ssl/sslimpl.h b/security/nss/lib/ssl/sslimpl.h
+index 08b905ecb1..f7c8370fa8 100644
+--- a/security/nss/lib/ssl/sslimpl.h
++++ b/security/nss/lib/ssl/sslimpl.h
+@@ -1188,6 +1188,10 @@ struct sslSocketStr {
+     /* The number of additional shares to generate for the TLS 1.3 ClientHello */
+     unsigned int additionalShares;
+ 
++    /* vulpine-networklab: identity-driven extension filter/order */
++    PRUint16 *identityExtOrder;
++    unsigned int identityExtCount;
++
+     /* SSL3 state info.  Formerly was a pointer */
+     ssl3State ssl3;
+ 
+diff --git a/security/nss/lib/ssl/sslsock.c b/security/nss/lib/ssl/sslsock.c
+index 1d7d07309e..e755ae9f0a 100644
+--- a/security/nss/lib/ssl/sslsock.c
++++ b/security/nss/lib/ssl/sslsock.c
+@@ -499,6 +499,9 @@ ssl_DestroySocketContents(sslSocket *ss)
+     ssl_ClearPRCList(&ss->extensionHooks, NULL);
+ 
+     ssl_FreeEphemeralKeyPairs(ss);
++    PORT_Free(ss->identityExtOrder);
++    ss->identityExtOrder = NULL;
++    ss->identityExtCount = 0;
+     SECITEM_FreeItem(&ss->opt.nextProtoNego, PR_FALSE);
+     ssl3_FreeSniNameArray(&ss->xtnData);
+ 
+@@ -1769,6 +1772,36 @@ SSLExp_CipherSuiteOrderSet(PRFileDesc *fd, const PRUint16 *cipherOrder,
+     return SECSuccess;
+ }
+ 
++/* vulpine-networklab: set identity-driven extension filter/order */
++SECStatus
++SSLExp_IdentityExtensionOrderSet(PRFileDesc *fd, const PRUint16 *extensions,
++                                 unsigned int count)
++{
++    if (!fd || !extensions || !count) {
++        PORT_SetError(SEC_ERROR_INVALID_ARGS);
++        return SECFailure;
++    }
++    sslSocket *ss = ssl_FindSocket(fd);
++    if (!ss) {
++        SSL_DBG(("%d: SSL[%d]: bad socket in IdentityExtensionOrderSet",
++                 SSL_GETPID(), fd));
++        return SECFailure;
++    }
++    PRUint16 *copy = (PRUint16 *)PORT_Alloc(count * sizeof(PRUint16));
++    if (!copy) {
++        return SECFailure;
++    }
++    PORT_Memcpy(copy, extensions, count * sizeof(PRUint16));
++    ssl_Get1stHandshakeLock(ss);
++    ssl_GetSSL3HandshakeLock(ss);
++    PORT_Free(ss->identityExtOrder);
++    ss->identityExtOrder = copy;
++    ss->identityExtCount = count;
++    ssl_ReleaseSSL3HandshakeLock(ss);
++    ssl_Release1stHandshakeLock(ss);
++    return SECSuccess;
++}
++
+ SECStatus
+ NSS_SetDomesticPolicy(void)
+ {
+@@ -4312,6 +4345,8 @@ ssl_NewSocket(PRBool makeLocks, SSLProtocolVariant protocolVariant)
+         ss->namedGroupPreferences[i] = &ssl_named_groups[i];
+     }
+     ss->additionalShares = 0;
++    ss->identityExtOrder = NULL;
++    ss->identityExtCount = 0;
+     PR_INIT_CLIST(&ss->ssl3.hs.remoteExtensions);
+     PR_INIT_CLIST(&ss->ssl3.hs.lastMessageFlight);
+     PR_INIT_CLIST(&ss->ssl3.hs.cipherSpecs);
