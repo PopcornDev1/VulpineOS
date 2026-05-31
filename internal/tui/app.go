@@ -521,13 +521,14 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 					if !ok {
 						return
 					}
-					emitEvent(shared.ConversationEntryMsg{
-						AgentID:   msg.AgentID,
-						Role:      msg.Role,
-						Content:   msg.Content,
-						Tokens:    msg.Tokens,
-						Timestamp: time.Now(),
-					})
+				emitEvent(shared.ConversationEntryMsg{
+					AgentID:      msg.AgentID,
+					Role:         msg.Role,
+					Content:      msg.Content,
+					Tokens:       msg.Tokens,
+					Timestamp:    time.Now(),
+					StreamActive: msg.StreamActive,
+				})
 				}
 			}
 		}()
@@ -1307,7 +1308,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// If matches selected agent, add to conversation panel + clear thinking
 		if msg.AgentID == a.selectedAgentID {
 			a.conversation.SetThinking(false)
-			a.conversation.AddEntryWithDisplay(msg.Role, msg.Content, msg.DisplayContent)
+			if msg.Role == "stream" {
+				a.conversation.UpdateLastAssistant(msg.Content, true)
+			} else if msg.Role == "assistant" && a.conversation.IsLastEntryStreaming() {
+				// Final authoritative message from outbound DB —
+				// replace the streaming entry with the complete message
+				a.conversation.UpdateLastAssistant(msg.Content, false)
+			} else {
+				a.conversation.AddEntryWithDisplay(msg.Role, msg.Content, msg.DisplayContent)
+			}
 			if msg.Role == "assistant" {
 				a.conversation.ForceScrollToBottom()
 			}

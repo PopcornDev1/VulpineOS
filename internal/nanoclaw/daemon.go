@@ -92,6 +92,7 @@ func (d *Daemon) Start() error {
 	if err := prepareNanoClawSourceRuntime(d.nanoclawDir); err != nil {
 		return fmt.Errorf("prepare NanoClaw source runtime: %w", err)
 	}
+	cleanupStreamFiles(d.nanoclawDir)
 	if err := os.Remove(d.socketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale NanoClaw socket: %w", err)
 	}

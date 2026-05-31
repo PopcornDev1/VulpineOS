@@ -61,6 +61,7 @@ type Entry struct {
 	Content        string
 	DisplayContent string
 	renderedLines  []string // pre-rendered markdown lines (set on add)
+	StreamActive   bool
 }
 
 type pasteSnippet struct {
@@ -288,6 +289,15 @@ func (m Model) LatestAssistantContent() string {
 	return ""
 }
 
+// IsLastEntryStreaming returns true if the last conversation entry
+// is currently receiving streamed content.
+func (m Model) IsLastEntryStreaming() bool {
+	if len(m.entries) == 0 {
+		return false
+	}
+	return m.entries[len(m.entries)-1].StreamActive
+}
+
 // LoadMessages loads conversation history from vault messages.
 func (m *Model) LoadMessages(msgs []vault.AgentMessage) {
 	maxWidth := m.contentWidth()
@@ -325,6 +335,30 @@ func (m *Model) AddEntryWithDisplay(role, content, displayContent string) {
 		m.awake = true
 	}
 	m.scrollToBottom()
+}
+
+func (m *Model) UpdateLastAssistant(content string, streamActive bool) {
+	if len(m.entries) == 0 {
+		m.AddEntryWithDisplay("assistant", content, "")
+		return
+	}
+	last := &m.entries[len(m.entries)-1]
+	if last.Role != "assistant" && last.Role != "stream" {
+		m.AddEntryWithDisplay("assistant", content, "")
+		return
+	}
+	last.Role = "assistant"
+	if streamActive {
+		last.Role = "stream"
+	}
+	last.Content = content
+	last.StreamActive = streamActive
+	maxWidth := m.contentWidth()
+	last.renderedLines = renderMarkdown(messageDisplayText(content, last.DisplayContent), maxWidth)
+
+	if streamActive && m.autoScroll {
+		m.scrollToBottom()
+	}
 }
 
 // ForceScrollToBottom re-enables auto-scroll and moves to the latest entry.
@@ -504,6 +538,24 @@ func (m Model) getDisplayLines() []string {
 				} else {
 					rendered = append(rendered, "  "+line)
 				}
+			}
+			if e.StreamActive && len(lines) > 0 {
+				lastLine := rendered[len(rendered)-1]
+				cursor := lipgloss.NewStyle().Faint(true).Render("▌")
+				rendered[len(rendered)-1] = lastLine + cursor
+			}
+		case "stream":
+			marker := shared.RunningStyle.Render("◆ ")
+			for j, line := range lines {
+				if j == 0 {
+					rendered = append(rendered, marker+line)
+				} else {
+					rendered = append(rendered, "  "+line)
+				}
+			}
+			cursor := lipgloss.NewStyle().Faint(true).Render("▌")
+			if len(rendered) > 0 {
+				rendered[len(rendered)-1] = rendered[len(rendered)-1] + cursor
 			}
 		case "system":
 			// System messages: muted dot
