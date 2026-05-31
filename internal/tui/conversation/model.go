@@ -277,6 +277,17 @@ func (m Model) AgentID() string {
 	return m.agentID
 }
 
+// LatestAssistantContent returns the Content of the most recent
+// entry with Role == "assistant", or "" if none exists.
+func (m Model) LatestAssistantContent() string {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].Role == "assistant" {
+			return m.entries[i].Content
+		}
+	}
+	return ""
+}
+
 // LoadMessages loads conversation history from vault messages.
 func (m *Model) LoadMessages(msgs []vault.AgentMessage) {
 	maxWidth := m.contentWidth()

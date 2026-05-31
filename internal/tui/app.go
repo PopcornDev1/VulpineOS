@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -997,6 +998,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "o", "ctrl+o":
 			cmds = append(cmds, a.handleOpenSessionLog())
+		case "ctrl+y":
+			cmds = append(cmds, a.handleYankResponse())
 		case "enter":
 			switch a.focus {
 			case FocusAgentList, FocusAgentDetail, FocusConversation:
@@ -1791,6 +1794,8 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, a.handleOpenSessionLog()
 		case "ctrl+t":
 			a.handleTraceToggle()
+		case "ctrl+y":
+			return a, a.handleYankResponse()
 		case "enter":
 			a.notice = "Agent is still working — wait for the current response"
 			a.noticeTTL = 3
@@ -1823,6 +1828,8 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+t":
 		a.handleTraceToggle()
 		return a, nil
+	case "ctrl+y":
+		return a, a.handleYankResponse()
 	case "enter":
 		text, displayText := a.conversation.InputPayloadAndDisplay()
 		if text != "" && a.selectedAgentID != "" {
@@ -1877,6 +1884,8 @@ func (a App) allowFocusedChatShortcut(msg tea.KeyMsg) bool {
 			return true
 		}
 		return false
+	case "ctrl+y":
+		return true
 	default:
 		return false
 	}
@@ -2084,6 +2093,19 @@ func (a *App) handleTraceToggle() {
 		a.notice = "Trace mode disabled — showing full conversation"
 	}
 	a.noticeTTL = 3
+}
+
+func (a *App) handleYankResponse() tea.Cmd {
+	return func() tea.Msg {
+		content := a.conversation.LatestAssistantContent()
+		if content == "" {
+			return statusNotice{text: "No agent response to copy"}
+		}
+		if err := clipboard.WriteAll(content); err != nil {
+			return statusNotice{text: "Copy failed: " + err.Error()}
+		}
+		return statusNotice{text: "Copied latest agent response"}
+	}
 }
 
 func (a *App) browserWindowLabel() string {
