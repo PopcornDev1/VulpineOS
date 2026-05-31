@@ -100,5 +100,6 @@ go.work.sum
 /go.local.sum
 /internal/extensions/local_*.go
 /patches/local_*.patch
+/additions/security/
 /.worktrees/
 vendor/
