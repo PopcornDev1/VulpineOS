@@ -442,6 +442,8 @@ export class PageHandler {
 
   async ['Page.navigate']({frameId, url, referer}) {
     const browsingContext = this._pageTarget.frameIdToBrowsingContext(frameId);
+    if (!browsingContext)
+      throw new Error(`Cannot navigate: no browsing context for frameId "${frameId}"`);
     let sameDocumentNavigation = false;
     try {
       const uri = NetUtil.newURI(url);
