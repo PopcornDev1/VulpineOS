@@ -342,19 +342,32 @@ class OpenCodeProvider implements AgentProvider {
           let streamContent = '';
           let streamToolCalls: ChatMessage['tool_calls'] = [];
           let streamToolCallAccum: Map<number, { id?: string; name?: string; args?: string }> = new Map();
+          const MAX_STREAM_FILE_SIZE = 256 * 1024;
+          let streamFileSize = 0;
           const streamPath = process.env.STREAM_PATH || '/workspace/stream.jsonl';
           let streamFd: number | null = null;
           try { streamFd = fs.openSync(streamPath, 'w'); } catch (_) {}
 
+          process.on('exit', () => {
+            try { fs.unlinkSync(streamPath); } catch (_) {}
+          });
+
           function streamWriteSync(data: string) {
             if (streamFd === null) return;
+            const line = data + '\n';
+            if (streamFileSize + Buffer.byteLength(line, 'utf8') > MAX_STREAM_FILE_SIZE) {
+              try { fs.ftruncateSync(streamFd, 0); fs.closeSync(streamFd); } catch (_) {}
+              streamFd = null;
+              return;
+            }
             try {
-              fs.writeSync(streamFd, data + '\n');
+              fs.writeSync(streamFd, line);
               fs.fsyncSync(streamFd);
+              streamFileSize += Buffer.byteLength(line, 'utf8');
             } catch (_) {}
           }
 
-          while (true) {
+          readLoop: while (true) {
             const { done, value } = await streamReader.read();
             if (done) break;
             streamBuffer += streamDecoder.decode(value, { stream: true });
@@ -364,7 +377,7 @@ class OpenCodeProvider implements AgentProvider {
               const trimmed = line.trim();
               if (!trimmed || !trimmed.startsWith('data: ')) continue;
               const dataStr = trimmed.slice(6);
-              if (dataStr === '[DONE]') break;
+              if (dataStr === '[DONE]') break readLoop;
               try {
                 const parsed = JSON.parse(dataStr);
                 const choice = parsed.choices?.[0];
