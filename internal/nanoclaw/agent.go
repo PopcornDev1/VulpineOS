@@ -20,10 +20,11 @@ var traceKVSecretPattern = regexp.MustCompile(`(?i)(^|[^?&A-Za-z0-9_])((?:api[_-
 
 // ConversationMsg represents a captured conversation message from an agent.
 type ConversationMsg struct {
-	AgentID string
-	Role    string
-	Content string
-	Tokens  int
+	AgentID      string
+	Role         string
+	Content      string
+	Tokens       int
+	StreamActive bool
 }
 
 // AgentStatus represents an agent's current state.
@@ -525,6 +526,31 @@ func (a *Agent) handleSessionLogLine(line string) {
 			a.lastToolError = ""
 		}
 	}
+}
+
+func (a *Agent) handleStreamContent(content string, streamActive bool) {
+	a.mu.Lock()
+	agentID := a.ID
+	a.mu.Unlock()
+
+	if !streamActive {
+		// Final flush — emit as normal assistant message
+		a.emitConversation(ConversationMsg{
+			AgentID:      agentID,
+			Role:         "assistant",
+			Content:      content,
+			StreamActive: false,
+		})
+		return
+	}
+
+	// Streaming update — send minimal content for TUI to render in-place
+	a.emitConversation(ConversationMsg{
+		AgentID:      agentID,
+		Role:         "stream",
+		Content:      content,
+		StreamActive: true,
+	})
 }
 
 func formatPostFailureWarning(toolName, status, errText string) string {

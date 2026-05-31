@@ -101,6 +101,7 @@ type ConversationEntryMsg struct {
 	DisplayContent string
 	Tokens         int
 	Timestamp      time.Time
+	StreamActive   bool
 }
 
 // AgentSelectedMsg fires when the user selects a different agent.
