@@ -18,6 +18,43 @@ func teaKey(key string) tea.KeyMsg {
 	}
 }
 
+func TestUpdateLastAssistant(t *testing.T) {
+	m := Model{}
+	m.width = 80
+	m.AddEntry("user", "hello")
+	m.AddEntry("assistant", "")
+
+	// First streaming update
+	m.UpdateLastAssistant("Hel", true)
+	if len(m.entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(m.entries))
+	}
+	if m.entries[1].Content != "Hel" {
+		t.Fatalf("expected 'Hel', got %q", m.entries[1].Content)
+	}
+	if !m.entries[1].StreamActive {
+		t.Fatal("expected StreamActive=true")
+	}
+
+	// Second streaming update
+	m.UpdateLastAssistant("Hello", true)
+	if m.entries[1].Content != "Hello" {
+		t.Fatalf("expected 'Hello', got %q", m.entries[1].Content)
+	}
+
+	// Final flush
+	m.UpdateLastAssistant("Hello world!", false)
+	if m.entries[1].Content != "Hello world!" {
+		t.Fatalf("expected 'Hello world!', got %q", m.entries[1].Content)
+	}
+	if m.entries[1].StreamActive {
+		t.Fatal("expected StreamActive=false on final")
+	}
+	if m.entries[1].Role != "assistant" {
+		t.Fatalf("expected role=assistant, got %q", m.entries[1].Role)
+	}
+}
+
 func TestTraceOnlyFiltersToSystemMessages(t *testing.T) {
 	m := New()
 	m.SetSize(80, 20)

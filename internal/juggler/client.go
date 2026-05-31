@@ -48,9 +48,9 @@ func NewClient(transport Transport) *Client {
 }
 
 // DefaultCallTimeout is the default timeout for Call().
-const DefaultCallTimeout = 30 * time.Second
+const DefaultCallTimeout = 60 * time.Second
 
-// Call sends a synchronous RPC request and waits for the response with a default 30-second timeout.
+// Call sends a synchronous RPC request and waits for the response with a default 60-second timeout.
 func (c *Client) Call(sessionID, method string, params interface{}) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultCallTimeout)
 	defer cancel()

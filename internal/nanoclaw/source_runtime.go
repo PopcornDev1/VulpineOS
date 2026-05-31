@@ -127,6 +127,7 @@ func ensureNanoClawProviderIndexImport(indexPath, importLine string) error {
 }
 
 const defaultOpenCodeProviderSource = `import { execSync } from 'child_process';
+import * as fs from 'fs';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
@@ -157,6 +158,9 @@ const WEB_TOOL = {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'The URL to fetch' },
+        viewportOnly: { type: 'boolean', description: 'Only return elements visible in the current viewport (default: true). Saves tokens by omitting off-screen content. Disable for full-page analysis.' },
+        profile: { type: 'string', enum: ['compact', 'expanded', 'full'], description: 'Snapshot detail profile. compact: 180 nodes/90 chars per node (default). expanded: 360/160. full: 800/240.' },
+        maxNodes: { type: 'number', description: 'Maximum number of DOM nodes to return (overrides profile default). Lower values save tokens.' },
       },
       required: ['url'],
     },
@@ -313,6 +317,7 @@ class OpenCodeProvider implements AgentProvider {
               messages,
               tools: [BASH_TOOL, WEB_TOOL],
               tool_choice: 'auto',
+              stream: true,
             }),
           });
 
@@ -331,12 +336,99 @@ class OpenCodeProvider implements AgentProvider {
             return;
           }
 
-          response = (await res.json()) as {
-            choices?: Array<{
-              finish_reason: string;
-              message: ChatMessage & { tool_calls?: ChatMessage['tool_calls'] };
-            }>;
-          };
+          const streamReader = res.body.getReader();
+          const streamDecoder = new TextDecoder();
+          let streamBuffer = '';
+          let streamContent = '';
+          let streamToolCalls: ChatMessage['tool_calls'] = [];
+          let streamToolCallAccum: Map<number, { id?: string; name?: string; args?: string }> = new Map();
+          const MAX_STREAM_FILE_SIZE = 256 * 1024;
+          let streamFileSize = 0;
+          const streamPath = process.env.STREAM_PATH || '/workspace/stream.jsonl';
+          let streamFd: number | null = null;
+          try { streamFd = fs.openSync(streamPath, 'w'); } catch (_) {}
+
+          process.on('exit', () => {
+            try { fs.unlinkSync(streamPath); } catch (_) {}
+          });
+
+          function streamWriteSync(data: string) {
+            if (streamFd === null) return;
+            const line = data + '\n';
+            if (streamFileSize + Buffer.byteLength(line, 'utf8') > MAX_STREAM_FILE_SIZE) {
+              try { fs.ftruncateSync(streamFd, 0); fs.closeSync(streamFd); } catch (_) {}
+              streamFd = null;
+              return;
+            }
+            try {
+              fs.writeSync(streamFd, line);
+              fs.fsyncSync(streamFd);
+              streamFileSize += Buffer.byteLength(line, 'utf8');
+            } catch (_) {}
+          }
+
+          readLoop: while (true) {
+            const { done, value } = await streamReader.read();
+            if (done) break;
+            streamBuffer += streamDecoder.decode(value, { stream: true });
+            const lines = streamBuffer.split('\n');
+            streamBuffer = lines.pop() || '';
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data: ')) continue;
+              const dataStr = trimmed.slice(6);
+              if (dataStr === '[DONE]') break readLoop;
+              try {
+                const parsed = JSON.parse(dataStr);
+                const choice = parsed.choices?.[0];
+                if (!choice) continue;
+                const delta = choice.delta || {};
+                if (delta.content) {
+                  streamContent += delta.content;
+                  streamWriteSync(JSON.stringify({ t: delta.content }));
+                }
+                if (delta.tool_calls) {
+                  for (const tc of delta.tool_calls) {
+                    const idx = tc.index || 0;
+                    if (!streamToolCallAccum.has(idx)) streamToolCallAccum.set(idx, {});
+                    const acc = streamToolCallAccum.get(idx)!;
+                    if (tc.id) acc.id = tc.id;
+                    if (tc.function?.name) acc.name = tc.function.name;
+                    if (tc.function?.arguments) acc.args = (acc.args || '') + tc.function.arguments;
+                  }
+                }
+              } catch (_) {}
+            }
+          }
+
+          // Reconstruct tool_calls from accumulated SSE chunks
+          for (const [idx, acc] of streamToolCallAccum) {
+            if (acc.id && acc.name) {
+              streamToolCalls.push({
+                id: acc.id,
+                type: 'function',
+                function: { name: acc.name, arguments: acc.args || '{}' },
+              });
+            }
+          }
+
+          // Write done marker with full accumulated text
+          if (streamContent) {
+            streamWriteSync(JSON.stringify({ done: streamContent }));
+          }
+          if (streamFd !== null) { try { fs.closeSync(streamFd); } catch (_) {} }
+
+          // Build response object compatible with the rest of the tool-call loop
+          response = {
+            choices: [{
+              finish_reason: streamToolCalls.length > 0 ? 'tool_calls' : 'stop',
+              message: {
+                role: 'assistant' as const,
+                content: streamContent || null,
+                ...(streamToolCalls.length > 0 ? { tool_calls: streamToolCalls } : {}),
+              },
+            }],
+          } as unknown as { choices?: Array<{ finish_reason: string; message: ChatMessage & { tool_calls?: ChatMessage['tool_calls'] } }> };
           usedModelIndex = i;
           modelFound = true;
           break;
@@ -374,6 +466,20 @@ class OpenCodeProvider implements AgentProvider {
           tool_calls: message.tool_calls,
         });
 
+        // Build tool info map for structured compression
+        const toolInfo = new Map<string, { name: string; url?: string; command?: string }>();
+        for (const tc of message.tool_calls) {
+          if (tc.type !== 'function') continue;
+          try {
+            const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+            toolInfo.set(tc.id, {
+              name: tc.function.name,
+              url: typeof args.url === 'string' ? args.url : undefined,
+              command: typeof args.command === 'string' ? args.command : undefined,
+            });
+          } catch {}
+        }
+
         for (const tc of message.tool_calls) {
           if (tc.type !== 'function') continue;
 
@@ -395,9 +501,16 @@ class OpenCodeProvider implements AgentProvider {
               }
             } else if (tc.function.name === 'web') {
               const url = String(args.url ?? '');
+              const viewportOnly = args.viewportOnly !== false;
+              const profile = String(args.profile || 'compact');
               try {
                 const cdpUrl = process.env.AGENT_BROWSER_CDP || process.env.AGENT_BROWSER_CDP_URL;
-                const cmd = 'agent-browser connect ' + cdpUrl + ' && agent-browser open ' + JSON.stringify(url) + ' && agent-browser wait --load networkidle && agent-browser snapshot -i';
+                const flags = [];
+                if (viewportOnly) flags.push('--viewport-only');
+                if (profile) flags.push('--profile ' + profile);
+                if (typeof args.maxNodes === 'number' && args.maxNodes > 0) flags.push('--max-nodes ' + args.maxNodes);
+                const flagStr = flags.length > 0 ? ' ' + flags.join(' ') : '';
+                const cmd = 'agent-browser connect ' + cdpUrl + ' && agent-browser open ' + JSON.stringify(url) + ' && agent-browser wait --load networkidle && agent-browser snapshot -i' + flagStr;
                 result = execSync(cmd, {
                   cwd: '/workspace/agent',
                   timeout: 60000,
@@ -406,8 +519,21 @@ class OpenCodeProvider implements AgentProvider {
                   signal: controller.signal,
                 });
               } catch (_err) {
-                const errMsg = _err instanceof Error ? _err.message : String(_err);
-                result = 'agent-browser failed: ' + errMsg;
+                // Retry without flags if CLI rejected them
+                try {
+                  const cdpUrl = process.env.AGENT_BROWSER_CDP || process.env.AGENT_BROWSER_CDP_URL;
+                  const cmd = 'agent-browser connect ' + cdpUrl + ' && agent-browser open ' + JSON.stringify(url) + ' && agent-browser wait --load networkidle && agent-browser snapshot -i';
+                  result = execSync(cmd, {
+                    cwd: '/workspace/agent',
+                    timeout: 60000,
+                    encoding: 'utf-8',
+                    maxBuffer: 50 * 1024 * 1024,
+                    signal: controller.signal,
+                  });
+                } catch (_retryErr) {
+                  const errMsg = _retryErr instanceof Error ? _retryErr.message : String(_retryErr);
+                  result = 'agent-browser failed: ' + errMsg;
+                }
               }
               if (result.length > 50000) {
                 result = result.slice(0, 50000) + '\n... [truncated ' + (result.length - 50000) + ' more bytes]';
@@ -421,6 +547,20 @@ class OpenCodeProvider implements AgentProvider {
 
           messages.push({ role: 'tool', tool_call_id: tc.id, content: result });
           yield { type: 'activity' };
+        }
+
+        // Compress older tool results -- keep last 2 full, use structured summaries for older ones
+        let recentToolResults = 0;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === 'tool') {
+            recentToolResults++;
+            if (recentToolResults > 2 && messages[i].content.length > 2000) {
+              const info = toolInfo.get(messages[i].tool_call_id ?? '');
+              const tag = info?.name || 'tool';
+              const detail = info?.url || info?.command || '';
+              messages[i].content = ` + "`" + `[${tag}] ${detail} -- returned ${messages[i].content.length} bytes -- full content already processed above` + "`" + `;
+            }
+          }
         }
 
         continue;
