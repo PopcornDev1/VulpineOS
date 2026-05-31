@@ -8,9 +8,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// CreateAgent creates a new persistent agent profile.
+// NewID returns a fresh, unique identifier (UUIDv4). Callers should mint this
+// BEFORE generating a fingerprint and use it as BOTH the row id and the
+// fingerprint seed, so each agent gets a guaranteed-unique, stable fingerprint
+// even when display names collide (names have no uniqueness constraint).
+func NewID() string { return uuid.New().String() }
+
+// CreateAgent creates a new persistent agent profile with an auto-generated id.
+// Prefer CreateAgentWithID + NewID so the fingerprint can be seeded by the id.
 func (db *DB) CreateAgent(name, task, fingerprint string) (*Agent, error) {
-	id := uuid.New().String()
+	return db.CreateAgentWithID(uuid.New().String(), name, task, fingerprint)
+}
+
+// CreateAgentWithID creates an agent with a caller-supplied id (from NewID),
+// which should also have been used as the fingerprint seed for per-agent uniqueness.
+func (db *DB) CreateAgentWithID(id, name, task, fingerprint string) (*Agent, error) {
 	now := time.Now().Unix()
 
 	_, err := db.conn.Exec(

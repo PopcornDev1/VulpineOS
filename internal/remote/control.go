@@ -559,11 +559,13 @@ func (api *ControlAPI) createAgentRecord(p agentCreateParams) (*vault.Agent, err
 		return nil, fmt.Errorf("vault not available")
 	}
 
-	fp, err := vault.GenerateFingerprint(p.Name)
+	// Seed the fingerprint by a unique id, not the (possibly-colliding) name.
+	agentID := vault.NewID()
+	fp, err := vault.GenerateFingerprint(agentID)
 	if err != nil {
 		fp = "{}"
 	}
-	agent, err := api.Vault.CreateAgent(p.Name, p.Task, fp)
+	agent, err := api.Vault.CreateAgentWithID(agentID, p.Name, p.Task, fp)
 	if err != nil {
 		return nil, err
 	}

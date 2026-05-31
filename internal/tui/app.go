@@ -2881,14 +2881,17 @@ func (a *App) createAgent(name, description, contextID string) tea.Cmd {
 			return statusNotice{text: "ERROR: No vault available — cannot create agent"}
 		}
 
-		// Generate fingerprint
-		fp, err := vault.GenerateFingerprint(name)
+		// Generate fingerprint seeded by a unique id, NOT the display name:
+		// names have no uniqueness constraint and the seed is deterministic, so
+		// two same-named agents would otherwise get identical fingerprints.
+		agentID := vault.NewID()
+		fp, err := vault.GenerateFingerprint(agentID)
 		if err != nil {
 			fp = "{}" // use empty fingerprint as fallback, don't block creation
 		}
 
 		// Create in vault — this MUST succeed for anything else to work
-		agent, err := a.vault.CreateAgent(name, description, fp)
+		agent, err := a.vault.CreateAgentWithID(agentID, name, description, fp)
 		if err != nil {
 			return statusNotice{text: "ERROR: Failed to create agent: " + err.Error()}
 		}

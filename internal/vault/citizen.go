@@ -7,9 +7,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// CreateCitizen creates a new long-lived identity.
+// CreateCitizen creates a new long-lived identity with an auto-generated id.
+// Prefer CreateCitizenWithID + NewID so the fingerprint can be seeded by the id.
 func (db *DB) CreateCitizen(label, fingerprint, proxyConfig, locale, timezone string) (*Citizen, error) {
-	id := uuid.New().String()
+	return db.CreateCitizenWithID(uuid.New().String(), label, fingerprint, proxyConfig, locale, timezone)
+}
+
+// CreateCitizenWithID creates a citizen with a caller-supplied id (from NewID),
+// which should also have been used as the fingerprint seed for per-identity uniqueness.
+func (db *DB) CreateCitizenWithID(id, label, fingerprint, proxyConfig, locale, timezone string) (*Citizen, error) {
 	now := time.Now().Unix()
 
 	_, err := db.conn.Exec(
