@@ -1137,6 +1137,15 @@ const Page = {
         modifiers: t.Number,
       }
     },
+    'dispatchDragEventWithData': {
+      params: {
+        type: t.Enum(['dragstart', 'dragover', 'drop', 'dragend']),
+        x: t.Number,
+        y: t.Number,
+        data: t.String,
+        dataType: t.Optional(t.String),
+      }
+    },
     'getShadowDOM': {
       params: {
         frameId: t.String,

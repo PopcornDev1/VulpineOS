@@ -550,6 +550,10 @@ export class PageHandler {
     return await this._contentPage.send('dispatchTapEvent', options);
   }
 
+  async ['Page.dispatchDragEventWithData'](options) {
+    return await this._contentPage.send('dispatchDragEventWithData', options);
+  }
+
   async ['Page.dispatchMouseEvent']({type, x, y, button, clickCount, modifiers, buttons}) {
     const win = this._pageTarget._window;
     const sendEvents = async (types) => {

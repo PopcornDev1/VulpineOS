@@ -302,6 +302,7 @@ export class PageAgent {
         describeNode: this._describeNode.bind(this),
         dispatchKeyEvent: this._dispatchKeyEvent.bind(this),
         dispatchDragEvent: this._dispatchDragEvent.bind(this),
+        dispatchDragEventWithData: this._dispatchDragEventWithData.bind(this),
         dispatchTouchEvent: this._dispatchTouchEvent.bind(this),
         dispatchTapEvent: this._dispatchTapEvent.bind(this),
         getContentQuads: this._getContentQuads.bind(this),
@@ -752,6 +753,15 @@ export class PageAgent {
       session?.endDragSession(true);
       return;
     }
+  }
+
+  async _dispatchDragEventWithData({type, x, y, data, dataType}) {
+    const win = this._frameTree.mainFrame().domWindow();
+    // dispatchDragEventWithData comes from a closed-source nsDOMWindowUtils
+    // patch (local_drag_events); degrade gracefully if it isn't in this build.
+    if (typeof win.windowUtils.dispatchDragEventWithData !== 'function')
+      throw new Error('dispatchDragEventWithData is not available in this build');
+    win.windowUtils.dispatchDragEventWithData(type, x, y, data, dataType || 'text/plain');
   }
 
   async _insertText({text}) {
