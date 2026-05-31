@@ -1,9 +1,8 @@
 diff --git a/dom/base/AudioFingerprintManager.cpp b/dom/base/AudioFingerprintManager.cpp
 new file mode 100644
-index 0000000000..f47a35b2e3
 --- /dev/null
 +++ b/dom/base/AudioFingerprintManager.cpp
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,105 @@
 +#include "AudioFingerprintManager.h"
 +#include "nsTHashMap.h"  // Must come before RoverfoxStorageManager.h for template defs
 +#include "nsHashKeys.h"  // For nsStringHashKey
@@ -109,10 +108,8 @@ index 0000000000..f47a35b2e3
 +
 +}  // namespace dom
 +}  // namespace mozilla
-
 diff --git a/dom/base/AudioFingerprintManager.h b/dom/base/AudioFingerprintManager.h
 new file mode 100644
-index 0000000000..535ce3a6f9
 --- /dev/null
 +++ b/dom/base/AudioFingerprintManager.h
 @@ -0,0 +1,31 @@
@@ -147,12 +144,10 @@ index 0000000000..535ce3a6f9
 +}  // namespace mozilla
 +
 +#endif  // mozilla_dom_AudioFingerprintManager_h
-
 diff --git a/dom/base/moz.build b/dom/base/moz.build
-index cd9090cda3..a1b2c3d4e5 100644
 --- a/dom/base/moz.build
 +++ b/dom/base/moz.build
-@@ -144,6 +144,7 @@ EXPORTS.mozilla.dom += [
+@@ -144,6 +144,7 @@
      "AnimationFrameProvider.h",
      "AnonymousContent.h",
      "Attr.h",
@@ -160,21 +155,22 @@ index cd9090cda3..a1b2c3d4e5 100644
      "AutoPrintEventDispatcher.h",
      "AutoSuppressEventHandlingAndSuspend.h",
      "BarProps.h",
-@@ -326,4 +326,9 @@ SOURCES += [
-     "nsWindowSizes.cpp",
+@@ -547,6 +548,11 @@
+     # nsPluginArray.cpp includes npapi.h indirectly, and that includes a lot of system headers
+     "nsPluginArray.cpp",
  ]
-
++
 +# AudioFingerprintManager compiled separately to avoid namespace pollution
 +# in unified builds (it includes RoverfoxStorageManager.h which can affect
 +# alphabetically-later files like BarProps.cpp)
 +SOURCES += ["AudioFingerprintManager.cpp"]
-+
- UNIFIED_SOURCES += [
+ 
+ # NavigatorManager compiled separately to avoid unified build scope issues
+ # (includes RoverfoxStorageManager.h which can affect compilation units)
 diff --git a/dom/base/nsGlobalWindowInner.cpp b/dom/base/nsGlobalWindowInner.cpp
-index 748ae6cf83..b2c3d4e5f6 100644
 --- a/dom/base/nsGlobalWindowInner.cpp
 +++ b/dom/base/nsGlobalWindowInner.cpp
-@@ -91,6 +91,7 @@
+@@ -97,6 +97,7 @@
  #include "mozilla/TimeStamp.h"
  #include "mozilla/UniquePtr.h"
  #include "mozilla/dom/AudioContext.h"
@@ -182,11 +178,10 @@ index 748ae6cf83..b2c3d4e5f6 100644
  #include "mozilla/dom/AutoEntryScript.h"
  #include "mozilla/dom/BarProps.h"
  #include "mozilla/dom/BindingDeclarations.h"
-@@ -7477,6 +7478,29 @@ void nsGlobalWindowInner::ForgetSharedWorker(SharedWorker* aSharedWorker) {
+@@ -7660,6 +7661,28 @@
    mSharedWorkers.RemoveElement(aSharedWorker);
  }
-
-+
+ 
 +void nsGlobalWindowInner::SetAudioFingerprintSeed(uint32_t seed,
 +                                                    ErrorResult& aRv) {
 +  uint32_t userContextId = 0;
@@ -209,27 +204,49 @@ index 748ae6cf83..b2c3d4e5f6 100644
 +  }
 +}
 +
- RefPtr<GenericPromise> nsGlobalWindowInner::StorageAccessPermissionChanged(
-     bool aGranted) {
-   // Invalidate cached StorageAllowed field so that calls to GetLocalStorage
-
+ void nsGlobalWindowInner::SetFontList(const nsAString& aFontList,
+                                       ErrorResult& aRv) {
+   uint32_t userContextId = 0;
 diff --git a/dom/base/nsGlobalWindowInner.h b/dom/base/nsGlobalWindowInner.h
-index 3183172d29..c4d5e6f7a8 100644
 --- a/dom/base/nsGlobalWindowInner.h
 +++ b/dom/base/nsGlobalWindowInner.h
-@@ -676,6 +676,9 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
-
+@@ -675,6 +675,9 @@
+ 
    mozilla::dom::Worklet* GetPaintWorklet(mozilla::ErrorResult& aRv);
-
+ 
 +  // Audio fingerprint seed for per-context audio fingerprinting
 +  void SetAudioFingerprintSeed(uint32_t seed, mozilla::ErrorResult& aRv);
 +
-   void GetRegionalPrefsLocales(nsTArray<nsString>& aLocales);
-
-   void GetWebExposedLocales(nsTArray<nsString>& aLocales);
-
+   // Screen dimension methods for per-context screen spoofing
+   void SetScreenDimensions(int32_t aWidth, int32_t aHeight, mozilla::ErrorResult& aRv);
+   void SetScreenColorDepth(int32_t aColorDepth, mozilla::ErrorResult& aRv);
+diff --git a/dom/webidl/Window.webidl b/dom/webidl/Window.webidl
+--- a/dom/webidl/Window.webidl
++++ b/dom/webidl/Window.webidl
+@@ -918,6 +918,12 @@
+ partial interface Window {
+   [SameObject, Replaceable]
+   readonly attribute VisualViewport visualViewport;
++};
++
++// Audio fingerprint seed for per-context audio fingerprinting
++partial interface Window {
++  [Throws, Func="mozilla::dom::AudioFingerprintManager::IsFunctionEnabledForWebIDL"]
++  undefined setAudioFingerprintSeed(unsigned long seed);
+ };
+ 
+ // Font spacing seed interface for privacy-preserving font fingerprinting
+diff --git a/dom/media/webaudio/moz.build b/dom/media/webaudio/moz.build
+--- a/dom/media/webaudio/moz.build
++++ b/dom/media/webaudio/moz.build
+@@ -157,3 +157,6 @@
+ 
+ # DOM Mask
+ LOCAL_INCLUDES += ["/camoucfg"]
++
++# AudioFingerprintManager in dom/base
++LOCAL_INCLUDES += ["/dom/base"]
 diff --git a/dom/media/webaudio/AudioBuffer.cpp b/dom/media/webaudio/AudioBuffer.cpp
-index f59d01944a..d21c86e030 100644
 --- a/dom/media/webaudio/AudioBuffer.cpp
 +++ b/dom/media/webaudio/AudioBuffer.cpp
 @@ -21,6 +21,9 @@
@@ -239,13 +256,14 @@ index f59d01944a..d21c86e030 100644
 +#include "AudioFingerprintManager.h"
 +#include "nsPIDOMWindow.h"
 +#include "mozilla/dom/BrowsingContext.h"
-
+ 
  namespace mozilla::dom {
-
-@@ -303,5 +306,26 @@ bool AudioBuffer::RestoreJSChannelData(JSContext* aJSContext) {
+ 
+@@ -302,6 +305,27 @@
+       float* jsData = JS_GetFloat32ArrayData(array, &isShared, nogc);
        MOZ_ASSERT(!isShared);  // Was created as unshared above
        CopyChannelDataToFloat(mSharedChannels, i, 0, jsData, Length());
-     }
++    }
 +
 +    // Apply audio fingerprint transformation if a seed is set for this context
 +    {
@@ -266,10 +284,10 @@ index f59d01944a..d21c86e030 100644
 +          AudioFingerprintManager::ApplyTransformation(jsData, Length(), seed);
 +        }
 +      }
-+    }
+     }
      mJSChannels[i] = array;
    }
-@@ -354,6 +377,24 @@ void AudioBuffer::CopyFromChannel(const Float32Array& aDestination,
+@@ -354,6 +378,24 @@
                                   JS::AutoCheckCannotGC&&) {
        CopyChannelDataToFloat(mSharedChannels, aChannelNumber, aBufferOffset,
                               aData.Elements(), calculateCount(aData.Length()));
@@ -294,12 +312,10 @@ index f59d01944a..d21c86e030 100644
      });
      return;
    }
-
 diff --git a/dom/media/webaudio/AnalyserNode.cpp b/dom/media/webaudio/AnalyserNode.cpp
-index 4fd7c8be9a..e5f6a7b8c9 100644
 --- a/dom/media/webaudio/AnalyserNode.cpp
 +++ b/dom/media/webaudio/AnalyserNode.cpp
-@@ -13,5 +13,10 @@
+@@ -13,6 +13,11 @@
  #include "mozilla/PodOperations.h"
  #include "mozilla/dom/AnalyserNodeBinding.h"
  #include "nsMathUtils.h"
@@ -308,12 +324,13 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
 +#include "nsIGlobalObject.h"
 +#include "mozilla/dom/BrowsingContext.h"
 +#include "mozilla/dom/WorkerPrivate.h"
-
+ 
  namespace mozilla {
-@@ -216,4 +221,22 @@ void AnalyserNode::GetFloatFrequencyData(const Float32Array& aArray) {
+ 
+@@ -216,6 +221,25 @@
      return;
    }
-
+ 
 +  // Apply audio fingerprint transformation to frequency data
 +  {
 +    uint32_t userContextId = 0;
@@ -332,11 +349,14 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
 +      AudioFingerprintManager::ApplyTransformation(mOutputBuffer.Elements(), mOutputBuffer.Length(), seed);
 +    }
 +  }
++
    aArray.ProcessData([&](const Span<float>& aData, JS::AutoCheckCannotGC&&) {
-@@ -232,4 +254,22 @@ void AnalyserNode::GetByteFrequencyData(const Uint8Array& aArray) {
+     size_t length = std::min(size_t(aData.Length()), mOutputBuffer.Length());
+ 
+@@ -232,6 +256,25 @@
      return;
    }
-
+ 
 +  // Apply audio fingerprint transformation to frequency data
 +  {
 +    uint32_t userContextId = 0;
@@ -355,10 +375,13 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
 +      AudioFingerprintManager::ApplyTransformation(mOutputBuffer.Elements(), mOutputBuffer.Length(), seed);
 +    }
 +  }
++
    const double rangeScaleFactor = 1.0 / (mMaxDecibels - mMinDecibels);
-@@ -255,5 +295,23 @@ void AnalyserNode::GetFloatTimeDomainData(const Float32Array& aArray) {
+ 
+   aArray.ProcessData([&](const Span<uint8_t>& aData, JS::AutoCheckCannotGC&&) {
+@@ -255,6 +298,24 @@
      size_t length = std::min(aData.Length(), size_t(FftSize()));
-
+ 
      GetTimeDomainData(aData.Elements(), length);
 +    // Apply audio fingerprint transformation to time domain data
 +    {
@@ -380,10 +403,11 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
 +    }
    });
  }
-@@ -269,6 +325,24 @@ void AnalyserNode::GetByteTimeDomainData(const Uint8Array& aArray) {
-
+ 
+@@ -269,6 +330,24 @@
+ 
      GetTimeDomainData(tmpBuffer.Elements(), length);
-
+ 
 +    // Apply audio fingerprint transformation before byte conversion
 +    {
 +      uint32_t userContextId = 0;
@@ -405,33 +429,3 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
      unsigned char* buffer = aData.Elements();
      for (size_t i = 0; i < length; ++i) {
        const float value = tmpBuffer[i];
-diff --git a/dom/media/webaudio/moz.build b/dom/media/webaudio/moz.build
-index 3ee8c0aa76..4cf10f3039 100644
---- a/dom/media/webaudio/moz.build
-+++ b/dom/media/webaudio/moz.build
-@@ -152,5 +152,8 @@ include("/ipc/chromium/chromium-config.mozbuild")
- FINAL_LIBRARY = "xul"
- LOCAL_INCLUDES += [".."]
-
- # DOM Mask
- LOCAL_INCLUDES += ["/camoucfg"]
-+
-+# AudioFingerprintManager in dom/base
-+LOCAL_INCLUDES += ["/dom/base"]
-diff --git a/dom/webidl/Window.webidl b/dom/webidl/Window.webidl
-index 7c509eb87e..7a076768d1 100644
---- a/dom/webidl/Window.webidl
-+++ b/dom/webidl/Window.webidl
-@@ -892,6 +892,12 @@ partial interface Window {
-   readonly attribute VisualViewport visualViewport;
- };
-
-+// Audio fingerprint seed for per-context audio fingerprinting
-+partial interface Window {
-+  [Throws, Func="mozilla::dom::AudioFingerprintManager::IsFunctionEnabledForWebIDL"]
-+  undefined setAudioFingerprintSeed(unsigned long seed);
-+};
-+
- // Used to assign marks to appear on the scrollbar when
- // finding on a page.
- partial interface Window {
