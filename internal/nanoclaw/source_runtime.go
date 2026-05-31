@@ -352,10 +352,13 @@ class OpenCodeProvider implements AgentProvider {
             try { fs.unlinkSync(streamPath); } catch (_) {}
           });
 
+          const streamByteLength = (s: string): number => {
+            return new TextEncoder().encode(s).length;
+          };
           function streamWriteSync(data: string) {
             if (streamFd === null) return;
             const line = data + '\n';
-            if (streamFileSize + Buffer.byteLength(line, 'utf8') > MAX_STREAM_FILE_SIZE) {
+            if (streamFileSize + streamByteLength(line) > MAX_STREAM_FILE_SIZE) {
               try { fs.ftruncateSync(streamFd, 0); fs.closeSync(streamFd); } catch (_) {}
               streamFd = null;
               return;
@@ -363,7 +366,7 @@ class OpenCodeProvider implements AgentProvider {
             try {
               fs.writeSync(streamFd, line);
               fs.fsyncSync(streamFd);
-              streamFileSize += Buffer.byteLength(line, 'utf8');
+              streamFileSize += streamByteLength(line);
             } catch (_) {}
           }
 
