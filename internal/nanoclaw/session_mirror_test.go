@@ -140,6 +140,91 @@ VALUES ('out-1', 3, 'chat', ?, 'vulpine:agent-1', 'cli', '{"text":"done"}')`, no
 	}
 }
 
+func TestPollStreamFile(t *testing.T) {
+	dir := t.TempDir()
+
+	agent := &Agent{
+		ID:             "test-agent",
+		conversationCh: make(chan ConversationMsg, 64),
+	}
+
+	mirror := NewNanoClawSessionMirror(dir, "test-agent", filepath.Join(dir, "session.jsonl"), agent)
+
+	session := nanoClawSessionRef{AgentGroupID: "vulpineos-main", SessionID: "sess-test-123"}
+
+	// Write test stream file
+	streamPath := mirror.streamFilePath(session)
+	if err := os.MkdirAll(filepath.Dir(streamPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{
+		`{"t":"Hello "}`,
+		`{"t":"world"}`,
+		`{"t":"!"}`,
+		`{"done":"Hello world!"}`,
+	}
+	if err := os.WriteFile(streamPath, []byte(lines[0]+"\n"+lines[1]+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// First partial poll: should read first two lines
+	result := mirror.pollStreamFile(session)
+	if !result {
+		t.Fatal("expected first poll to find content")
+	}
+	if mirror.streamAccumulated["sess-test-123"] != "Hello world" {
+		t.Fatalf("expected 'Hello world', got %q", mirror.streamAccumulated["sess-test-123"])
+	}
+
+	// Drain the first stream message (Role:"stream", partial content)
+	select {
+	case msg := <-agent.conversationCh:
+		if msg.Role != "stream" {
+			t.Fatalf("expected stream role, got %q", msg.Role)
+		}
+		if msg.Content != "Hello world" {
+			t.Fatalf("expected 'Hello world', got %q", msg.Content)
+		}
+		if !msg.StreamActive {
+			t.Fatal("expected StreamActive=true for stream msg")
+		}
+	default:
+		t.Fatal("expected stream message to be emitted")
+	}
+
+	// Append remaining lines (simulating continued container output)
+	f, _ := os.OpenFile(streamPath, os.O_APPEND|os.O_WRONLY, 0600)
+	f.WriteString(lines[2] + "\n" + lines[3] + "\n")
+	f.Close()
+
+	// Second poll: reads remaining content, finalizes stream
+	result = mirror.pollStreamFile(session)
+	if !result {
+		t.Fatal("expected second poll to finalize stream")
+	}
+
+	// Check accumulated and done
+	if mirror.streamAccumulated["sess-test-123"] != "Hello world!" {
+		t.Fatalf("expected 'Hello world!', got %q", mirror.streamAccumulated["sess-test-123"])
+	}
+	if !mirror.streamDone["sess-test-123"] {
+		t.Fatal("expected stream to be marked done")
+	}
+
+	// No message from pollStreamFile finalization (mirrorOutbound handles it)
+	select {
+	case <-agent.conversationCh:
+		t.Fatal("unexpected message from stream finalization")
+	default:
+	}
+
+	// Third poll: should return false (streamDone flag set)
+	result = mirror.pollStreamFile(session)
+	if result {
+		t.Fatal("expected false after stream done")
+	}
+}
+
 func TestNanoClawSessionMirrorTranslatesClaudeTranscriptToolEvents(t *testing.T) {
 	nanoclawDir, sessionDir, logPath := createMirrorTestProfile(t)
 	now := time.Now().UTC()
