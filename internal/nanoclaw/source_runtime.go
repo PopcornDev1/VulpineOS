@@ -127,6 +127,7 @@ func ensureNanoClawProviderIndexImport(indexPath, importLine string) error {
 }
 
 const defaultOpenCodeProviderSource = `import { execSync } from 'child_process';
+import * as fs from 'fs';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
@@ -316,6 +317,7 @@ class OpenCodeProvider implements AgentProvider {
               messages,
               tools: [BASH_TOOL, WEB_TOOL],
               tool_choice: 'auto',
+              stream: true,
             }),
           });
 
@@ -334,12 +336,86 @@ class OpenCodeProvider implements AgentProvider {
             return;
           }
 
-          response = (await res.json()) as {
-            choices?: Array<{
-              finish_reason: string;
-              message: ChatMessage & { tool_calls?: ChatMessage['tool_calls'] };
-            }>;
-          };
+          const streamReader = res.body.getReader();
+          const streamDecoder = new TextDecoder();
+          let streamBuffer = '';
+          let streamContent = '';
+          let streamToolCalls: ChatMessage['tool_calls'] = [];
+          let streamToolCallAccum: Map<number, { id?: string; name?: string; args?: string }> = new Map();
+          const streamPath = process.env.STREAM_PATH || '/workspace/stream.jsonl';
+          let streamFd: number | null = null;
+          try { streamFd = fs.openSync(streamPath, 'w'); } catch (_) {}
+
+          function streamWriteSync(data: string) {
+            if (streamFd === null) return;
+            try {
+              fs.writeSync(streamFd, data + '\n');
+              fs.fsyncSync(streamFd);
+            } catch (_) {}
+          }
+
+          while (true) {
+            const { done, value } = await streamReader.read();
+            if (done) break;
+            streamBuffer += streamDecoder.decode(value, { stream: true });
+            const lines = streamBuffer.split('\n');
+            streamBuffer = lines.pop() || '';
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data: ')) continue;
+              const dataStr = trimmed.slice(6);
+              if (dataStr === '[DONE]') break;
+              try {
+                const parsed = JSON.parse(dataStr);
+                const choice = parsed.choices?.[0];
+                if (!choice) continue;
+                const delta = choice.delta || {};
+                if (delta.content) {
+                  streamContent += delta.content;
+                  streamWriteSync(JSON.stringify({ t: delta.content }));
+                }
+                if (delta.tool_calls) {
+                  for (const tc of delta.tool_calls) {
+                    const idx = tc.index || 0;
+                    if (!streamToolCallAccum.has(idx)) streamToolCallAccum.set(idx, {});
+                    const acc = streamToolCallAccum.get(idx)!;
+                    if (tc.id) acc.id = tc.id;
+                    if (tc.function?.name) acc.name = tc.function.name;
+                    if (tc.function?.arguments) acc.args = (acc.args || '') + tc.function.arguments;
+                  }
+                }
+              } catch (_) {}
+            }
+          }
+
+          // Reconstruct tool_calls from accumulated SSE chunks
+          for (const [idx, acc] of streamToolCallAccum) {
+            if (acc.id && acc.name) {
+              streamToolCalls.push({
+                id: acc.id,
+                type: 'function',
+                function: { name: acc.name, arguments: acc.args || '{}' },
+              });
+            }
+          }
+
+          // Write done marker with full accumulated text
+          if (streamContent) {
+            streamWriteSync(JSON.stringify({ done: streamContent }));
+          }
+          if (streamFd !== null) { try { fs.closeSync(streamFd); } catch (_) {} }
+
+          // Build response object compatible with the rest of the tool-call loop
+          response = {
+            choices: [{
+              finish_reason: streamToolCalls.length > 0 ? 'tool_calls' : 'stop',
+              message: {
+                role: 'assistant' as const,
+                content: streamContent || null,
+                ...(streamToolCalls.length > 0 ? { tool_calls: streamToolCalls } : {}),
+              },
+            }],
+          } as unknown as { choices?: Array<{ finish_reason: string; message: ChatMessage & { tool_calls?: ChatMessage['tool_calls'] } }> };
           usedModelIndex = i;
           modelFound = true;
           break;
