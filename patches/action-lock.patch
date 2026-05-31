@@ -1,10 +1,10 @@
 diff --git a/docshell/base/nsIDocShell.idl b/docshell/base/nsIDocShell.idl
 --- a/docshell/base/nsIDocShell.idl
 +++ b/docshell/base/nsIDocShell.idl
-@@ -762,6 +762,9 @@ interface nsIDocShell : nsIDocShellTreeItem
-
+@@ -759,6 +759,9 @@
+ 
    void setGeolocationOverride(in nsIDOMGeoPosition position);
-
+ 
 +  void suspendPage();
 +  void resumePage();
 +
@@ -14,7 +14,9 @@ diff --git a/docshell/base/nsIDocShell.idl b/docshell/base/nsIDocShell.idl
 diff --git a/docshell/base/nsDocShell.h b/docshell/base/nsDocShell.h
 --- a/docshell/base/nsDocShell.h
 +++ b/docshell/base/nsDocShell.h
-@@ -744,6 +744,7 @@ class nsDocShell final : public nsDocLoader,
+@@ -1407,6 +1407,7 @@
+   bool mBypassCSPEnabled : 1;
+   bool mForceActiveState : 1;
    bool mDisallowBFCache : 1;
 +  bool mSuspendedForActionLock : 1;
    nsString mLanguageOverride;
@@ -23,17 +25,26 @@ diff --git a/docshell/base/nsDocShell.h b/docshell/base/nsDocShell.h
 diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
 --- a/docshell/base/nsDocShell.cpp
 +++ b/docshell/base/nsDocShell.cpp
-@@ -382,6 +382,7 @@ nsDocShell::nsDocShell(BrowsingContext*
+@@ -37,6 +37,7 @@
+ #include "mozilla/MediaFeatureChange.h"
+ #include "mozilla/Preferences.h"
+ #include "mozilla/PresShell.h"
++#include "nsRefreshDriver.h"
+ #include "mozilla/SchedulerGroup.h"
+ #include "mozilla/ScopeExit.h"
+ #include "mozilla/ScrollContainerFrame.h"
+@@ -370,6 +371,7 @@
+       mBypassCSPEnabled(false),
        mForceActiveState(false),
        mDisallowBFCache(false),
 +      mSuspendedForActionLock(false),
        mReducedMotionOverride(REDUCED_MOTION_OVERRIDE_NONE),
        mForcedColorsOverride(FORCED_COLORS_OVERRIDE_NO_OVERRIDE),
        mContrastOverride(CONTRAST_OVERRIDE_NONE),
-@@ -457,6 +458,46 @@ nsDocShell::SetOverrideHasFocus(bool aEn
+@@ -3126,6 +3128,59 @@
    return NS_OK;
  }
-
+ 
 +NS_IMETHODIMP
 +nsDocShell::SuspendPage() {
 +  if (mSuspendedForActionLock)
@@ -48,13 +59,15 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
 +  // Suspend timeouts, intervals, and network event delivery
 +  if (nsPIDOMWindowOuter* outer = GetWindow()) {
 +    if (nsPIDOMWindowInner* inner = outer->GetCurrentInnerWindow()) {
-+      inner->Suspend();
++      nsGlobalWindowInner::Cast(inner)->Suspend();
 +    }
 +  }
 +
 +  // Suppress event handling (mouse, keyboard, etc.)
 +  if (RefPtr<PresShell> presShell = GetPresShell()) {
-+    presShell->SuppressEventHandling();
++    if (RefPtr<Document> doc = presShell->GetDocument()) {
++      doc->SuppressEventHandling();
++    }
 +  }
 +
 +  return NS_OK;
@@ -67,12 +80,14 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
 +  mSuspendedForActionLock = false;
 +
 +  if (RefPtr<PresShell> presShell = GetPresShell()) {
-+    presShell->UnsuppressEventHandling();
++    if (RefPtr<Document> doc = presShell->GetDocument()) {
++      doc->UnsuppressEventHandlingAndFireEvents(true);
++    }
 +  }
 +
 +  if (nsPIDOMWindowOuter* outer = GetWindow()) {
 +    if (nsPIDOMWindowInner* inner = outer->GetCurrentInnerWindow()) {
-+      inner->Resume();
++      nsGlobalWindowInner::Cast(inner)->Resume();
 +    }
 +  }
 +
