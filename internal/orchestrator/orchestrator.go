@@ -19,6 +19,7 @@ import (
 	"vulpineos/internal/proxy"
 	"vulpineos/internal/recording"
 	"vulpineos/internal/security"
+	"vulpineos/internal/spawntrace"
 	"vulpineos/internal/vault"
 	"vulpineos/internal/webhooks"
 
@@ -117,6 +118,9 @@ func (o *Orchestrator) Start() error {
 
 // SpawnCitizen creates an agent bound to a long-lived citizen identity.
 func (o *Orchestrator) SpawnCitizen(citizenID, templateID string) (string, error) {
+	tr := spawntrace.Start("orchestrator.SpawnCitizen", citizenID)
+	defer tr.End()
+
 	// Load citizen
 	citizen, err := o.Vault.GetCitizen(citizenID)
 	if err != nil {
@@ -128,18 +132,21 @@ func (o *Orchestrator) SpawnCitizen(citizenID, templateID string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("load template: %w", err)
 	}
+	tr.Lap("load-citizen-template")
 
 	// Acquire context
 	slot, err := o.Pool.Acquire()
 	if err != nil {
 		return "", fmt.Errorf("acquire context: %w", err)
 	}
+	tr.Lap("acquire-context")
 
 	// Apply citizen identity to context
 	if err := o.applyCitizenToContext(slot.ContextID, citizen); err != nil {
 		o.Pool.Release(slot)
 		return "", fmt.Errorf("apply citizen: %w", err)
 	}
+	tr.Lap("apply-citizen-to-context")
 
 	// Write SOP and spawn agent
 	sopFile, err := nanoclaw.WriteSOP(tmpl.SOP)
@@ -147,6 +154,7 @@ func (o *Orchestrator) SpawnCitizen(citizenID, templateID string) (string, error
 		o.Pool.Release(slot)
 		return "", fmt.Errorf("write SOP: %w", err)
 	}
+	tr.Lap("write-sop")
 
 	agentID, err := o.spawnScopedAgent(slot.ContextID, sopFile)
 	if err != nil {
@@ -154,6 +162,7 @@ func (o *Orchestrator) SpawnCitizen(citizenID, templateID string) (string, error
 		o.Pool.Release(slot)
 		return "", fmt.Errorf("spawn agent: %w", err)
 	}
+	tr.Lap("spawn-scoped-agent")
 
 	o.agentToSlotMu.Lock()
 	o.agentToSlot[agentID] = slot
@@ -171,17 +180,22 @@ func (o *Orchestrator) SpawnCitizen(citizenID, templateID string) (string, error
 
 // SpawnNomad creates an ephemeral agent with auto-generated identity.
 func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
+	tr := spawntrace.Start("orchestrator.SpawnNomad", templateID)
+	defer tr.End()
+
 	// Load template
 	tmpl, err := o.Vault.GetTemplate(templateID)
 	if err != nil {
 		return "", fmt.Errorf("load template: %w", err)
 	}
+	tr.Lap("load-template")
 
 	// Acquire context
 	slot, err := o.Pool.Acquire()
 	if err != nil {
 		return "", fmt.Errorf("acquire context: %w", err)
 	}
+	tr.Lap("acquire-context")
 
 	// Record nomad session
 	session, err := o.Vault.CreateNomadSession(templateID, "{}")
@@ -197,6 +211,7 @@ func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
 
 	// Apply default network identity based on host OS
 	o.applyDefaultNetworkIdentity(slot.ContextID, session.ID)
+	tr.Lap("session-security-network")
 
 	// Write SOP and spawn agent
 	sopFile, err := nanoclaw.WriteSOP(tmpl.SOP)
@@ -204,6 +219,7 @@ func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
 		o.Pool.Release(slot)
 		return "", fmt.Errorf("write SOP: %w", err)
 	}
+	tr.Lap("write-sop")
 
 	agentID, err := o.spawnScopedAgent(slot.ContextID, sopFile)
 	if err != nil {
@@ -211,6 +227,7 @@ func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
 		o.Pool.Release(slot)
 		return "", fmt.Errorf("spawn agent: %w", err)
 	}
+	tr.Lap("spawn-scoped-agent")
 
 	o.agentToSlotMu.Lock()
 	o.agentToSlot[agentID] = slot
@@ -264,12 +281,16 @@ func (o *Orchestrator) EnsureAgentBrowserContext(agent *vault.Agent) (string, er
 		return "", fmt.Errorf("agent not found")
 	}
 
+	tr := spawntrace.Start("orchestrator.EnsureAgentBrowserContext", agent.ID)
+	defer tr.End()
+
 	meta, err := vault.ParseAgentMetadata(agent.Metadata)
 	if err != nil {
 		return "", fmt.Errorf("parse agent metadata: %w", err)
 	}
 	if meta.ContextID != "" {
 		if err := o.applyAgentToContext(meta.ContextID, agent); err == nil {
+			tr.Lap("reuse-existing-context")
 			o.agentToSlotMu.Lock()
 			o.persistentAgentSlots[agent.ID] = true
 			o.agentToSlotMu.Unlock()
@@ -283,10 +304,12 @@ func (o *Orchestrator) EnsureAgentBrowserContext(agent *vault.Agent) (string, er
 	if err != nil {
 		return "", fmt.Errorf("acquire agent context: %w", err)
 	}
+	tr.Lap("acquire-context")
 	if err := o.applyAgentToContext(slot.ContextID, agent); err != nil {
 		o.Pool.Discard(slot)
 		return "", fmt.Errorf("apply agent identity: %w", err)
 	}
+	tr.Lap("apply-agent-to-context")
 
 	meta.ContextID = slot.ContextID
 	metadata := vault.MarshalAgentMetadata(meta)
@@ -813,16 +836,21 @@ func geolocationFields(raw map[string]interface{}) (float64, float64, bool) {
 }
 
 func (o *Orchestrator) spawnScopedAgent(contextID, sopFile string) (string, error) {
+	tr := spawntrace.Start("orchestrator.spawnScopedAgent", contextID)
+	defer tr.End()
+
 	scopedConfig, cleanup, err := o.PrepareScopedNanoClawConfig(contextID)
 	if err != nil {
 		return "", err
 	}
+	tr.Lap("prepare-scoped-config")
 
 	agentID, err := o.Agents.SpawnIsolated(contextID, sopFile, scopedConfig, cleanup)
 	if err != nil {
 		cleanup()
 		return "", err
 	}
+	tr.Lap("agents-spawn-isolated")
 
 	return agentID, nil
 }
@@ -836,16 +864,21 @@ func (o *Orchestrator) PrepareScopedNanoClawConfig(contextID string) (string, fu
 		return "", nil, fmt.Errorf("context id is required")
 	}
 
+	tr := spawntrace.Start("orchestrator.PrepareScopedNanoClawConfig", contextID)
+	defer tr.End()
+
 	scopedFoxbridge, err := foxbridge.StartEmbeddedScoped(o.Client, 0, contextID)
 	if err != nil {
 		return "", nil, fmt.Errorf("start scoped foxbridge: %w", err)
 	}
+	tr.Lap("start-embedded-foxbridge")
 
 	scopedConfig, cleanupConfig, err := nanoclaw.PrepareScopedConfig(config.NanoClawConfigPath(), scopedFoxbridge.CDPURL())
 	if err != nil {
 		scopedFoxbridge.Stop()
 		return "", nil, fmt.Errorf("prepare scoped NanoClaw config: %w", err)
 	}
+	tr.Lap("prepare-scoped-config-file")
 
 	cleanup := func() {
 		cleanupConfig()

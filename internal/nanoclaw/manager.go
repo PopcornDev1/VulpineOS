@@ -18,6 +18,7 @@ import (
 	"vulpineos/internal/config"
 	"vulpineos/internal/opencode"
 	"vulpineos/internal/runtimeaudit"
+	"vulpineos/internal/spawntrace"
 )
 
 // Manager manages multiple NanoClaw agent subprocesses.
@@ -304,6 +305,9 @@ func (m *Manager) SpawnOpenCode(task string, vaultAgentID string) (string, error
 }
 
 func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, cleanup func()) (string, error) {
+	tr := spawntrace.Start("nanoclaw.spawnViaSocket", agentID)
+	defer tr.End()
+
 	nanoclawDir := GetNanoclawDir()
 	if nanoclawDir == "" {
 		if cleanup != nil {
@@ -320,18 +324,21 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 		}
 		return "", fmt.Errorf("NanoClaw daemon is not running at %s", VulpineNanoclawSocketPath())
 	}
+	tr.Lap("daemon-running-check")
 	if err := RepairVulpineProfileDatabaseFromConfig(nanoclawDir, configPath); err != nil {
 		if cleanup != nil {
 			cleanup()
 		}
 		return "", err
 	}
+	tr.Lap("repair-profile-db")
 	if err := ensureVulpineAgentRoute(nanoclawDir, agentID); err != nil {
 		if cleanup != nil {
 			cleanup()
 		}
 		return "", err
 	}
+	tr.Lap("ensure-agent-route")
 
 	agent := newAgent(agentID, sessionName, m.statusSource)
 	if path, err := sessionLogPathForSessionID(sessionName); err == nil {
@@ -369,6 +376,11 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 		}
 	})
 
+	// rtr measures the NanoClaw-side latency from message enqueue to the first
+	// session output (container cold-start + agent-runner boot + model turn +
+	// first action). This is the dominant pre-browser cost and lives downstream
+	// of the Go socket handoff; pair it with the NanoClaw-side timestamps.
+	rtr := spawntrace.Start("nanoclaw.firstResponse", agentID)
 	go func() {
 		finished := false
 		finish := func(status string) {
@@ -389,11 +401,16 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 			agent.status.Status = "error"
 			agent.status.Objective = err.Error()
 			agent.mu.Unlock()
+			rtr.Lap("enqueue-failed")
+			rtr.End()
 			finish("error")
 			return
 		}
+		rtr.Lap("enqueue")
 		select {
 		case <-completionCh:
+			rtr.Lap("first-response")
+			rtr.End()
 			finish("completed")
 		case <-time.After(nanoclawFirstResponseTimeout):
 			errText := "timed out waiting for NanoClaw session output"
@@ -402,8 +419,11 @@ func (m *Manager) spawnViaSocket(agentID, sessionName, task, configPath string, 
 			agent.status.Status = "error"
 			agent.status.Objective = errText
 			agent.mu.Unlock()
+			rtr.Mark("first-response-timeout")
+			rtr.End()
 			finish("error")
 		case <-agent.doneCh:
+			rtr.End()
 			cancelMirror()
 		}
 	}()

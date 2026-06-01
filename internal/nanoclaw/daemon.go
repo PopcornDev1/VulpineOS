@@ -12,6 +12,7 @@ import (
 
 	"vulpineos/internal/auth"
 	"vulpineos/internal/config"
+	"vulpineos/internal/spawntrace"
 )
 
 // Daemon owns the long-running NanoClaw socket process used by VulpineOS.
@@ -74,6 +75,9 @@ func (d *Daemon) Start() error {
 	}
 	d.mu.Unlock()
 
+	tr := spawntrace.Start("nanoclaw.Daemon.Start", "daemon")
+	defer tr.End()
+
 	nanoclawBin := strings.TrimSpace(d.binary)
 	if nanoclawBin == "" {
 		nanoclawBin = NewManager("").findNanoClaw()
@@ -89,9 +93,11 @@ func (d *Daemon) Start() error {
 	if err := os.Remove(filepath.Join(dataDir, "circuit-breaker.json")); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove NanoClaw circuit breaker state: %w", err)
 	}
+	tr.Lap("prepare-data-dir")
 	if err := prepareNanoClawSourceRuntime(d.nanoclawDir); err != nil {
 		return fmt.Errorf("prepare NanoClaw source runtime: %w", err)
 	}
+	tr.Lap("prepare-source-runtime")
 	cleanupStreamFiles(d.nanoclawDir)
 	if err := os.Remove(d.socketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale NanoClaw socket: %w", err)
@@ -171,6 +177,7 @@ func (d *Daemon) Start() error {
 		close(exitCh)
 	}()
 
+	tr.Lap("process-start")
 	waitReady := d.waitReady
 	if d.waitReadyFunc != nil {
 		waitReady = d.waitReadyFunc
@@ -179,6 +186,7 @@ func (d *Daemon) Start() error {
 		d.Stop()
 		return fmt.Errorf("wait for NanoClaw daemon readiness: %w", err)
 	}
+	tr.Lap("wait-ready-socket")
 
 	log.Printf("NanoClaw daemon started (PID %d), socket: %s, log: %s", cmd.Process.Pid, d.socketPath, d.logPath)
 	return nil
