@@ -6,6 +6,9 @@ on:
     tags:
       - "*"
 
+env:
+  CAMOUFOX_REPO: daijro/camoufox
+
 jobs:
   cli:
     name: VulpineOS CLI (${{ matrix.goos }}-${{ matrix.goarch }})
@@ -51,103 +54,93 @@ jobs:
           name: VulpineOSCLI-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/${{ matrix.asset }}
 
-  build:
+  browser:
     name: Camoufox (${{ matrix.target }}-${{ matrix.arch }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        target: [linux, windows]
-        arch: [x86_64, arm64, i686]
-        exclude:
-          # Fails (.mozbuild does not include clang++-cl)
-          - target: windows
+        include:
+          - target: linux
+            arch: x86_64
+            plat: lin
+          - target: linux
             arch: arm64
+            plat: lin
+          - target: macos
+            arch: x86_64
+            plat: mac
+          - target: macos
+            arch: arm64
+            plat: mac
 
     steps:
-      - name: Maximize build space
-        uses: AdityaGarg8/remove-unwanted-software@v4.1
-        with:
-          remove-dotnet: "true"
-          remove-android: "true"
-          remove-haskell: "true"
-          remove-codeql: "true"
-          remove-docker-images: "true"
-          remove-cached-tools: "true"
-          remove-swapfile: "true"
-          verbose: "false"
-
-      - name: Remove unwanted tools
-        # Originally from here: https://github.com/AdityaGarg8/remove-unwanted-software/blob/master/action.yml
-        run: |
-          sudo apt-get remove -y '^aspnetcore-.*' > /dev/null
-          sudo apt-get remove -y '^dotnet-.*' > /dev/null
-          sudo apt-get remove -y '^llvm-.*' > /dev/null
-          sudo apt-get remove -y 'php.*' > /dev/null
-          sudo apt-get remove -y '^mongodb-.*' > /dev/null
-          sudo apt-get remove -y '^mysql-.*' > /dev/null
-          sudo apt-get remove -y azure-cli google-chrome-stable firefox ${POWERSHELL} mono-devel libgl1-mesa-dri --fix-missing > /dev/null
-          if [[ (${CODENAME} = focal) || (${CODENAME} = jammy) ]]; then
-            sudo apt-get remove -y google-cloud-sdk --fix-missing > /dev/null
-            sudo apt-get remove -y google-cloud-cli --fix-missing > /dev/null
-          fi
-          sudo apt-get autoremove -y > /dev/null
-          sudo apt-get clean > /dev/null
-
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: "1.26.1"
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Set up LLVM
+      - name: Get latest Camoufox release info
+        id: camrel
         run: |
-          wget https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 18
-          sudo apt-get install -y lld-18 clang-18
-          if [ "${{ matrix.arch }}" != "x86_64" ]; then
-            sudo apt-get install -y libc6-i386 lib32gcc-s1 lib32stdc++6 gcc-multilib g++-multilib
+          API="https://api.github.com/repos/${{ env.CAMOUFOX_REPO }}/releases/latest"
+          TAG=$(curl -s "$API" | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+          VNUM="${TAG#v}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VNUM" >> $GITHUB_OUTPUT
+
+      - name: Download Camoufox binary
+        run: |
+          PATTERN="camoufox-*-${{ matrix.plat }}.${{ matrix.arch }}.zip"
+          API="https://api.github.com/repos/${{ env.CAMOUFOX_REPO }}/releases/tags/${{ steps.camrel.outputs.tag }}"
+          URL=$(curl -s "$API" | python3 -c "
+          import sys, json, fnmatch
+          data = json.load(sys.stdin)
+          for a in data.get('assets', []):
+              if fnmatch.fnmatch(a['name'], '$PATTERN'):
+                  print(a['browser_download_url'])
+                  break
+          ")
+          if [ -z "$URL" ]; then
+            echo "ERROR: No asset matching '$PATTERN' found in ${{ steps.camrel.outputs.tag }}"
+            exit 1
           fi
-          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-18 100
+          echo "Downloading $URL"
+          curl -sL -o camoufox.zip "$URL"
 
-      - name: Check disk space
-        run: df -h
-
-      - name: Install dependencies
+      - name: Extract and apply VulpineOS additions
         run: |
-          sudo apt-get update
-          sudo apt-get install -y msitools p7zip-full aria2
+          mkdir -p dist tmp-extract
+          unzip -q camoufox.zip -d tmp-extract
 
-      - name: Fetch source
-        env:
-          CAMOUFOX_PASSWD: ${{ secrets.CAMOUFOX_PASSWD }}
+          # Determine extraction layout
+          if [ "${{ matrix.target }}" = "macos" ]; then
+            # macOS: Camoufox.app bundle
+            RES="tmp-extract/Camoufox.app/Contents/Resources"
+            cp -v settings/camoufox.cfg "$RES/camoufox.cfg"
+            cp -v settings/chrome.css "$RES/chrome.css"
+            cp -v settings/properties.json "$RES/properties.json"
+            mkdir -p "$RES/distribution"
+            cp -v settings/distribution/policies.json "$RES/distribution/policies.json"
+            mkdir -p "$RES/defaults/pref"
+            cp -v settings/defaults/pref/local-settings.js "$RES/defaults/pref/local-settings.js"
+          else
+            # Linux: flat extraction
+            cp -v settings/camoufox.cfg "tmp-extract/camoufox.cfg"
+            cp -v settings/chrome.css "tmp-extract/chrome.css"
+            cp -v settings/properties.json "tmp-extract/properties.json"
+            mkdir -p "tmp-extract/distribution"
+            cp -v settings/distribution/policies.json "tmp-extract/distribution/policies.json"
+            mkdir -p "tmp-extract/defaults/pref"
+            cp -v settings/defaults/pref/local-settings.js "tmp-extract/defaults/pref/local-settings.js"
+          fi
+
+      - name: Repackage
         run: |
-          make fetch
-
-      - name: Setup and bootstrap
-        run: |
-          make setup-minimal
-          make mozbootstrap
-          mkdir -p dist
-
-      - name: Create swap space
-        run: |
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          free -h
-
-      - name: Build
-        run: python3 ./multibuild.py --target ${{ matrix.target }} --arch ${{ matrix.arch }}
+          VERSION="${{ steps.camrel.outputs.version }}"
+          ASSET_NAME="camoufox-$VERSION-${{ matrix.plat }}.${{ matrix.arch }}"
+          cd tmp-extract
+          zip -r "../dist/$ASSET_NAME.zip" .
+          cd ..
+          ls -lh "dist/$ASSET_NAME.zip"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -156,7 +149,7 @@ jobs:
           path: dist/*
 
   release:
-    needs: [cli, build]
+    needs: [cli, browser]
     permissions:
       contents: write
     runs-on: ubuntu-latest
