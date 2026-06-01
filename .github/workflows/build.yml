@@ -56,15 +56,12 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        target: [linux, windows, macos]
+        target: [linux, windows]
         arch: [x86_64, arm64, i686]
         exclude:
           # Fails (.mozbuild does not include clang++-cl)
           - target: windows
             arch: arm64
-          # Unsuported
-          - target: macos
-            arch: i686
 
     steps:
       - name: Maximize build space
