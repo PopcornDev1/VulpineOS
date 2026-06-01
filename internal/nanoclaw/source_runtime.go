@@ -491,16 +491,21 @@ class OpenCodeProvider implements AgentProvider {
             const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
             if (tc.function.name === 'bash') {
               const command = String(args.command ?? '');
-              const timeout = typeof args.timeout === 'number' ? args.timeout : 30000;
-              result = execSync(command, {
-                cwd: '/workspace/agent',
-                timeout,
-                encoding: 'utf-8',
-                maxBuffer: 50 * 1024 * 1024,
-                signal: controller.signal,
-              });
-              if (result.length > 50000) {
-                result = result.slice(0, 50000) + ` + "`" + `\n... [truncated ${result.length - 50000} more bytes]` + "`" + `;
+              const FORBIDDEN = /\b(playwright|puppeteer|selenium)\b/i;
+              if (FORBIDDEN.test(command)) {
+                result = 'Error: This command contains a reference to a forbidden browser automation tool (Playwright, Puppeteer, or Selenium). These tools are NOT available in this container. Use agent-browser for all browser interaction.';
+              } else {
+                const timeout = typeof args.timeout === 'number' ? args.timeout : 30000;
+                result = execSync(command, {
+                  cwd: '/workspace/agent',
+                  timeout,
+                  encoding: 'utf-8',
+                  maxBuffer: 50 * 1024 * 1024,
+                  signal: controller.signal,
+                });
+                if (result.length > 50000) {
+                  result = result.slice(0, 50000) + ` + "`" + `\n... [truncated ${result.length - 50000} more bytes]` + "`" + `;
+                }
               }
             } else if (tc.function.name === 'web') {
               const url = String(args.url ?? '');
