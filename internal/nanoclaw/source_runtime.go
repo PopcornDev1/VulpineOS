@@ -352,6 +352,14 @@ class OpenCodeProvider implements AgentProvider {
             try { fs.unlinkSync(streamPath); } catch (_) {}
           });
 
+          function stripMessageTags(text: string): string {
+            return text
+              .replace(/<message\s+[^>]*>/g, '')
+              .replace(/<\/message>/g, '')
+              .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+              .trim();
+          }
+
           const streamByteLength = (s: string): number => {
             return new TextEncoder().encode(s).length;
           };
@@ -388,7 +396,6 @@ class OpenCodeProvider implements AgentProvider {
                 const delta = choice.delta || {};
                 if (delta.content) {
                   streamContent += delta.content;
-                  streamWriteSync(JSON.stringify({ t: delta.content }));
                 }
                 if (delta.tool_calls) {
                   for (const tc of delta.tool_calls) {
@@ -417,7 +424,7 @@ class OpenCodeProvider implements AgentProvider {
 
           // Write done marker with full accumulated text
           if (streamContent) {
-            streamWriteSync(JSON.stringify({ done: streamContent }));
+            streamWriteSync(JSON.stringify({ done: stripMessageTags(streamContent) }));
           }
           if (streamFd !== null) { try { fs.closeSync(streamFd); } catch (_) {} }
 
@@ -892,7 +899,7 @@ func patchNanoClawPollLoopRouting(path string) error {
 `
 		insert := `function isVulpineReplyAlias(name: string): boolean {
   const normalized = name.trim().toLowerCase();
-  return normalized === 'vulpine' || normalized === 'vulpineos' || normalized === 'user' || normalized === 'operator';
+  return normalized === 'vulpine' || normalized === 'vulpineos' || normalized === 'user' || normalized === 'operator' || normalized.startsWith('vulpine-');
 }
 
 function sendToCurrentRouting(body: string, routing: RoutingContext): boolean {

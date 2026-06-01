@@ -9,11 +9,25 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+var (
+	messageOpenRe  = regexp.MustCompile(`<message\s+[^>]*>`)
+	messageCloseRe = regexp.MustCompile(`</message>`)
+	internalBlockRe = regexp.MustCompile(`<internal>[\s\S]*?</internal>`)
+)
+
+func stripMessageTags(s string) string {
+	s = messageOpenRe.ReplaceAllString(s, "")
+	s = messageCloseRe.ReplaceAllString(s, "")
+	s = internalBlockRe.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
+}
 
 const nanoclawMirrorPollInterval = 250 * time.Millisecond
 
@@ -581,7 +595,7 @@ func (m *NanoClawSessionMirror) pollStreamFile(session nanoClawSessionRef) bool 
 			newContent = true
 		}
 		if entry.Done != "" {
-			m.streamAccumulated[sid] = entry.Done
+			m.streamAccumulated[sid] = stripMessageTags(entry.Done)
 			m.streamDone[sid] = true
 			newContent = true
 		}
@@ -610,7 +624,7 @@ func (m *NanoClawSessionMirror) pollStreamFile(session nanoClawSessionRef) bool 
 		return true
 	}
 
-	m.agent.handleStreamContent(accumulated, true)
+	m.agent.handleStreamContent(stripMessageTags(accumulated), true)
 	return true
 }
 
