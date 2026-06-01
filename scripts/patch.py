@@ -47,9 +47,14 @@ class Patcher:
         """
         version, release = extract_args()
         with temp_cd(find_src_dir('.', version, release)):
-            # Reset to unpatched state first (like "Find broken patches")
-            print("Resetting to unpatched state...")
-            run('git clean -fdx && ./mach clobber && git reset --hard unpatched', exit_on_fail=False)
+            # Reset only when the Firefox source is its own git checkout. In
+            # setup-minimal builds it is an untracked directory inside this repo,
+            # so git clean would walk up and delete the extracted source tree.
+            if os.path.exists('.git'):
+                print("Resetting to unpatched state...")
+                run('git clean -fdx && ./mach clobber && git reset --hard unpatched', exit_on_fail=False)
+            else:
+                print("Skipping git reset: source tree is not a standalone git checkout.")
 
             # Re-copy additions and settings after reset
             print("Re-copying additions and settings...")
