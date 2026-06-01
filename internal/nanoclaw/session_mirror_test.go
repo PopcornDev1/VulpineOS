@@ -140,6 +140,75 @@ VALUES ('out-1', 3, 'chat', ?, 'vulpine:agent-1', 'cli', '{"text":"done"}')`, no
 	}
 }
 
+// TestMirrorCompletionRequiresOutboundNotStreamActivity locks the fix for the
+// dropped-reply bug: turn completion must be driven by a newly mirrored
+// outbound assistant message, never by streaming partial output. If stream
+// activity signalled completion, spawnViaSocket would cancel the mirror before
+// the final reply was read from outbound.db, leaving the answer unsurfaced
+// until the caller timed out. It also asserts TZ-robustness: a new outbound row
+// completes the turn even when its timestamp is not comparable to wall clock
+// (the agent container writes timestamps in its own timezone).
+func TestMirrorCompletionRequiresOutboundNotStreamActivity(t *testing.T) {
+	nanoclawDir, sessionDir, logPath := createMirrorTestProfile(t)
+	agent := newAgent("agent-1", "ctx", make(chan AgentStatus, 1))
+	mirror := NewNanoClawSessionMirror(nanoclawDir, "agent-1", logPath, agent)
+	session := nanoClawSessionRef{AgentGroupID: "ag-1", SessionID: "sess-1"}
+
+	// Only streaming partial output exists — no final outbound message yet.
+	streamPath := mirror.streamFilePath(session)
+	if err := os.MkdirAll(filepath.Dir(streamPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(streamPath, []byte(`{"t":"partial answer in progress"}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	completed, err := mirror.MirrorOnce(time.Now().UTC().Add(-time.Second))
+	if err != nil {
+		t.Fatalf("MirrorOnce (stream only): %v", err)
+	}
+	if completed {
+		t.Fatal("stream activity alone must NOT signal completion (would race cancelMirror and drop the final reply)")
+	}
+
+	// Now the agent commits its real reply with a non-UTC / stale timestamp,
+	// exactly as the container does in practice.
+	outDB, err := sql.Open("sqlite", filepath.Join(sessionDir, "outbound.db"))
+	if err != nil {
+		t.Fatalf("open outbound: %v", err)
+	}
+	_, err = outDB.Exec(`INSERT INTO messages_out (id, seq, kind, timestamp, platform_id, channel_type, content)
+VALUES ('out-1', 3, 'chat', '2001-01-01 00:00:00', 'vulpine:agent-1', 'cli', '{"text":"final answer"}')`)
+	outDB.Close()
+	if err != nil {
+		t.Fatalf("insert outbound: %v", err)
+	}
+
+	completed, err = mirror.MirrorOnce(time.Now().UTC().Add(-time.Second))
+	if err != nil {
+		t.Fatalf("MirrorOnce (with outbound): %v", err)
+	}
+	if !completed {
+		t.Fatal("a new outbound assistant message must signal completion even with a non-UTC timestamp")
+	}
+
+	// The assistant reply must be surfaced on the conversation channel.
+	gotAssistant := false
+	for drained := false; !drained; {
+		select {
+		case msg := <-agent.conversationCh:
+			if msg.Role == "assistant" && msg.Content == "final answer" {
+				gotAssistant = true
+			}
+		default:
+			drained = true
+		}
+	}
+	if !gotAssistant {
+		t.Fatal("expected the final assistant reply to be emitted to the conversation channel")
+	}
+}
+
 func TestPollStreamFile(t *testing.T) {
 	dir := t.TempDir()
 

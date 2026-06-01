@@ -124,7 +124,13 @@ func (m *NanoClawSessionMirror) MirrorOnce(completionAfter time.Time) (bool, err
 		return false, err
 	}
 
-	streamActivity := m.pollStreamFile(session)
+	// Stream activity drives live partial-output display only; it must NOT
+	// signal turn completion. spawnViaSocket cancels this mirror as soon as
+	// completion is reported, so completing on stream activity races the final
+	// outbound message: an early stream-triggered completion can cancel the
+	// loop before the assistant reply is mirrored, silently dropping it (the
+	// reply then sits unsurfaced in outbound.db until the caller times out).
+	m.pollStreamFile(session)
 
 	assistantSeen, err := m.mirrorOutbound(session, completionAfter)
 	if err != nil {
@@ -133,7 +139,7 @@ func (m *NanoClawSessionMirror) MirrorOnce(completionAfter time.Time) (bool, err
 	if assistantSeen {
 		completed = true
 	}
-	return streamActivity || completed, nil
+	return completed, nil
 }
 
 func (m *NanoClawSessionMirror) loadSeenFromExistingLog() error {
@@ -284,9 +290,13 @@ func (m *NanoClawSessionMirror) mirrorOutbound(session nanoClawSessionRef, compl
 		}
 		m.markSeen(seenID)
 		m.markSeen(msg.ID)
-		if messageAtOrAfter(msg.Timestamp, completionAfter) {
-			completed = true
-		}
+		// A newly mirrored outbound row IS the agent's reply for this turn, so it
+		// signals completion. Novelty is the trigger (deduped via the seen set,
+		// which is seeded from the existing session log) rather than the message
+		// timestamp: the agent container writes outbound timestamps in its own
+		// timezone, so a wall-clock comparison against completionAfter is
+		// unreliable and was missing the reply entirely.
+		completed = true
 	}
 	return completed, rows.Err()
 }
@@ -643,15 +653,3 @@ func nanoClawContentText(content string) string {
 	return content
 }
 
-func messageAtOrAfter(raw string, threshold time.Time) bool {
-	if threshold.IsZero() {
-		return true
-	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
-		t, err := time.Parse(layout, raw)
-		if err == nil {
-			return !t.Before(threshold)
-		}
-	}
-	return false
-}
