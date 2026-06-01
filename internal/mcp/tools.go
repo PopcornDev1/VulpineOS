@@ -32,6 +32,14 @@ func tools() []ToolDefinition {
 	return toolsCached
 }
 
+// ToolDefinitions returns the full set of browser tool definitions exposed via
+// MCP. It is the canonical source the native agent runtime (internal/agentcore)
+// converts into model function schemas, so the two never drift. The returned
+// slice is read-only.
+func ToolDefinitions() []ToolDefinition {
+	return tools()
+}
+
 // baseTools returns the core browser tool definitions.
 func baseTools() []ToolDefinition {
 	return []ToolDefinition{
