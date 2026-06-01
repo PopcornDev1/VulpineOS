@@ -90,25 +90,34 @@ Record each expected artifact before drafting a public release:
 
 | Artifact | Required when | Expected source |
 |---|---|---|
-| `vulpineos-darwin-arm64` | every macOS release | `go build -o vulpineos ./cmd/vulpineos` on the trusted builder or local release machine |
-| `vulpineos-linux-amd64` | every Linux/Docker release | `GOOS=linux GOARCH=amd64 go build -o vulpineos-linux ./cmd/vulpineos` |
-| macOS browser package | Firefox/Juggler/browser patches changed | `make package-macos arch=arm64`, producing `camoufox-<version>-<release>-mac.arm64.zip` |
+| `vulpineos-darwin-arm64` / `vulpineos-darwin-amd64` | every macOS installer release | `GOOS=darwin GOARCH=<arch> go build -o vulpineos-darwin-<arch> ./cmd/vulpineos` |
+| `vulpineos-linux-amd64` / `vulpineos-linux-arm64` | every Linux installer release | `GOOS=linux GOARCH=<arch> go build -o vulpineos-linux-<arch> ./cmd/vulpineos` |
+| macOS browser packages | every macOS installer release | `make package-macos arch=<arch>`, producing `camoufox-<version>-<release>-mac.<x86_64|arm64>.zip` |
+| Linux browser packages | every Linux installer release | `make package-linux arch=<arch>`, producing `camoufox-<version>-<release>-lin.<x86_64|arm64>.zip` |
 | Linux Docker browser directory | Docker/Vulpine-Box release | extracted Linux browser artifact at `dist/camoufox-linux/camoufox` before `docker build` |
 | soak JSON/log | release candidate | `.artifacts/soak/soak-*.json` and `.artifacts/soak/soak-*.log` from `./scripts/run-soak.sh 3` |
 | builder metadata | browser rebuild | `/opt/vulpineos/artifacts/build-*.json` from `scripts/run-ec2-mac-build.sh` |
 | checksums | every shipped binary/archive | `SHA256SUMS` covering every file attached to the release |
 
+`install.sh` resolves assets from the latest GitHub release. It requires the CLI
+asset name `vulpineos-<goos>-<goarch>` and a browser asset matching
+`camoufox-*-<lin|mac>.<x86_64|arm64>.zip` for the installer's current platform.
+The `Build and Release` workflow builds the CLI matrix, uploads the browser
+packages from `multibuild.py`, creates `SHA256SUMS`, and drafts the tagged
+GitHub release with all installer assets attached.
+
 ## Packaging
 
-Before publishing artifacts:
+Before publishing the drafted release:
 
-1. rebuild `./vulpineos`
-2. verify the artifacts match the matrix above for the release scope
+1. verify the artifacts match the matrix above for the release scope
+2. verify `SHA256SUMS` covers every shipped archive and binary
 3. run `./scripts/check-vulpinebox.sh` before any Docker/Vulpine-Box release
-4. compute checksums for shipped archives or binaries
-5. verify that release notes and docs do not describe private
+4. verify that release notes and docs do not describe private
    implementation details
-6. verify no local/private files are included in the package contents
+5. verify no local/private files are included in the package contents
+6. after publishing, verify `curl -sL https://raw.githubusercontent.com/VulpineOS/VulpineOS/main/install.sh | bash`
+   installs from the latest release
 
 ## Tagging
 

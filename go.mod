@@ -47,3 +47,5 @@ require (
 )
 
 replace github.com/VulpineOS/foxbridge => ./local/foxbridge
+
+replace github.com/VulpineOS/vulpine-networklab => ./local/networklab

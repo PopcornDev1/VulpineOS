@@ -7,7 +7,52 @@ on:
       - "*"
 
 jobs:
+  cli:
+    name: VulpineOS CLI (${{ matrix.goos }}-${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            asset: vulpineos-linux-amd64
+          - goos: linux
+            goarch: arm64
+            asset: vulpineos-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            asset: vulpineos-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            asset: vulpineos-darwin-arm64
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.1"
+
+      - name: Build CLI
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME:-dev}" -o "dist/${ASSET}" ./cmd/vulpineos/
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: VulpineOSCLI-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/${{ matrix.asset }}
+
   build:
+    name: Camoufox (${{ matrix.target }}-${{ matrix.arch }})
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -58,7 +103,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.23"
+          go-version: "1.26.1"
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -114,7 +159,7 @@ jobs:
           path: dist/*
 
   release:
-    needs: build
+    needs: [cli, build]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -124,6 +169,22 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
+
+      - name: Create checksums
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          root = Path("artifacts")
+          entries = []
+          for path in sorted(p for p in root.rglob("*") if p.is_file()):
+              if path.name == "SHA256SUMS":
+                  continue
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              entries.append(f"{digest}  {path.name}")
+          (root / "SHA256SUMS").write_text("\n".join(entries) + "\n")
+          PY
 
       - name: Create Release
         uses: softprops/action-gh-release@v1

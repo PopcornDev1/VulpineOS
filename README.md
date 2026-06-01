@@ -264,13 +264,27 @@ deployments, pass `--api-key` to use an explicit bearer access key instead.
 
 ## Getting Started
 
-### Prerequisites
+### Install
 
-- Go 1.26+
+The installer downloads the latest published VulpineOS CLI and matching
+VulpineOS Camoufox browser bundle, installs `vulpineos` onto your PATH, and
+configures the browser path under `~/.vulpineos/config.json`.
+
+```bash
+curl -sL https://raw.githubusercontent.com/VulpineOS/VulpineOS/main/install.sh | bash
+vulpineos
+```
+
+The installer fails clearly if the latest release is missing the required CLI or
+browser assets for your platform.
+
+### Installer Prerequisites
+
+- Python 3, `unzip`, and either `curl` or `wget`
 - Node.js 22.16+ and pnpm/corepack for NanoClaw
-- Firefox/Camoufox binary (or build from source)
+- Docker installed and running for NanoClaw agents
 
-### Quick Start
+### Build From Source
 
 ```bash
 git clone https://github.com/VulpineOS/VulpineOS.git
@@ -278,16 +292,17 @@ cd VulpineOS
 go build -o vulpineos ./cmd/vulpineos
 ```
 
-You also need a Camoufox/Firefox-compatible browser binary. Either complete the
-source build above, place a packaged Camoufox next to `./vulpineos`, or pass one
-explicitly with `--binary /path/to/camoufox`.
+Source builds still need a Camoufox/Firefox-compatible browser binary. Either
+complete the browser source build below, place a packaged Camoufox next to
+`./vulpineos`, or pass one explicitly with `--binary /path/to/camoufox`.
 
 ### Run
 
 Local TUI:
 
 ```bash
-./vulpineos
+vulpineos          # release install
+./vulpineos        # source build
 ```
 
 Host TUI with remote access:
