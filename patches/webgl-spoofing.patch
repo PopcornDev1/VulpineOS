@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000..abcdef1234
 --- /dev/null
 +++ b/dom/base/WebGLParamsManager.cpp
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,97 @@
 +/* Camoufox: Per-context WebGL parameter manager */
 +#include "WebGLParamsManager.h"
 +
@@ -57,6 +57,14 @@ index 0000000000..abcdef1234
 +  return RoverfoxStorageManager::GetString(key, aOut);
 +}
 +
++bool WebGLParamsManager::GetExtensionsBlob(uint32_t aId, bool aIsWebGL2,
++                                           nsAString& aOut) {
++  nsAutoString key;
++  key.AppendPrintf(aIsWebGL2 ? "webgl2_extensions_%u" : "webgl_extensions_%u",
++                   aId);
++  return RoverfoxStorageManager::GetString(key, aOut);
++}
++
 +void WebGLParamsManager::DisableVendorFunction(uint32_t aId) {
 +  RoverfoxStorageManager::PutBool(VendorDisabledKey(aId), true);
 +}
@@ -98,7 +106,7 @@ new file mode 100644
 index 0000000000..bcdef12345
 --- /dev/null
 +++ b/dom/base/WebGLParamsManager.h
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,42 @@
 +/* Camoufox: Per-context WebGL parameter manager */
 +#ifndef mozilla_dom_WebGLParamsManager_h
 +#define mozilla_dom_WebGLParamsManager_h
@@ -122,6 +130,11 @@ index 0000000000..bcdef12345
 +  // the privileged side as roverfox.s.webgl_params_<id> / webgl2_params_<id> so
 +  // the 147-param set is per-context instead of process-global.
 +  static bool GetParamsBlob(uint32_t aId, bool aIsWebGL2, nsAString& aOut);
++  // Per-context WebGL supported-extension list (a JSON array of strings, same
++  // format as the global webGl:supportedExtensions config). Stored by the
++  // privileged side as roverfox.s.webgl_extensions_<id> / webgl2_extensions_<id>
++  // so the extension set is per-context instead of process-global.
++  static bool GetExtensionsBlob(uint32_t aId, bool aIsWebGL2, nsAString& aOut);
 +  static void DisableVendorFunction(uint32_t aId);
 +  static void DisableRendererFunction(uint32_t aId);
 +  static bool IsVendorFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj);

@@ -57,6 +57,10 @@ type FingerprintData struct {
 	// not share an identical GL parameter set. Populated by BrowserForge.
 	WebGLParams  json.RawMessage `json:"webGl:parameters,omitempty"`
 	WebGL2Params json.RawMessage `json:"webGl2:parameters,omitempty"`
+	// WebGL supported-extension lists (raw JSON arrays). Delivered per-context
+	// so concurrent agents do not share an identical extension set.
+	WebGLExtensions  json.RawMessage `json:"webGl:supportedExtensions,omitempty"`
+	WebGL2Extensions json.RawMessage `json:"webGl2:supportedExtensions,omitempty"`
 }
 
 // UnmarshalJSON accepts both the current array form and the older comma-string

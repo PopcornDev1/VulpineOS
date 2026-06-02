@@ -519,6 +519,14 @@ func buildContextFingerprintPrefs(fp vault.FingerprintData, userContextID uint32
 	if len(fp.WebGL2Params) > 0 {
 		items = append(items, kv{"webgl2_params", string(fp.WebGL2Params)})
 	}
+	// Per-context WebGL extension lists (JSON arrays) the C++ WebGLParamsManager
+	// reads (roverfox.s.webgl_extensions_<ucid> / webgl2_extensions_<ucid>).
+	if len(fp.WebGLExtensions) > 0 {
+		items = append(items, kv{"webgl_extensions", string(fp.WebGLExtensions)})
+	}
+	if len(fp.WebGL2Extensions) > 0 {
+		items = append(items, kv{"webgl2_extensions", string(fp.WebGL2Extensions)})
+	}
 	if len(items) == 0 {
 		return nil
 	}
