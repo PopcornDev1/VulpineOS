@@ -937,11 +937,11 @@ func (o *Orchestrator) PrepareScopedNanoClawConfig(contextID string) (string, fu
 func profileFamilyForPlatform(platform string) string {
 	switch {
 	case strings.Contains(platform, "Win"), strings.Contains(platform, "Windows"):
-		return "firefox131_windows"
+		return "firefox146_windows"
 	case strings.Contains(platform, "Linux"), strings.Contains(platform, "linux"):
-		return "firefox131_linux"
+		return "firefox146_linux"
 	default:
-		return "firefox131_macos"
+		return "firefox146_macos"
 	}
 }
 
