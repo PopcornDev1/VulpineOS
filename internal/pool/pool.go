@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -32,11 +34,33 @@ type Config struct {
 
 // DefaultConfig returns sensible defaults for a $40/month VPS.
 func DefaultConfig() Config {
-	return Config{
+	cfg := Config{
 		PreWarm:        10,
 		MaxActive:      20,
 		MaxUsesPerSlot: 50,
 	}
+	// Production deployments running many agents in one process raise these via
+	// env (e.g. VULPINE_POOL_MAX_ACTIVE=300). Load-test on a prod-sized box —
+	// each active context costs memory/FDs; the default 20 is conservative.
+	if v := envPositiveInt("VULPINE_POOL_MAX_ACTIVE"); v > 0 {
+		cfg.MaxActive = v
+	}
+	if v := envPositiveInt("VULPINE_POOL_PREWARM"); v > 0 {
+		cfg.PreWarm = v
+	}
+	if v := envPositiveInt("VULPINE_POOL_MAX_USES"); v > 0 {
+		cfg.MaxUsesPerSlot = v
+	}
+	return cfg
+}
+
+func envPositiveInt(name string) int {
+	if s := os.Getenv(name); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 // Pool manages a pool of reusable browser contexts.

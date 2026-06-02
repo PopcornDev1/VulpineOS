@@ -304,6 +304,14 @@ const Browser = {
         prefs: t.Array(browserTypes.UserPreference),
       },
     },
+    'clearContextFingerprint': {
+      params: {
+        // Clear all roverfox.s.*_<userContextId> per-context fingerprint prefs
+        // so a recycled/reused userContextId never inherits a prior agent's
+        // identity. Called before applying a new context's fingerprint.
+        userContextId: t.Number,
+      },
+    },
     'removeBrowserContext': {
       params: {
         browserContextId: t.String,

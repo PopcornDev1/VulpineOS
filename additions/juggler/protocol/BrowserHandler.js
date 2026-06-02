@@ -121,6 +121,16 @@ export class BrowserHandler {
     }
   }
 
+  async ['Browser.clearContextFingerprint']({userContextId}) {
+    // Remove every roverfox.s.<key>_<userContextId> pref so a recycled/reused
+    // container id cannot inherit the previous agent's per-context identity.
+    const suffix = '_' + String(userContextId);
+    for (const name of Services.prefs.getChildList('roverfox.s.')) {
+      if (name.endsWith(suffix))
+        Services.prefs.clearUserPref(name);
+    }
+  }
+
   async ['Browser.removeBrowserContext']({browserContextId}) {
     if (!this._enabled)
       throw new Error('Browser domain is not enabled');

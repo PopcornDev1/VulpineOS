@@ -654,6 +654,15 @@ func (o *Orchestrator) applyFingerprintToContext(contextID string, userContextID
 		}
 	}
 
+	// Clear any per-context fingerprint prefs left from a prior agent on this
+	// (possibly reused) userContextId so it cannot inherit a stale identity,
+	// then deliver this context's values.
+	if _, err := o.Client.Call("", "Browser.clearContextFingerprint", map[string]interface{}{
+		"userContextId": userContextID,
+	}); err != nil {
+		log.Printf("orchestrator: warning: clear context fingerprint failed for ctx %d: %v", userContextID, err)
+	}
+
 	// Per-context high-entropy surfaces (webgl/audio/font-spacing/oscpu/hwconc/
 	// webrtc) that the stock overrides above do not cover: deliver them from the
 	// privileged side as roverfox.s.<key>_<userContextId> prefs, which the C++
