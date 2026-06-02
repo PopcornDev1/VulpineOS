@@ -364,6 +364,17 @@ func IsRateLimited(err error) bool {
 	return false
 }
 
+// IsModelUnavailable reports whether err means the requested model no longer
+// exists / has no endpoints (e.g. OpenRouter 404 "No endpoints found"), so the
+// caller should skip it and try the next model rather than failing the turn.
+func IsModelUnavailable(err error) bool {
+	var apiErr *APIError
+	if ok := asAPIError(err, &apiErr); ok {
+		return apiErr.Status == http.StatusNotFound || strings.Contains(apiErr.Body, "No endpoints found")
+	}
+	return false
+}
+
 func asAPIError(err error, target **APIError) bool {
 	for err != nil {
 		if e, ok := err.(*APIError); ok {

@@ -145,7 +145,7 @@ func TestLive_NativeAgent_ReusesPageAcrossTurns(t *testing.T) {
 	defer cleanupContext(client, contextID)
 
 	// One persistent toolset reused across both turns (as the manager does).
-	toolset := NewBrowserToolset(client, sessionID)
+	toolset := NewBrowserToolset(client, contextID, sessionID)
 	defer toolset.Close()
 	cfg := liveConfig(t)
 
@@ -165,4 +165,54 @@ func TestLive_NativeAgent_ReusesPageAcrossTurns(t *testing.T) {
 		t.Fatalf("turn 2 reply %q — page was NOT reused across turns", r2)
 	}
 	t.Logf("page reused across turns OK")
+}
+
+// TestLive_NativeAgent_MultipleTabs exercises the tab tools directly (no model):
+// open a 2nd tab in the same context, list, switch back, read tab 1, close tab 2.
+func TestLive_NativeAgent_MultipleTabs(t *testing.T) {
+	k, client := startLiveKernel(t)
+	defer k.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	contextID, sessionID, err := openPage(ctx, client)
+	if err != nil {
+		t.Fatalf("openPage: %v", err)
+	}
+	defer cleanupContext(client, contextID)
+
+	ts := NewBrowserToolset(client, contextID, sessionID)
+	defer ts.Close()
+
+	if _, _, err := ts.Dispatch(ctx, "vulpine_navigate", `{"url":"https://example.com"}`); err != nil {
+		t.Fatalf("tab1 navigate: %v", err)
+	}
+	if out, isErr, err := ts.Dispatch(ctx, "vulpine_open_tab", `{"url":"https://example.org"}`); err != nil || isErr {
+		t.Fatalf("open_tab: err=%v isErr=%v out=%s", err, isErr, out)
+	}
+	list, _, err := ts.Dispatch(ctx, "vulpine_list_tabs", "{}")
+	if err != nil {
+		t.Fatalf("list_tabs: %v", err)
+	}
+	if !strings.Contains(list, "2 open tab") {
+		t.Fatalf("expected 2 tabs, got: %s", list)
+	}
+	if _, _, err := ts.Dispatch(ctx, "vulpine_switch_tab", `{"index":1}`); err != nil {
+		t.Fatalf("switch_tab: %v", err)
+	}
+	snap, _, err := ts.Dispatch(ctx, "vulpine_snapshot", `{"profile":"compact"}`)
+	if err != nil {
+		t.Fatalf("snapshot tab1: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(snap), "example domain") {
+		t.Fatalf("tab 1 was not reused after switch; snapshot: %s", truncate(snap, 200))
+	}
+	if _, _, err := ts.Dispatch(ctx, "vulpine_close_tab", `{"index":2}`); err != nil {
+		t.Fatalf("close_tab: %v", err)
+	}
+	list2, _, _ := ts.Dispatch(ctx, "vulpine_list_tabs", "{}")
+	if !strings.Contains(list2, "1 open tab") {
+		t.Fatalf("expected 1 tab after close, got: %s", list2)
+	}
+	t.Logf("multi-tab open/list/switch/close OK")
 }

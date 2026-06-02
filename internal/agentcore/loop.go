@@ -187,8 +187,9 @@ func (l *Loop) streamWithFallback(ctx context.Context, messages []ChatMessage) (
 			return comp, nil
 		}
 		lastErr = err
-		// Only fall back on rate limits, and only if another model remains.
-		if IsRateLimited(err) && i < len(l.cfg.Models)-1 {
+		// Fall back to the next model on a rate limit or an unavailable/removed
+		// model (404), as long as another model remains. Other errors abort.
+		if (IsRateLimited(err) || IsModelUnavailable(err)) && i < len(l.cfg.Models)-1 {
 			continue
 		}
 		return Completion{}, err

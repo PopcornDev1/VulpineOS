@@ -172,6 +172,25 @@ func TestLoopFallsBackToNextModelOn429(t *testing.T) {
 	}
 }
 
+func TestLoopFallsBackOnUnavailableModel(t *testing.T) {
+	// First model 404s (removed/no endpoints) -> skip to the next model.
+	model := &scriptedCompleter{
+		errs:  []error{&APIError{Status: 404, Body: `{"error":{"message":"No endpoints found for x:free."}}`}, nil},
+		turns: []Completion{{}, {Message: ChatMessage{Role: "assistant", Content: "done"}, FinishReason: "stop"}},
+	}
+	loop := NewLoop(model, nil, nil, LoopConfig{Models: []string{"dead-model", "good-model"}})
+	final, err := loop.Run(context.Background(), "go", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if final != "done" {
+		t.Errorf("final = %q, want done", final)
+	}
+	if len(model.models) != 2 || model.models[1] != "good-model" {
+		t.Errorf("model attempts = %v, want fallback to good-model", model.models)
+	}
+}
+
 func TestLoopReturnsNonRateLimitErrorImmediately(t *testing.T) {
 	model := &scriptedCompleter{errs: []error{errors.New("boom")}, turns: []Completion{{}}}
 	loop := NewLoop(model, nil, nil, LoopConfig{Models: []string{"a", "b"}})

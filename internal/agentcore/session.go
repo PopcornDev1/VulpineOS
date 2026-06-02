@@ -75,7 +75,7 @@ func RunBrowserAgent(ctx context.Context, client *juggler.Client, cfg Config, ta
 	defer cleanupContext(client, contextID)
 
 	model := newCompleter(cfg)
-	toolset := NewBrowserToolset(client, sessionID)
+	toolset := NewBrowserToolset(client, contextID, sessionID)
 	defer toolset.Close()
 	loop := NewLoop(model, toolset, events, LoopConfig{
 		Models:        models,
@@ -98,7 +98,9 @@ func RunBrowserAgentInContext(ctx context.Context, client *juggler.Client, conte
 	if err != nil {
 		return "", fmt.Errorf("open page in context: %w", err)
 	}
-	return RunBrowserAgentOnSession(ctx, client, sessionID, cfg, task, events)
+	toolset := NewBrowserToolset(client, contextID, sessionID)
+	defer toolset.Close()
+	return RunBrowserAgentWithToolset(ctx, toolset, cfg, task, events)
 }
 
 // RunBrowserAgentOnSession runs a one-off native agent turn against an already-
@@ -111,7 +113,7 @@ func RunBrowserAgentOnSession(ctx context.Context, client *juggler.Client, sessi
 	if strings.TrimSpace(sessionID) == "" {
 		return "", fmt.Errorf("page session is required")
 	}
-	toolset := NewBrowserToolset(client, sessionID)
+	toolset := NewBrowserToolset(client, "", sessionID)
 	defer toolset.Close()
 	return RunBrowserAgentWithToolset(ctx, toolset, cfg, task, events)
 }

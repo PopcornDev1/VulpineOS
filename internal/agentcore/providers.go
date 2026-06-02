@@ -61,13 +61,16 @@ func stripProviderPrefix(model, provider string) string {
 	return model
 }
 
-// DefaultFallbackModels is the OpenRouter free-model fallback chain NanoClaw
-// used. It is only meaningful when the active provider is OpenRouter; other
-// providers don't share these model ids.
+// DefaultFallbackModels is the OpenRouter free-model fallback chain. Only
+// meaningful when the active provider is OpenRouter; other providers don't share
+// these ids. Kept to currently-available free models (OpenRouter removes free
+// models often — the loop also skips any that 404, see IsModelUnavailable).
+// NOTE: all OpenRouter free models share one per-key daily request cap, so when
+// that cap is hit every entry here will 429 too; the real fix is adding credits
+// or using a paid/OAuth provider.
 func DefaultFallbackModels() []string {
 	return []string{
 		"openai/gpt-oss-20b:free",
-		"google/gemini-2.0-flash-exp:free",
-		"mistralai/mistral-nemo:free",
+		"meta-llama/llama-3.3-70b-instruct:free",
 	}
 }

@@ -237,7 +237,7 @@ func (m *Manager) acquireToolset(ctx context.Context, agentID, contextID string)
 	if err != nil {
 		return nil, fmt.Errorf("open page in context: %w", err)
 	}
-	ts := NewBrowserToolset(m.client, sid)
+	ts := NewBrowserToolset(m.client, contextID, sid)
 	m.mu.Lock()
 	if raced := m.toolsets[agentID]; raced != nil {
 		m.mu.Unlock()
