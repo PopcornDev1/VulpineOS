@@ -378,8 +378,36 @@ func (e *managerEvents) OnAssistant(text string) {
 	}
 }
 func (e *managerEvents) OnToolCall(name, args string) {
-	e.m.emitConversation(e.agentID, "tool", name)
+	e.m.emitConversation(e.agentID, "system", "Running tool: "+toolCallSummary(name, args))
 }
-func (e *managerEvents) OnToolResult(name, result string, isErr bool) {}
-func (e *managerEvents) OnStatus(status string)                       {}
-func (e *managerEvents) OnUsage(turn Usage)                           { e.m.addTokens(e.agentID, turn) }
+func (e *managerEvents) OnToolResult(name, result string, isErr bool) {
+	if isErr {
+		e.m.emitConversation(e.agentID, "system", fmt.Sprintf("Tool failed: %s — %s", name, traceSnippet(result)))
+		return
+	}
+	e.m.emitConversation(e.agentID, "system", fmt.Sprintf("Tool completed: %s", name))
+}
+func (e *managerEvents) OnStatus(status string) {}
+func (e *managerEvents) OnUsage(turn Usage)     { e.m.addTokens(e.agentID, turn) }
+func (e *managerEvents) OnWarning(text string) {
+	e.m.emitConversation(e.agentID, "system", "Warning: "+text)
+}
+
+// toolCallSummary renders a concise "name {key args}" label for the trace.
+func toolCallSummary(name, args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" || args == "{}" || args == "null" {
+		return name
+	}
+	return name + " " + traceSnippet(args)
+}
+
+// traceSnippet collapses a value to a single short line for operator trace rows.
+func traceSnippet(s string) string {
+	s = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", " "))
+	const max = 160
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
+}

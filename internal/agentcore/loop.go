@@ -29,6 +29,7 @@ type Events interface {
 	OnToolResult(name, result string, isErr bool) // tool finished
 	OnStatus(status string)                       // "running" | "completed" | "error"
 	OnUsage(turn Usage)                           // token usage for one completed model turn
+	OnWarning(text string)                        // operator-facing warning (e.g. false-success)
 }
 
 // NopEvents is an Events that ignores everything (useful as a default/base).
@@ -40,6 +41,7 @@ func (NopEvents) OnToolCall(string, string)         {}
 func (NopEvents) OnToolResult(string, string, bool) {}
 func (NopEvents) OnStatus(string)                   {}
 func (NopEvents) OnUsage(Usage)                     {}
+func (NopEvents) OnWarning(string)                  {}
 
 // LoopConfig configures a single agent run.
 type LoopConfig struct {
@@ -99,6 +101,11 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 
 	l.events.OnStatus("running")
 
+	// Track whether the most recent tool call failed, so we can warn the operator
+	// if the model then replies as if the task succeeded (false-success).
+	lastToolFailed := false
+	lastFailedTool := ""
+
 	for iter := 0; iter < l.cfg.MaxIterations; iter++ {
 		if err := ctx.Err(); err != nil {
 			l.events.OnStatus("error")
@@ -116,6 +123,9 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 
 		if !comp.HasToolCalls() {
 			final := comp.Message.Content
+			if lastToolFailed {
+				l.events.OnWarning(fmt.Sprintf("assistant replied after %s failed, with no successful retry recorded", lastFailedTool))
+			}
 			l.events.OnAssistant(final)
 			l.events.OnStatus("completed")
 			return final, nil
@@ -146,6 +156,13 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 			}
 
 			l.events.OnToolResult(tc.Function.Name, result, isErr)
+			if isErr {
+				lastToolFailed = true
+				lastFailedTool = tc.Function.Name
+			} else {
+				lastToolFailed = false
+				lastFailedTool = ""
+			}
 			messages = append(messages, ChatMessage{
 				Role:       "tool",
 				ToolCallID: tc.ID,

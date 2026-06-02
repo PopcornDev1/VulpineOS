@@ -55,6 +55,7 @@ type recordEvents struct {
 	toolCalls []string
 	toolRes   []string
 	statuses  []string
+	warnings  []string
 }
 
 func (r *recordEvents) OnTextDelta(d string)               { r.deltas = append(r.deltas, d) }
@@ -63,6 +64,7 @@ func (r *recordEvents) OnToolCall(n, a string)             { r.toolCalls = appen
 func (r *recordEvents) OnToolResult(n, res string, e bool) { r.toolRes = append(r.toolRes, n) }
 func (r *recordEvents) OnStatus(s string)                  { r.statuses = append(r.statuses, s) }
 func (r *recordEvents) OnUsage(Usage)                      {}
+func (r *recordEvents) OnWarning(w string)                 { r.warnings = append(r.warnings, w) }
 
 func toolCallTurn(id, name, args string) Completion {
 	return Completion{
@@ -106,6 +108,49 @@ func TestLoopExecutesToolThenReturnsFinal(t *testing.T) {
 	}
 	if len(ev.statuses) == 0 || ev.statuses[0] != "running" || ev.statuses[len(ev.statuses)-1] != "completed" {
 		t.Errorf("status sequence = %v, want running..completed", ev.statuses)
+	}
+}
+
+// failDispatcher reports a tool-level failure for the named tool.
+type failDispatcher struct{ failTool string }
+
+func (f *failDispatcher) Dispatch(_ context.Context, name, _ string) (string, bool, error) {
+	if name == f.failTool {
+		return "element not found", true, nil
+	}
+	return "ok", false, nil
+}
+
+func TestLoopWarnsOnFalseSuccess(t *testing.T) {
+	// Tool fails, then the model replies as if it succeeded -> expect a warning.
+	model := &scriptedCompleter{turns: []Completion{
+		toolCallTurn("c1", "vulpine_click", `{"ref":"x"}`),
+		{Message: ChatMessage{Role: "assistant", Content: "Done! Clicked it."}, FinishReason: "stop"},
+	}}
+	ev := &recordEvents{}
+	loop := NewLoop(model, &failDispatcher{failTool: "vulpine_click"}, ev, LoopConfig{Models: []string{"m"}})
+	if _, err := loop.Run(context.Background(), "click it", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(ev.warnings) != 1 || !strings.Contains(ev.warnings[0], "vulpine_click") {
+		t.Fatalf("warnings = %v, want one mentioning vulpine_click", ev.warnings)
+	}
+}
+
+func TestLoopNoWarningWhenToolRecovers(t *testing.T) {
+	// Tool fails, then a later tool succeeds before the final reply -> no warning.
+	model := &scriptedCompleter{turns: []Completion{
+		toolCallTurn("c1", "vulpine_click", `{"ref":"x"}`),
+		toolCallTurn("c2", "vulpine_find", `{"text":"x"}`),
+		{Message: ChatMessage{Role: "assistant", Content: "Done."}, FinishReason: "stop"},
+	}}
+	ev := &recordEvents{}
+	loop := NewLoop(model, &failDispatcher{failTool: "vulpine_click"}, ev, LoopConfig{Models: []string{"m"}})
+	if _, err := loop.Run(context.Background(), "go", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(ev.warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", ev.warnings)
 	}
 }
 

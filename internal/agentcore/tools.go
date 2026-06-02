@@ -102,12 +102,15 @@ func BrowserTools() []ToolDef {
 type BrowserToolset struct {
 	executor  *mcp.ToolExecutor
 	sessionID string
+	loopDet   *mcp.LoopDetector
 }
 
 // NewBrowserToolset binds a toolset to a juggler client and the page session
-// the agent operates on. Call Close when the agent session ends.
+// the agent operates on. Call Close when the agent session ends. It carries a
+// loop detector so repeated identical, progress-less tool calls are nudged
+// toward a different approach (parity with the MCP server path).
 func NewBrowserToolset(client *juggler.Client, sessionID string) *BrowserToolset {
-	return &BrowserToolset{executor: mcp.NewToolExecutor(client), sessionID: sessionID}
+	return &BrowserToolset{executor: mcp.NewToolExecutor(client), sessionID: sessionID, loopDet: mcp.NewLoopDetector(3)}
 }
 
 // Close releases the toolset's persistent tracker subscriptions.
@@ -140,6 +143,14 @@ func (t *BrowserToolset) Dispatch(ctx context.Context, name string, rawArgs stri
 			return "", false, fmt.Errorf("parse arguments for %s: %w", name, err)
 		}
 	}
+	// Loop detection: if the model repeats the same tool+args with no progress,
+	// nudge it toward a different approach instead of re-running the dead action.
+	if t.loopDet != nil {
+		if warn := t.loopDet.Check(t.sessionID, name, trimmed); warn != "" {
+			return warn, false, nil
+		}
+	}
+
 	args[sessionIDArg] = t.sessionID
 
 	encoded, err := json.Marshal(args)
@@ -150,6 +161,11 @@ func (t *BrowserToolset) Dispatch(ctx context.Context, name string, rawArgs stri
 	res, err := t.executor.Call(ctx, name, encoded)
 	if err != nil {
 		return "", false, err
+	}
+	// Navigation moves to a new page; clear the loop history so legitimate
+	// repeated actions on the new page aren't falsely flagged.
+	if t.loopDet != nil && name == "vulpine_navigate" {
+		t.loopDet.Reset(t.sessionID)
 	}
 	return contentText(res), res.IsError, nil
 }

@@ -21,8 +21,9 @@ func (e liveLogEvents) OnToolCall(n, a string) { e.t.Logf("[tool-call] %s %s", n
 func (e liveLogEvents) OnToolResult(n, r string, er bool) {
 	e.t.Logf("[tool-result] %s err=%v %s", n, er, truncate(r, 120))
 }
-func (e liveLogEvents) OnStatus(s string) { e.t.Logf("[status] %s", s) }
-func (e liveLogEvents) OnUsage(u Usage)   { e.t.Logf("[usage] total=%d", u.TotalTokens) }
+func (e liveLogEvents) OnStatus(s string)  { e.t.Logf("[status] %s", s) }
+func (e liveLogEvents) OnUsage(u Usage)    { e.t.Logf("[usage] total=%d", u.TotalTokens) }
+func (e liveLogEvents) OnWarning(w string) { e.t.Logf("[warning] %s", w) }
 
 // startLiveKernel boots headless Camoufox and enables the browser, mirroring the
 // integration harness. Gated by VULPINEOS_RUN_LIVE + VULPINE_AGENTCORE_LIVE.
