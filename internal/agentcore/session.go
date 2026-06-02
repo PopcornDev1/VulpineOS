@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/mcp"
@@ -86,6 +87,35 @@ func RunBrowserAgent(ctx context.Context, client *juggler.Client, cfg Config, ta
 	return loop.Run(ctx, task, nil)
 }
 
+// RunBrowserAgentInContext runs a native agent for one task against a page
+// created inside an existing (caller-owned) browser context — e.g. a pooled,
+// identity-applied context from the orchestrator. It does NOT create or remove
+// the context; the caller owns its lifecycle. Returns the agent's final reply.
+func RunBrowserAgentInContext(ctx context.Context, client *juggler.Client, contextID string, cfg Config, task string, events Events) (string, error) {
+	if client == nil {
+		return "", fmt.Errorf("juggler client is required")
+	}
+	models := cfg.modelChain()
+	if len(models) == 0 {
+		return "", fmt.Errorf("no model configured")
+	}
+	sessionID, err := openPageInContext(ctx, client, contextID)
+	if err != nil {
+		return "", fmt.Errorf("open page in context: %w", err)
+	}
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = BaseURLForProvider(cfg.Provider)
+	}
+	loop := NewLoop(NewModelClient(baseURL, cfg.APIKey), NewBrowserToolset(client, sessionID), events, LoopConfig{
+		Models:        models,
+		SystemPrompt:  browserSystemPrompt,
+		Tools:         BrowserTools(),
+		MaxIterations: cfg.MaxIterations,
+	})
+	return loop.Run(ctx, task, nil)
+}
+
 // openPage creates a fresh browser context with one page and returns the
 // context id + the page's juggler session id, via the canonical MCP handler.
 func openPage(ctx context.Context, client *juggler.Client) (contextID, sessionID string, err error) {
@@ -107,6 +137,46 @@ func openPage(ctx context.Context, client *juggler.Client) (contextID, sessionID
 		return "", "", fmt.Errorf("new_context returned empty sessionId")
 	}
 	return out.ContextID, out.SessionID, nil
+}
+
+// openPageInContext creates a page inside an already-existing browser context
+// (e.g. one acquired + identity-applied by the orchestrator's pool) and returns
+// the new page's juggler session id. Mirrors the MCP new-context handler's
+// attachedToTarget capture, but reuses the caller's context instead of making a
+// fresh one.
+func openPageInContext(ctx context.Context, client *juggler.Client, contextID string) (string, error) {
+	if strings.TrimSpace(contextID) == "" {
+		return "", fmt.Errorf("contextID is required")
+	}
+	sessionCh := make(chan string, 4)
+	cancel := client.SubscribeWithCancel("Browser.attachedToTarget", func(_ string, params json.RawMessage) {
+		var ev struct {
+			SessionID  string `json:"sessionId"`
+			TargetInfo struct {
+				BrowserContextID string `json:"browserContextId"`
+			} `json:"targetInfo"`
+		}
+		_ = json.Unmarshal(params, &ev)
+		if ev.SessionID != "" && ev.TargetInfo.BrowserContextID == contextID {
+			select {
+			case sessionCh <- ev.SessionID:
+			default:
+			}
+		}
+	})
+	defer cancel()
+
+	if _, err := client.Call("", "Browser.newPage", map[string]interface{}{"browserContextId": contextID}); err != nil {
+		return "", fmt.Errorf("Browser.newPage: %w", err)
+	}
+	select {
+	case sid := <-sessionCh:
+		return sid, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(15 * time.Second):
+		return "", fmt.Errorf("timed out waiting for page session in context %s", contextID)
+	}
 }
 
 func cleanupContext(client *juggler.Client, contextID string) {
