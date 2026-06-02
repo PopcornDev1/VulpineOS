@@ -498,8 +498,17 @@ func (m Model) visibleLines() int {
 func (m Model) getDisplayLines() []string {
 	var rendered []string
 	matched := 0
-	for _, e := range m.entries {
+	for idx, e := range m.entries {
 		if m.traceOnly && e.Role != "system" {
+			continue
+		}
+		// Main (non-trace) view: collapse a run of consecutive tool-activity
+		// (system) entries into a single status line — render only the last of
+		// each run. While the agent works, that line is the most recent event,
+		// so it reads as one status "cycling" through what it's doing; when an
+		// assistant message breaks the run, the next run renders its own line,
+		// giving a checkpoint per phase. The action-trace view keeps full detail.
+		if !m.traceOnly && e.Role == "system" && idx+1 < len(m.entries) && m.entries[idx+1].Role == "system" {
 			continue
 		}
 		lines := e.renderedLines
@@ -558,8 +567,12 @@ func (m Model) getDisplayLines() []string {
 				rendered[len(rendered)-1] = rendered[len(rendered)-1] + cursor
 			}
 		case "system":
-			// System messages: muted dot
+			// System messages: muted dot. The trailing status line while the
+			// agent is working animates with the spinner to signal it's live.
 			marker := shared.MutedStyle.Render("● ")
+			if !m.traceOnly && idx == len(m.entries)-1 && m.thinking {
+				marker = shared.WarmingStyle.Render(spinnerFrames[m.spinnerFrame%len(spinnerFrames)] + " ")
+			}
 			for j, line := range lines {
 				if j == 0 {
 					rendered = append(rendered, marker+line)
