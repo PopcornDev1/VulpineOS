@@ -292,6 +292,7 @@ const Browser = {
       },
       returns: {
         browserContextId: t.String,
+        userContextId: t.Number,
       },
     },
     'removeBrowserContext': {
@@ -1145,6 +1146,29 @@ const Page = {
         data: t.String,
         dataType: t.Optional(t.String),
       }
+    },
+    'applyFingerprintOverrides': {
+      params: {
+        webglVendor: t.Optional(t.String),
+        webglRenderer: t.Optional(t.String),
+        audioSeed: t.Optional(t.Number),
+        fontSpacingSeed: t.Optional(t.Number),
+        fontList: t.Optional(t.String),
+        speechVoices: t.Optional(t.String),
+        timezone: t.Optional(t.String),
+        screenWidth: t.Optional(t.Number),
+        screenHeight: t.Optional(t.Number),
+        screenColorDepth: t.Optional(t.Number),
+        navUserAgent: t.Optional(t.String),
+        navPlatform: t.Optional(t.String),
+        navOscpu: t.Optional(t.String),
+        hardwareConcurrency: t.Optional(t.Number),
+        webrtcIPv4: t.Optional(t.String),
+        webrtcIPv6: t.Optional(t.String),
+      },
+      returns: {
+        applied: t.Array(t.String),
+      },
     },
     'getShadowDOM': {
       params: {

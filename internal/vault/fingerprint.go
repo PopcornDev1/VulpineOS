@@ -16,7 +16,11 @@ import (
 
 const fallbackFirefoxVersion = "146.0"
 
-// FingerprintData holds the key fields we display in the TUI.
+// FingerprintData holds the key fields we display in the TUI and the
+// per-context surfaces driven through Page.applyFingerprintOverrides / the
+// per-context init script (webgl/audio/fonts/hwconc/oscpu). Keys are the
+// camoufox dotted/colon config namespace shared by the BrowserForge bridge and
+// the offline fallback.
 type FingerprintData struct {
 	UserAgent    string   `json:"navigator.userAgent,omitempty"`
 	Platform     string   `json:"navigator.platform,omitempty"`
@@ -27,6 +31,16 @@ type FingerprintData struct {
 	Languages    []string `json:"navigator.languages,omitempty"`
 	Timezone     string   `json:"timezone,omitempty"`
 	DeviceScale  float64  `json:"window.devicePixelRatio,omitempty"`
+
+	// Per-context high-entropy surfaces (currently global without per-context
+	// application). Present in BrowserForge configs; the offline fallback emits
+	// seeds + fonts but not webgl vendor/renderer.
+	Fonts               []string `json:"fonts,omitempty"`
+	AudioSeed           uint32   `json:"audio:seed,omitempty"`
+	FontSpacingSeed     uint32   `json:"fonts:spacing_seed,omitempty"`
+	WebGLVendor         string   `json:"webGl:vendor,omitempty"`
+	WebGLRenderer       string   `json:"webGl:renderer,omitempty"`
+	HardwareConcurrency int      `json:"navigator.hardwareConcurrency,omitempty"`
 }
 
 // UnmarshalJSON accepts both the current array form and the older comma-string

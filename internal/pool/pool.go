@@ -13,9 +13,14 @@ import (
 // ContextSlot represents a reusable browser context.
 type ContextSlot struct {
 	ContextID string
-	SessionID string
-	UseCount  int
-	CreatedAt time.Time
+	// UserContextID is the numeric Firefox container id (originAttributes
+	// userContextId) for this context. It is the per-context join key used by
+	// the C++ fingerprint setters' storage and the networklab ctx-N identity
+	// map. The default context is 0.
+	UserContextID uint32
+	SessionID     string
+	UseCount      int
+	CreatedAt     time.Time
 }
 
 // Config holds pool configuration.
@@ -271,14 +276,16 @@ func (p *Pool) createSlotNoCount() (*ContextSlot, error) {
 
 	var ctx struct {
 		BrowserContextID string `json:"browserContextId"`
+		UserContextID    uint32 `json:"userContextId"`
 	}
 	if err := json.Unmarshal(result, &ctx); err != nil {
 		return nil, fmt.Errorf("parse context result: %w", err)
 	}
 
 	return &ContextSlot{
-		ContextID: ctx.BrowserContextID,
-		CreatedAt: time.Now(),
+		ContextID:     ctx.BrowserContextID,
+		UserContextID: ctx.UserContextID,
+		CreatedAt:     time.Now(),
 	}, nil
 }
 

@@ -468,6 +468,57 @@ func (o *Orchestrator) applyAgentToContext(contextID string, agent *vault.Agent)
 	return nil
 }
 
+// buildFingerprintInitScript builds a per-context init script that drives the
+// Func-gated, self-destructing window.set* fingerprint setters for the
+// high-entropy surfaces NOT covered by the stock per-context Browser.*Override
+// calls (webgl vendor/renderer, audio seed, font spacing seed, font list,
+// oscpu, hardware concurrency). Registered on the browser context, it runs at
+// document-start on every page in that context (including pages opened by
+// OpenClaw), so each fresh window re-applies the identity before its own
+// scripts read these surfaces. Returns "" when there is nothing to set.
+func buildFingerprintInitScript(fp vault.FingerprintData) string {
+	type setter struct {
+		method string
+		arg    interface{}
+	}
+	var setters []setter
+	if fp.WebGLVendor != "" {
+		setters = append(setters, setter{"setWebGLVendor", fp.WebGLVendor})
+	}
+	if fp.WebGLRenderer != "" {
+		setters = append(setters, setter{"setWebGLRenderer", fp.WebGLRenderer})
+	}
+	if fp.AudioSeed != 0 {
+		setters = append(setters, setter{"setAudioFingerprintSeed", fp.AudioSeed})
+	}
+	if fp.FontSpacingSeed != 0 {
+		setters = append(setters, setter{"setFontSpacingSeed", fp.FontSpacingSeed})
+	}
+	if len(fp.Fonts) > 0 {
+		setters = append(setters, setter{"setFontList", strings.Join(fp.Fonts, ",")})
+	}
+	if fp.OsCPU != "" {
+		setters = append(setters, setter{"setNavigatorOscpu", fp.OsCPU})
+	}
+	if fp.HardwareConcurrency > 0 {
+		setters = append(setters, setter{"setNavigatorHardwareConcurrency", fp.HardwareConcurrency})
+	}
+	if len(setters) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("(function(){var w=window;function f(n,v){try{if(typeof w[n]==='function')w[n](v);}catch(e){}}\n")
+	for _, s := range setters {
+		arg, err := json.Marshal(s.arg)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(&b, "f(%q,%s);\n", s.method, string(arg))
+	}
+	b.WriteString("})();")
+	return b.String()
+}
+
 func (o *Orchestrator) applyFingerprintToContext(contextID, fpJSON, explicitLocale, explicitTimezone string) error {
 	raw := map[string]interface{}{}
 	if err := json.Unmarshal([]byte(fpJSON), &raw); err != nil {
@@ -579,6 +630,21 @@ func (o *Orchestrator) applyFingerprintToContext(contextID, fpJSON, explicitLoca
 			"geolocation":      geo,
 		}); err != nil {
 			return fmt.Errorf("set geolocation: %w", err)
+		}
+	}
+
+	// Per-context high-entropy surfaces (webgl/audio/fonts/oscpu/hwconc) that the
+	// stock overrides above do not cover: drive the window.set* setters via a
+	// context init script so every page in this context re-applies them at
+	// document-start.
+	if script := buildFingerprintInitScript(fp); script != "" {
+		if _, err := o.Client.Call("", "Browser.setInitScripts", map[string]interface{}{
+			"browserContextId": contextID,
+			"scripts": []map[string]interface{}{
+				{"script": script},
+			},
+		}); err != nil {
+			return fmt.Errorf("set fingerprint init script: %w", err)
 		}
 	}
 

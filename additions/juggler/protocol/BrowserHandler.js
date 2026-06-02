@@ -104,7 +104,10 @@ export class BrowserHandler {
       throw new Error('Browser domain is not enabled');
     const browserContext = this._targetRegistry.createBrowserContext(removeOnDetach);
     this._createdBrowserContextIds.add(browserContext.browserContextId);
-    return {browserContextId: browserContext.browserContextId};
+    return {
+      browserContextId: browserContext.browserContextId,
+      userContextId: browserContext.userContextId,
+    };
   }
 
   async ['Browser.removeBrowserContext']({browserContextId}) {
