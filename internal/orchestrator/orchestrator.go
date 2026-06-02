@@ -1,16 +1,20 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"vulpineos/internal/agentbus"
 	"vulpineos/internal/config"
 	"vulpineos/internal/costtrack"
+	"vulpineos/internal/extensions"
 	"vulpineos/internal/foxbridge"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
@@ -19,6 +23,7 @@ import (
 	"vulpineos/internal/pool"
 	"vulpineos/internal/proxy"
 	"vulpineos/internal/recording"
+	"vulpineos/internal/rendercohort"
 	"vulpineos/internal/security"
 	"vulpineos/internal/vault"
 	"vulpineos/internal/webhooks"
@@ -75,6 +80,15 @@ type Orchestrator struct {
 	// NSS NetworkIdentityManager applies the right TLS identity per context.
 	netIdentities   map[uint32]*networklab.Identity
 	netIdentitiesMu sync.Mutex
+
+	// Per-context render cohorts (optional, private-provider backed). The
+	// shared cohort config blobs are delivered once; each agent context is then
+	// pinned to one cohort by key. Empty when no provider is available, in which
+	// case per-context render isolation stays off and agents fall back to the
+	// synthetic per-context fingerprint surfaces.
+	renderCohorts     []extensions.RenderCohort
+	renderCohortReady bool
+	renderCohortMu    sync.Mutex
 }
 
 // Opts holds optional subsystem dependencies for the orchestrator.
@@ -441,7 +455,7 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, userContextID uin
 	}
 
 	if citizen.Fingerprint != "" {
-		if err := o.applyFingerprintToContext(contextID, userContextID, citizen.Fingerprint, citizen.Locale, citizen.Timezone); err != nil {
+		if err := o.applyFingerprintToContext(contextID, userContextID, citizen.Fingerprint, citizen.Locale, citizen.Timezone, citizen.ID); err != nil {
 			return err
 		}
 	}
@@ -462,7 +476,7 @@ func (o *Orchestrator) applyAgentToContext(contextID string, userContextID uint3
 		return fmt.Errorf("agent not found")
 	}
 	if agent.Fingerprint != "" {
-		if err := o.applyFingerprintToContext(contextID, userContextID, agent.Fingerprint, agent.Locale, agent.Timezone); err != nil {
+		if err := o.applyFingerprintToContext(contextID, userContextID, agent.Fingerprint, agent.Locale, agent.Timezone, agent.ID); err != nil {
 			return err
 		}
 	}
@@ -540,7 +554,7 @@ func buildContextFingerprintPrefs(fp vault.FingerprintData, userContextID uint32
 	return prefs
 }
 
-func (o *Orchestrator) applyFingerprintToContext(contextID string, userContextID uint32, fpJSON, explicitLocale, explicitTimezone string) error {
+func (o *Orchestrator) applyFingerprintToContext(contextID string, userContextID uint32, fpJSON, explicitLocale, explicitTimezone, seed string) error {
 	raw := map[string]interface{}{}
 	if err := json.Unmarshal([]byte(fpJSON), &raw); err != nil {
 		return fmt.Errorf("parse fingerprint: %w", err)
@@ -676,6 +690,11 @@ func (o *Orchestrator) applyFingerprintToContext(contextID string, userContextID
 		}
 	}
 
+	// Per-context render isolation: pin this context to one real-device render
+	// cohort (matched to the claimed OS) when a private provider supplies them.
+	// Best-effort — render coherence must not block the rest of the identity.
+	o.applyRenderCohort(userContextID, seed, firstNonEmpty(fp.Platform, stringField(raw, "navigator.platform")))
+
 	uaSummary := ua
 	if len(uaSummary) > 40 {
 		uaSummary = uaSummary[:40] + "..."
@@ -683,6 +702,86 @@ func (o *Orchestrator) applyFingerprintToContext(contextID string, userContextID
 	log.Printf("orchestrator: fingerprint applied to context %s (ua=%s, screen=%dx%d)",
 		contextID, uaSummary, width, height)
 	return nil
+}
+
+// ensureRenderCohorts lazily delivers the shared per-cohort render config blobs
+// (and the per-context mode flag) to the browser exactly once, and returns the
+// available cohorts. The blobs are shared cohort data (one copy per cohort,
+// ref-counted in the content process), so they are set with ucid-independent
+// pref names that survive clearContextFingerprint. Returns ok=false (and leaves
+// per-context render isolation off) when no provider, no cohorts, or delivery
+// fails — the attempt is made only once regardless of outcome.
+func (o *Orchestrator) ensureRenderCohorts() ([]extensions.RenderCohort, bool) {
+	o.renderCohortMu.Lock()
+	defer o.renderCohortMu.Unlock()
+	if o.renderCohortReady {
+		return o.renderCohorts, len(o.renderCohorts) > 0
+	}
+	o.renderCohortReady = true // attempt once; on failure stay empty (feature off)
+
+	provider := extensions.Registry.RenderCohort()
+	if provider == nil || !provider.Available() {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cohorts, err := provider.Cohorts(ctx)
+	if err != nil {
+		if !errors.Is(err, extensions.ErrUnavailable) {
+			log.Printf("orchestrator: render cohorts unavailable: %v", err)
+		}
+		return nil, false
+	}
+
+	// Turn on per-context render mode, then deliver each cohort's config blob in
+	// its own call so a single oversized RPC frame is never sent.
+	if _, err := o.Client.Call("", "Browser.setContextFingerprint", map[string]interface{}{
+		"prefs": []map[string]interface{}{{"name": "roverfox.s.renderlab_pc_enabled", "value": "1"}},
+	}); err != nil {
+		log.Printf("orchestrator: warning: enable per-context render mode failed: %v", err)
+		return nil, false
+	}
+	valid := make([]extensions.RenderCohort, 0, len(cohorts))
+	for _, c := range cohorts {
+		if strings.TrimSpace(c.Key) == "" || strings.TrimSpace(c.ConfigBlob) == "" {
+			continue
+		}
+		if _, err := o.Client.Call("", "Browser.setContextFingerprint", map[string]interface{}{
+			"prefs": []map[string]interface{}{{"name": "roverfox.s.renderlab_cfg_" + c.Key, "value": c.ConfigBlob}},
+		}); err != nil {
+			log.Printf("orchestrator: warning: deliver render cohort %s failed: %v", c.Key, err)
+			continue
+		}
+		valid = append(valid, c)
+	}
+	o.renderCohorts = valid
+	log.Printf("orchestrator: per-context render isolation: delivered %d cohort(s)", len(valid))
+	return o.renderCohorts, len(valid) > 0
+}
+
+// applyRenderCohort pins a single browser context to one render cohort matched
+// to the claimed OS, by setting the small per-context selector pref the content
+// process reads. No-op when per-context render isolation is unavailable or no
+// cohort matches the claimed OS.
+func (o *Orchestrator) applyRenderCohort(userContextID uint32, seed, claimedOS string) {
+	cohorts, ok := o.ensureRenderCohorts()
+	if !ok {
+		return
+	}
+	cohort, ok := rendercohort.Assign(cohorts, seed, claimedOS)
+	if !ok {
+		return
+	}
+	if _, err := o.Client.Call("", "Browser.setContextFingerprint", map[string]interface{}{
+		"prefs": []map[string]interface{}{{
+			"name":  fmt.Sprintf("roverfox.s.renderlab_cohort_%d", userContextID),
+			"value": cohort.Key,
+		}},
+	}); err != nil {
+		log.Printf("orchestrator: warning: render cohort assign failed for ctx %d: %v", userContextID, err)
+		return
+	}
+	log.Printf("orchestrator: render cohort %s pinned to context %d", cohort.Key, userContextID)
 }
 
 // applySecurityToContext injects CSP headers and logs sandbox activation for a context.
