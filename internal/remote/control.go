@@ -3,9 +3,6 @@ package remote
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -446,31 +443,24 @@ func (api *ControlAPI) agentsGetSessionLog(params json.RawMessage) (json.RawMess
 	if agentID == "" {
 		return nil, fmt.Errorf("agentId is required")
 	}
-	if api.Vault != nil {
-		if _, err := api.Vault.GetAgent(agentID); err != nil {
-			return nil, err
-		}
+	if api.Vault == nil {
+		return json.Marshal(map[string]any{
+			"agentId": agentID, "exists": false, "redacted": true,
+			"content": "", "offset": int64(0), "nextOffset": int64(0), "eof": true,
+		})
 	}
-	path, err := sessionLogPathForAgentID(agentID)
+	// The native runtime persists turns to the vault; render the transcript on demand.
+	rendered, exists, err := api.Vault.RenderSessionLog(agentID)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return json.Marshal(map[string]any{
-				"agentId":    agentID,
-				"exists":     false,
-				"redacted":   true,
-				"content":    "",
-				"offset":     int64(0),
-				"nextOffset": int64(0),
-				"eof":        true,
-			})
-		}
-		return nil, err
+	if !exists {
+		return json.Marshal(map[string]any{
+			"agentId": agentID, "exists": false, "redacted": true,
+			"content": "", "offset": int64(0), "nextOffset": int64(0), "eof": true,
+		})
 	}
-	size := info.Size()
+	size := int64(len(rendered))
 	limit := p.LimitBytes
 	if limit <= 0 || limit > 65536 {
 		limit = 65536
@@ -485,21 +475,12 @@ func (api *ControlAPI) agentsGetSessionLog(params json.RawMessage) (json.RawMess
 	if offset > size {
 		offset = size
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+	end := offset + limit
+	if end > size {
+		end = size
 	}
-	defer f.Close()
-	if _, err := f.Seek(offset, 0); err != nil {
-		return nil, err
-	}
-	buf := make([]byte, limit)
-	n, err := f.Read(buf)
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-	next := offset + int64(n)
-	content := redactRemoteLogText(string(buf[:n]))
+	next := end
+	content := redactRemoteLogText(string(rendered[offset:end]))
 	return json.Marshal(map[string]any{
 		"agentId":    agentID,
 		"exists":     true,
@@ -827,23 +808,6 @@ func (api *ControlAPI) browserWindow() string {
 		return "visible"
 	}
 	return "hidden"
-}
-
-func sessionLogPathForAgentID(agentID string) (string, error) {
-	id := strings.TrimSpace(agentID)
-	if id == "" {
-		return "", fmt.Errorf("agent id is required")
-	}
-	if strings.ContainsAny(id, `/\`) || id == "." || id == ".." {
-		return "", fmt.Errorf("invalid agent id")
-	}
-	sessionsDir := filepath.Join(config.NanoClawProfileDir(), "agents", "main", "sessions")
-	path := filepath.Join(sessionsDir, "vulpine-"+id+".jsonl")
-	rel, err := filepath.Rel(sessionsDir, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("invalid agent id")
-	}
-	return path, nil
 }
 
 var (

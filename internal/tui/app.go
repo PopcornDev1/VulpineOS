@@ -2009,14 +2009,25 @@ func (a *App) handleOpenSessionLog() tea.Cmd {
 		a.noticeTTL = 3
 		return a.remoteOpenSessionLog(agentID)
 	}
-	logPath, err := agentSessionLogPath(a.selectedAgentID)
-	if err != nil {
-		a.notice = "Invalid agent id"
+	if a.vault == nil {
+		a.notice = "Session log unavailable"
 		a.noticeTTL = 4
 		return nil
 	}
-	if _, err := os.Stat(logPath); err != nil {
+	content, exists, err := a.vault.RenderSessionLog(a.selectedAgentID)
+	if err != nil {
+		a.notice = "Failed to read session log: " + err.Error()
+		a.noticeTTL = 4
+		return nil
+	}
+	if !exists {
 		a.notice = "No session log yet for selected agent"
+		a.noticeTTL = 4
+		return nil
+	}
+	logPath := filepath.Join(os.TempDir(), "vulpineos-session-"+safeTempAgentID(a.selectedAgentID)+".jsonl")
+	if err := os.WriteFile(logPath, content, 0600); err != nil {
+		a.notice = "Failed to write session log: " + err.Error()
 		a.noticeTTL = 4
 		return nil
 	}
@@ -3121,23 +3132,6 @@ func shortContextID(contextID string) string {
 		return contextID
 	}
 	return contextID[:12]
-}
-
-func agentSessionLogPath(agentID string) (string, error) {
-	id := strings.TrimSpace(agentID)
-	if id == "" {
-		return "", fmt.Errorf("agent id is required")
-	}
-	if strings.ContainsAny(id, `/\`) || id == "." || id == ".." {
-		return "", fmt.Errorf("invalid agent id")
-	}
-	sessionsDir := filepath.Join(config.NanoClawProfileDir(), "agents", "main", "sessions")
-	path := filepath.Join(sessionsDir, "vulpine-"+id+".jsonl")
-	rel, err := filepath.Rel(sessionsDir, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("invalid agent id")
-	}
-	return path, nil
 }
 
 func (a App) selectedAgentStatus() string {

@@ -663,9 +663,6 @@ func runServe(binaryPath string, headless bool, profileDir string, host string, 
 	if err != nil {
 		cfg = &config.Config{}
 	}
-	if cfg.HydrateFromNanoClawProfile() {
-		_ = cfg.Save()
-	}
 
 	var resolvedBinaryPath string
 	if !noBrowser {
@@ -876,11 +873,6 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 	if err != nil {
 		log.Printf("Warning: could not load config: %v", err)
 		cfg = &config.Config{}
-	}
-	if cfg.HydrateFromNanoClawProfile() {
-		if saveErr := cfg.Save(); saveErr != nil {
-			log.Printf("Warning: could not persist repaired config: %v", saveErr)
-		}
 	}
 	reconfigureRequested := config.ReconfigureRequested()
 	resolvedBinaryPath := strings.TrimSpace(binaryPath)

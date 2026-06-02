@@ -159,13 +159,6 @@ func TestBrowserRouteLabelIgnoresStoppedFoxbridge(t *testing.T) {
 func TestAgentRuntimeConfigCreatesScopedAgentContext(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	if err := os.MkdirAll(config.NanoClawProfileDir(), 0700); err != nil {
-		t.Fatalf("mkdir profile dir: %v", err)
-	}
-	if err := os.WriteFile(config.NanoClawConfigPath(), []byte(`{"browser":{"enabled":true,"headless":true,"cdpUrl":"ws://127.0.0.1:9222"}}`), 0600); err != nil {
-		t.Fatalf("write nanoclaw.json: %v", err)
-	}
-
 	fake := testutil.NewFakeJugglerTransport(t)
 	fake.RespondJSON("Browser.createBrowserContext", map[string]string{"browserContextId": "ctx-agent-runtime"})
 	fake.RespondJSON("Browser.enable", map[string]any{})
@@ -2354,16 +2347,10 @@ func TestUnfocusedChatAllowsOpenLogShortcut(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	logPath, err := agentSessionLogPath(agent.ID)
-	if err != nil {
-		t.Fatalf("agentSessionLogPath: %v", err)
+	if err := db.AppendMessage(agent.ID, "assistant", "session line", 0); err != nil {
+		t.Fatalf("append message: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
-		t.Fatalf("mkdir log dir: %v", err)
-	}
-	if err := os.WriteFile(logPath, []byte("{}\n"), 0644); err != nil {
-		t.Fatalf("write session log: %v", err)
-	}
+	logPath := filepath.Join(os.TempDir(), "vulpineos-session-"+safeTempAgentID(agent.ID)+".jsonl")
 
 	original := startExternalCommand
 	defer func() { startExternalCommand = original }()
@@ -2408,16 +2395,10 @@ func TestFocusedChatAllowsCtrlOpenLogShortcut(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	logPath, err := agentSessionLogPath(agent.ID)
-	if err != nil {
-		t.Fatalf("agentSessionLogPath: %v", err)
+	if err := db.AppendMessage(agent.ID, "assistant", "session line", 0); err != nil {
+		t.Fatalf("append message: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
-		t.Fatalf("mkdir log dir: %v", err)
-	}
-	if err := os.WriteFile(logPath, []byte("{}\n"), 0644); err != nil {
-		t.Fatalf("write session log: %v", err)
-	}
+	logPath := filepath.Join(os.TempDir(), "vulpineos-session-"+safeTempAgentID(agent.ID)+".jsonl")
 
 	original := startExternalCommand
 	defer func() { startExternalCommand = original }()
@@ -2459,16 +2440,10 @@ func TestFocusedEmptyChatAllowsOpenLogShortcut(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	logPath, err := agentSessionLogPath(agent.ID)
-	if err != nil {
-		t.Fatalf("agentSessionLogPath: %v", err)
+	if err := db.AppendMessage(agent.ID, "assistant", "session line", 0); err != nil {
+		t.Fatalf("append message: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
-		t.Fatalf("mkdir log dir: %v", err)
-	}
-	if err := os.WriteFile(logPath, []byte("{}\n"), 0644); err != nil {
-		t.Fatalf("write session log: %v", err)
-	}
+	logPath := filepath.Join(os.TempDir(), "vulpineos-session-"+safeTempAgentID(agent.ID)+".jsonl")
 
 	original := startExternalCommand
 	defer func() { startExternalCommand = original }()
@@ -2524,29 +2499,6 @@ func TestOpenExternalTargetFallsBackToAvailableLauncher(t *testing.T) {
 	}
 	if len(opened) != 2 || opened[0] != "xdg-open" || opened[1] != "https://example.test" {
 		t.Fatalf("opened = %#v, want xdg-open fallback", opened)
-	}
-}
-
-func TestOpenSessionLogRejectsUnsafeAgentID(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	original := startExternalCommand
-	defer func() { startExternalCommand = original }()
-	startExternalCommand = func(name string, args ...string) error {
-		t.Fatalf("open command should not run for unsafe agent id: %s %#v", name, args)
-		return nil
-	}
-
-	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
-	app.selectedAgentID = "../escape"
-	app.conversation.SetSize(80, 20)
-	app.focus = FocusConversation
-	app.inputMode = "chat"
-
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
-	updated := model.(App)
-	if updated.notice != "Invalid agent id" {
-		t.Fatalf("notice = %q, want invalid agent id", updated.notice)
 	}
 }
 

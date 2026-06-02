@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -197,6 +198,39 @@ func (db *DB) DeleteAgent(id string) error {
 // AppendMessage inserts a message into an agent's conversation history.
 func (db *DB) AppendMessage(agentID, role, content string, tokens int) error {
 	return db.AppendMessageWithDisplay(agentID, role, content, "", tokens)
+}
+
+// RenderSessionLog builds a JSON-lines transcript of an agent's conversation
+// from the vault — one JSON object per message. This is the native runtime's
+// source for the operator-facing raw session log (the native runtime persists
+// turns to the vault rather than to an on-disk session file). Returns the
+// rendered bytes and whether any messages exist.
+func (db *DB) RenderSessionLog(agentID string) ([]byte, bool, error) {
+	messages, err := db.GetMessages(agentID)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(messages) == 0 {
+		return nil, false, nil
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, m := range messages {
+		content := m.Content
+		if content == "" {
+			content = m.DisplayContent
+		}
+		line := map[string]interface{}{
+			"role":      m.Role,
+			"content":   content,
+			"tokens":    m.Tokens,
+			"timestamp": m.Timestamp.UTC().Format(time.RFC3339),
+		}
+		if err := enc.Encode(line); err != nil {
+			return nil, false, err
+		}
+	}
+	return buf.Bytes(), true, nil
 }
 
 // AppendMessageWithDisplay inserts a message with optional operator-facing display text.

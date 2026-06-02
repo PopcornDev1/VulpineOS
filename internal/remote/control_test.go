@@ -2,7 +2,6 @@ package remote
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -193,12 +192,6 @@ func TestControlAPIAgentsCreateDoesNotStartFirstTurn(t *testing.T) {
 
 func TestControlAPIAgentRuntimeConfigCreatesScopedAgentContext(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := os.MkdirAll(config.NanoClawProfileDir(), 0700); err != nil {
-		t.Fatalf("mkdir profile dir: %v", err)
-	}
-	if err := os.WriteFile(config.NanoClawConfigPath(), []byte(`{"browser":{"enabled":true,"headless":true,"cdpUrl":"ws://127.0.0.1:9222"}}`), 0600); err != nil {
-		t.Fatalf("write nanoclaw.json: %v", err)
-	}
 
 	fake := testutil.NewFakeJugglerTransport(t)
 	fake.RespondJSON("Browser.createBrowserContext", map[string]string{"browserContextId": "ctx-remote-runtime"})
@@ -269,13 +262,11 @@ func TestControlAPIAgentSessionLogRedactsSecrets(t *testing.T) {
 		t.Fatalf("CreateAgent: %v", err)
 	}
 	agentID := agent.ID
-	logPath := filepath.Join(config.NanoClawProfileDir(), "agents", "main", "sessions", "vulpine-"+agentID+".jsonl")
-	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
-		t.Fatalf("mkdir log dir: %v", err)
-	}
-	rawLog := `{"message":"Authorization: Bearer secret-token","url":"https://example.test/?token=query-secret","payload":{"apiKey":"json-secret"}}` + "\n"
-	if err := os.WriteFile(logPath, []byte(rawLog), 0600); err != nil {
-		t.Fatalf("write log: %v", err)
+	// The native runtime persists turns to the vault; the session log is rendered
+	// from there and redacted before leaving the host.
+	raw := `Authorization: Bearer secret-token url=https://example.test/?token=query-secret apiKey=json-secret`
+	if err := db.AppendMessage(agentID, "assistant", raw, 0); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
 	}
 	api := &ControlAPI{Vault: db}
 
