@@ -24,6 +24,10 @@ type WindowController struct {
 	targetPID      int
 	mu             sync.Mutex
 	contextWindows map[string][]int
+	// hiddenWindowIDs records the X11 windows we unmapped on Linux, so Show only
+	// re-maps those (not always-hidden helper windows). uint32 keeps the field
+	// platform-neutral (xproto is linux-only).
+	hiddenWindowIDs []uint32
 }
 
 // NewWindowController creates a window controller for the given browser PID.
@@ -424,53 +428,6 @@ func parseAppleScriptBool(out string) (bool, bool) {
 	}
 }
 
-// --- Linux (X11 / WSLg) window control via xdotool ---
-
-// linuxWindowIDs returns the X11 window ids owned by the browser process tree.
-// onlyVisible restricts to currently-mapped (shown) windows.
-func (w *WindowController) linuxWindowIDs(onlyVisible bool) []string {
-	seen := map[string]bool{}
-	var ids []string
-	for _, pid := range w.candidatePIDs() {
-		args := []string{"search", "--pid", strconv.Itoa(pid)}
-		if onlyVisible {
-			args = append(args, "--onlyvisible")
-		}
-		out, err := runWindowCommand("xdotool", args...)
-		if err != nil {
-			continue
-		}
-		for _, id := range strings.Fields(out) {
-			if id != "" && !seen[id] {
-				seen[id] = true
-				ids = append(ids, id)
-			}
-		}
-	}
-	return ids
-}
-
-// linuxSetVisible maps (shows) or unmaps (hides) the browser's X11 windows.
-func (w *WindowController) linuxSetVisible(visible bool) error {
-	if _, err := runWindowCommand("xdotool", "version"); err != nil {
-		return fmt.Errorf("xdotool not available (install it: sudo apt install -y xdotool): %w", err)
-	}
-	ids := w.linuxWindowIDs(false)
-	if len(ids) == 0 {
-		return fmt.Errorf("no browser window found yet")
-	}
-	verb := "windowunmap"
-	if visible {
-		verb = "windowmap"
-	}
-	var lastErr error
-	for _, id := range ids {
-		if _, err := runWindowCommand("xdotool", verb, id); err != nil {
-			lastErr = err
-		}
-	}
-	if visible && len(ids) > 0 {
-		_, _ = runWindowCommand("xdotool", "windowactivate", ids[0])
-	}
-	return lastErr
-}
+// Linux (X11 / WSLg) window control is implemented in window_linux.go via a
+// pure-Go X11 client (no external tools needed); window_other.go stubs it out on
+// other platforms. The linuxWindowIDs / linuxSetVisible methods are defined there.

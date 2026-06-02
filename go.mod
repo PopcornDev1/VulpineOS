@@ -11,6 +11,8 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/google/uuid v1.6.0
+	github.com/jezek/xgb v1.3.1
+	github.com/jezek/xgbutil v0.0.0-20260124183602-9fd151d6a51a
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/muesli/termenv v0.16.0
 	golang.org/x/net v0.52.0

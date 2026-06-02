@@ -1635,12 +1635,15 @@ func (a App) updateNameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		name := strings.TrimSpace(a.nameInput.Value())
 		if name != "" {
-			a.newAgentName = name
-			a.inputMode = "new-agent-desc"
+			// Agents no longer need a separate task — create immediately and go
+			// straight to chat. The name doubles as the task label.
+			cmd := a.createAgent(name, name, a.newAgentContext)
+			a.inputMode = ""
+			a.newAgentName = ""
+			a.newAgentContext = ""
 			a.nameInput.Blur()
 			a.nameInput.Reset()
-			a.taskInput.Focus()
-			return a, textinput.Blink
+			return a, cmd
 		}
 		return a, nil
 	case "esc":
@@ -2368,7 +2371,7 @@ func (a App) newAgentInputView() string {
 		return shared.TitleStyle.Render("NEW AGENT — NAME") + "\n\n" +
 			a.nameInput.View() + "\n\n" +
 			a.newAgentContextNotice() +
-			shared.MutedStyle.Render("[Enter] confirm  [Esc] cancel")
+			shared.MutedStyle.Render("[Enter] create  [Esc] cancel")
 	case "new-agent-desc":
 		return shared.TitleStyle.Render("NEW AGENT — DESCRIPTION for "+a.newAgentName) + "\n\n" +
 			a.taskInput.View() + "\n\n" +
