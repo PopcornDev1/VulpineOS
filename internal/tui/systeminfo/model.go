@@ -24,9 +24,6 @@ type Model struct {
 	runtimeRisk    float64
 	activeContexts int
 	activePages    int
-	poolAvailable  int
-	poolActive     int
-	poolTotal      int
 	runtimeEvents  []sharedRuntimeEvent
 	width          int
 	height         int
@@ -75,12 +72,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.memoryMB = msg.MemoryMB
 		m.eventLoopLag = msg.EventLoopLagMs
 		m.runtimeRisk = msg.RuntimeRiskScore
-		m.activeContexts = msg.ActiveContexts
-		m.activePages = msg.ActivePages
-	case shared.PoolStatsMsg:
-		m.poolAvailable = msg.Available
-		m.poolActive = msg.Active
-		m.poolTotal = msg.Total
 	case shared.RuntimeEventMsg:
 		m.runtimeEvents = append([]sharedRuntimeEvent{{
 			component: msg.Event.Component,
@@ -135,11 +126,12 @@ func meterBar(value, max float64, label string) string {
 	return fmt.Sprintf("%s %s", barStyled, label)
 }
 
-// SetPoolStats directly updates pool statistics.
-func (m *Model) SetPoolStats(available, active, total int) {
-	m.poolAvailable = available
-	m.poolActive = active
-	m.poolTotal = total
+// SetBrowserCounts updates the live browser context and page counts. These are
+// sourced from the Juggler target attach/detach stream (locally) or the remote
+// status payload, both of which reflect actual open contexts/pages.
+func (m *Model) SetBrowserCounts(contexts, pages int) {
+	m.activeContexts = contexts
+	m.activePages = pages
 }
 
 // View renders the system info panel.
@@ -162,8 +154,6 @@ func (m Model) View() string {
 
 	upStr := formatDuration(m.uptime)
 	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Up %s", upStr)))
-	b.WriteString("\n")
-	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Pool: %d/%d/%d", m.poolAvailable, m.poolActive, m.poolTotal)))
 	b.WriteString("\n")
 	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Ctx: %d Pg: %d", m.activeContexts, m.activePages)))
 	b.WriteString("\n")

@@ -714,16 +714,28 @@ func TestAgentCreatedSelectsNewAgentListRow(t *testing.T) {
 	}
 }
 
-func TestPoolStatsMsgUpdatesVisibleSystemPanel(t *testing.T) {
+func TestTargetAttachUpdatesSystemPanelBrowserCounts(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, nil, nil)
 	app.systemInfo.SetHeight(20)
 
-	model, _ := app.Update(shared.PoolStatsMsg{Available: 3, Active: 2, Total: 5})
+	model, _ := app.Update(shared.TargetAttachedMsg{SessionID: "s1", TargetID: "t1", ContextID: "ctx-a", URL: "https://example.com"})
+	app = model.(App)
+	model, _ = app.Update(shared.TargetAttachedMsg{SessionID: "s2", TargetID: "t2", ContextID: "ctx-a", URL: "https://example.com/2"})
 	app = model.(App)
 
 	view := app.systemInfo.View()
-	if !strings.Contains(view, "Pool: 3/2/5") {
-		t.Fatalf("system panel missing pool stats:\n%s", view)
+	if strings.Contains(view, "Pool:") {
+		t.Fatalf("system panel should no longer show pool stats:\n%s", view)
+	}
+	if !strings.Contains(view, "Ctx: 1 Pg: 2") {
+		t.Fatalf("system panel browser counts wrong (want 1 ctx / 2 pages):\n%s", view)
+	}
+
+	model, _ = app.Update(shared.TargetDetachedMsg{SessionID: "s2", TargetID: "t2"})
+	app = model.(App)
+	view = app.systemInfo.View()
+	if !strings.Contains(view, "Ctx: 1 Pg: 1") {
+		t.Fatalf("system panel browser counts wrong after detach (want 1 ctx / 1 page):\n%s", view)
 	}
 }
 
@@ -3006,9 +3018,8 @@ func TestRemoteStatusUpdatesSystemPanel(t *testing.T) {
 			"kernel_headless": true,
 			"browser_route":   "camoufox",
 			"browser_window":  "headless",
-			"pool_available":  2,
-			"pool_active":     3,
-			"pool_total":      5,
+			"active_contexts": 4,
+			"active_pages":    7,
 		},
 	}}
 	app := NewAppWithControl(nil, nil, nil, nil, &config.Config{}, nil, control)
@@ -3019,10 +3030,13 @@ func TestRemoteStatusUpdatesSystemPanel(t *testing.T) {
 	app = model.(App)
 
 	view := app.systemInfo.View()
-	for _, want := range []string{"RUNNING", "PID 1234", "Pool: 2/3/5"} {
+	for _, want := range []string{"RUNNING", "PID 1234", "Ctx: 4 Pg: 7"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("system view missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "Pool:") {
+		t.Fatalf("system view should no longer show pool stats:\n%s", view)
 	}
 }
 

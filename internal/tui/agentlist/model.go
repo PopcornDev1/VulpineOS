@@ -260,7 +260,7 @@ func statusIcon(status string) string {
 func (m Model) View() string {
 	var b strings.Builder
 
-	b.WriteString(shared.TitleStyle.Render("AGENTS"))
+	b.WriteString(shared.TitleStyle.Render(fmt.Sprintf("AGENTS (%d)", len(m.agents))))
 	b.WriteString("\n")
 
 	if len(m.agents) == 0 {

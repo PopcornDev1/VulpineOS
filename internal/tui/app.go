@@ -1067,18 +1067,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.control != nil && a.kernel == nil {
 			cmds = append(cmds, a.loadRemoteStatus())
 		}
-		if a.orch != nil {
-			avail, active, total := a.orch.Pool.Stats()
-			a.systemInfo.SetPoolStats(avail, active, total)
-		}
 		cmds = append(cmds, a.tick())
 
 	// Juggler events
 	case shared.TargetAttachedMsg:
 		a.contextList, _ = a.contextList.Update(msg)
+		a.systemInfo.SetBrowserCounts(a.contextList.ContextCount(), a.contextList.PageCount())
 		cmds = append(cmds, a.waitForEvent())
 	case shared.TargetDetachedMsg:
 		a.contextList, _ = a.contextList.Update(msg)
+		a.systemInfo.SetBrowserCounts(a.contextList.ContextCount(), a.contextList.PageCount())
 		cmds = append(cmds, a.waitForEvent())
 	case shared.NavigationMsg:
 		a.contextList, _ = a.contextList.Update(msg)
@@ -1270,11 +1268,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			BrowserRoute:  msg.BrowserRoute,
 			BrowserWindow: msg.BrowserWindow,
 		})
-		a.systemInfo.SetPoolStats(msg.PoolAvailable, msg.PoolActive, msg.PoolTotal)
-		a.systemInfo, _ = a.systemInfo.Update(shared.TelemetryMsg{
-			ActiveContexts: msg.ActiveContexts,
-			ActivePages:    msg.ActivePages,
-		})
+		a.systemInfo.SetBrowserCounts(msg.ActiveContexts, msg.ActivePages)
 
 	case remoteMessagesLoadedMsg:
 		if msg.AgentID == a.selectedAgentID {
@@ -1329,10 +1323,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.notice = msg.Notice
 			a.noticeTTL = 3
 		}
-
-	case shared.PoolStatsMsg:
-		a.systemInfo, _ = a.systemInfo.Update(msg)
-		cmds = append(cmds, a.waitForEvent())
 
 	case shared.AgentCreatedMsg:
 		a.agentList, _ = a.agentList.Update(msg)
