@@ -4,13 +4,24 @@ package kernel
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
+	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/xproto"
 	"github.com/jezek/xgbutil"
 	"github.com/jezek/xgbutil/ewmh"
 	"github.com/jezek/xgbutil/icccm"
 )
+
+// xgb logs to its own log.Logger writing straight to os.Stderr, which bypasses
+// the TUI's log-file redirect and leaks lines like "XGB: Could not get authority
+// info" into the terminal UI. On WSLg there is no ~/.Xauthority and the
+// auth-less fallback connection works fine, so these notices are pure noise —
+// silence the xgb logger at package init.
+func init() {
+	xgb.Logger.SetOutput(io.Discard)
+}
 
 // Linux (X11 / WSLg) window control via a pure-Go X11 client — no external tools
 // (xdotool/wmctrl) required. WSLg's compositor doesn't implement _NET_CLIENT_LIST,
