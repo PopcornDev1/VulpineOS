@@ -3,11 +3,13 @@ package setup
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"vulpineos/internal/auth"
 	"vulpineos/internal/config"
 )
 
@@ -15,10 +17,43 @@ type step int
 
 const (
 	stepProvider step = iota
+	stepAuthMethod
 	stepModel
 	stepAPIKey
+	stepOAuth
 	stepDone
 )
+
+// OAuth flow messages (async, driven by tea.Cmds).
+type oauthBeganMsg struct {
+	login *auth.OpenAILogin
+	err   error
+}
+type oauthCodeMsg struct {
+	code string
+	err  error
+}
+type oauthDoneMsg struct{ err error }
+
+func beginOAuthCmd() tea.Cmd {
+	return func() tea.Msg {
+		login, err := auth.BeginOpenAILogin()
+		return oauthBeganMsg{login: login, err: err}
+	}
+}
+
+func waitOAuthCodeCmd(login *auth.OpenAILogin) tea.Cmd {
+	return func() tea.Msg {
+		code, err := login.WaitForCode(5 * time.Minute)
+		return oauthCodeMsg{code: code, err: err}
+	}
+}
+
+func completeOAuthCmd(login *auth.OpenAILogin, code string) tea.Cmd {
+	return func() tea.Msg {
+		return oauthDoneMsg{err: login.Complete(code)}
+	}
+}
 
 var (
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7C3AED"))
@@ -44,6 +79,16 @@ type Model struct {
 	modelQuery    string
 	cfg           *config.Config
 	done          bool
+
+	// Auth-method selection (for providers offering both API key and OAuth).
+	baseProvider  config.Provider // the picked base provider when it has an OAuth variant
+	authMethodIdx int             // 0 = API key, 1 = OAuth sign-in
+
+	// OAuth sign-in flow state.
+	login       *auth.OpenAILogin
+	oauthStatus string
+	oauthErr    string
+	pasteInput  textinput.Model
 }
 
 // New creates a new setup wizard.
@@ -61,14 +106,28 @@ func newWithConfigAndProviders(existing *config.Config, providers []config.Provi
 	ti.Placeholder = "Paste your API key here..."
 	ti.CharLimit = 200
 	ti.Width = 50
+	paste := textinput.New()
+	paste.Placeholder = "...or paste the redirect URL here"
+	paste.CharLimit = 2000
+	paste.Width = 50
 	if len(providers) == 0 {
 		providers = config.Providers
+	}
+	// Hide OAuth-variant providers from the picker; they're reached via the
+	// base provider's "Sign in" option.
+	visible := make([]config.Provider, 0, len(providers))
+	for _, p := range providers {
+		if p.Hidden {
+			continue
+		}
+		visible = append(visible, p)
 	}
 
 	m := Model{
 		step:        stepProvider,
-		providers:   append([]config.Provider(nil), providers...),
+		providers:   visible,
 		apiKeyInput: ti,
+		pasteInput:  paste,
 		cfg:         &config.Config{},
 	}
 	if existing == nil {
@@ -123,6 +182,55 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.apiKeyInput.Width = m.inputWidth()
+		m.pasteInput.Width = m.inputWidth()
+
+	case oauthBeganMsg:
+		if m.step != stepOAuth {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.oauthErr = msg.err.Error()
+			m.oauthStatus = ""
+			return m, nil
+		}
+		m.login = msg.login
+		_ = m.login.OpenBrowser()
+		if m.login.CallbackBound {
+			m.oauthStatus = "Waiting for you to sign in in the browser..."
+		} else {
+			m.oauthStatus = "Sign in in the browser, then paste the redirect URL below."
+		}
+		m.pasteInput.Focus()
+		return m, waitOAuthCodeCmd(m.login)
+
+	case oauthCodeMsg:
+		if m.step != stepOAuth || m.login == nil {
+			return m, nil
+		}
+		if msg.err != nil {
+			// Callback path failed or timed out — fall back to manual paste.
+			m.oauthStatus = "Paste the full redirect URL from your browser below, then Enter."
+			return m, nil
+		}
+		m.oauthStatus = "Completing sign-in..."
+		return m, completeOAuthCmd(m.login, msg.code)
+
+	case oauthDoneMsg:
+		if m.step != stepOAuth {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.oauthErr = msg.err.Error()
+			m.oauthStatus = ""
+			return m, nil
+		}
+		if m.login != nil {
+			m.login.Close()
+			m.login = nil
+		}
+		m.cfg.SetupComplete = true
+		m.step = stepDone
+		return m, nil
 
 	case tea.KeyMsg:
 		switch m.step {
@@ -160,23 +268,43 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !ok {
 					break
 				}
-				previousProvider := m.cfg.Provider
-				m.cfg.Provider = p.ID
-				m.modelQuery = ""
-				m.modelIdx = m.modelIndexFor(p, m.cfg.Model)
-				if previousProvider != "" && previousProvider != p.ID {
-					m.cfg.APIKey = ""
+				// Providers offering both API key and OAuth go through an
+				// auth-method choice first (e.g. OpenAI: API key or Sign in).
+				if p.OAuthProviderID != "" {
+					m.baseProvider = p
+					m.authMethodIdx = 0
+					m.step = stepAuthMethod
+					break
 				}
-				if model, ok := m.selectedModel(p); ok {
-					m.cfg.Model = model
-				} else {
-					m.cfg.Model = p.DefaultModel
-				}
+				m.applyProviderSelection(p.ID)
 				m.step = stepModel
 			default:
 				if m.appendProviderQuery(msg) {
 					m.providerIdx = 0
 				}
+			}
+
+		case stepAuthMethod:
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.step = stepProvider
+			case "j", "down":
+				if m.authMethodIdx < 1 {
+					m.authMethodIdx++
+				}
+			case "k", "up":
+				if m.authMethodIdx > 0 {
+					m.authMethodIdx--
+				}
+			case "enter":
+				chosen := m.baseProvider.ID
+				if m.authMethodIdx == 1 {
+					chosen = m.baseProvider.OAuthProviderID
+				}
+				m.applyProviderSelection(chosen)
+				m.step = stepModel
 			}
 
 		case stepModel:
@@ -223,6 +351,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 				m.cfg.Model = model
+				if p.OAuth {
+					m.oauthErr = ""
+					m.oauthStatus = "Starting sign-in..."
+					m.pasteInput.SetValue("")
+					m.step = stepOAuth
+					return m, beginOAuthCmd()
+				}
 				if !p.NeedsKey {
 					m.cfg.SetupComplete = true
 					m.step = stepDone
@@ -271,6 +406,36 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 
+		case stepOAuth:
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				if m.login != nil {
+					m.login.Close()
+					m.login = nil
+				}
+				m.pasteInput.Blur()
+				m.step = stepModel
+			case "enter":
+				raw := strings.TrimSpace(m.pasteInput.Value())
+				if raw == "" || m.login == nil {
+					break
+				}
+				code, err := m.login.CodeFromRedirectURL(raw)
+				if err != nil {
+					m.oauthErr = err.Error()
+					break
+				}
+				m.oauthErr = ""
+				m.oauthStatus = "Completing sign-in..."
+				return m, completeOAuthCmd(m.login, code)
+			default:
+				var cmd tea.Cmd
+				m.pasteInput, cmd = m.pasteInput.Update(msg)
+				return m, cmd
+			}
+
 		case stepDone:
 			switch msg.String() {
 			case "q", "ctrl+c":
@@ -283,6 +448,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// applyProviderSelection sets the chosen provider id and reseeds the model
+// selection (clearing a stale API key when the provider changed). It resolves
+// the provider via the registry so OAuth-variant ids (hidden from the picker)
+// work too.
+func (m *Model) applyProviderSelection(providerID string) {
+	previousProvider := m.cfg.Provider
+	m.cfg.Provider = providerID
+	if previousProvider != "" && previousProvider != providerID {
+		m.cfg.APIKey = ""
+	}
+	m.modelQuery = ""
+	p, ok := m.selectedConfigProvider()
+	if !ok {
+		return
+	}
+	m.modelIdx = m.modelIndexFor(p, m.cfg.Model)
+	if model, ok := m.selectedModel(p); ok {
+		m.cfg.Model = model
+	} else {
+		m.cfg.Model = p.DefaultModel
+	}
 }
 
 func (m *Model) moveProviderSelection(delta int) {
@@ -434,10 +622,14 @@ func (m *Model) View() string {
 	switch m.step {
 	case stepProvider:
 		content = m.viewProvider()
+	case stepAuthMethod:
+		content = m.viewAuthMethod()
 	case stepModel:
 		content = m.viewModel()
 	case stepAPIKey:
 		content = m.viewAPIKey()
+	case stepOAuth:
+		content = m.viewOAuth()
 	case stepDone:
 		content = m.viewDone()
 	}
@@ -600,6 +792,56 @@ func (m *Model) maxVisibleProviders(fixedContentLines int) int {
 		return 1
 	}
 	return maxVisible
+}
+
+func (m *Model) viewAuthMethod() string {
+	width := m.contentWidth()
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(fmt.Sprintf("VulpineOS — %s", m.baseProvider.Name)))
+	b.WriteString("\n\n")
+	b.WriteString("How would you like to sign in?\n\n")
+
+	options := []struct{ label, hint string }{
+		{"API key", "Paste your " + m.baseProvider.EnvVar},
+		{"Sign in with ChatGPT (OAuth)", "Browser sign-in, no API key"},
+	}
+	for i, opt := range options {
+		hint := mutedStyle.Render("  " + opt.hint)
+		if i == m.authMethodIdx {
+			b.WriteString(fitSetupLine(activeStyle.Render("▸ ")+lipgloss.NewStyle().Bold(true).Render(opt.label)+hint, width) + "\n")
+		} else {
+			b.WriteString(fitSetupLine("  "+mutedStyle.Render(opt.label)+hint, width) + "\n")
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(fitSetupLine(mutedStyle.Render("[↑/↓] choose  [Enter] select  [Esc] back"), width))
+	return b.String()
+}
+
+func (m *Model) viewOAuth() string {
+	width := m.contentWidth()
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("VulpineOS — Sign in with ChatGPT"))
+	b.WriteString("\n\n")
+	if m.login != nil && m.login.AuthURL != "" {
+		b.WriteString("Opening your browser to sign in. If it didn't open, visit:\n")
+		b.WriteString(fitSetupLine(activeStyle.Render(m.login.AuthURL), width))
+		b.WriteString("\n\n")
+	} else {
+		b.WriteString(mutedStyle.Render("Preparing sign-in...\n\n"))
+	}
+	if m.oauthStatus != "" {
+		b.WriteString(mutedStyle.Render(fitSetupText(m.oauthStatus, width)))
+		b.WriteString("\n\n")
+	}
+	if m.oauthErr != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render(fitSetupText("Error: "+m.oauthErr, width)))
+		b.WriteString("\n\n")
+	}
+	b.WriteString(m.pasteInput.View())
+	b.WriteString("\n\n")
+	b.WriteString(fitSetupLine(mutedStyle.Render("Sign in in the browser. [Enter] use pasted URL  [Esc] back"), width))
+	return b.String()
 }
 
 func (m *Model) viewModel() string {

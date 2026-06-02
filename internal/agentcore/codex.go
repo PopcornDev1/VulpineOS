@@ -81,7 +81,7 @@ type codexRequest struct {
 func (c *CodexClient) Stream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDef, onTextDelta func(string)) (Completion, error) {
 	token, err := c.tokenFn()
 	if err != nil {
-		return Completion{}, fmt.Errorf("codex auth: %w (run: vulpineos auth login --provider openai)", err)
+		return Completion{}, fmt.Errorf("codex auth: %w (reconfigure in the TUI: press 'c', choose OpenAI → Sign in)", err)
 	}
 
 	instructions, input := toCodexInput(messages)

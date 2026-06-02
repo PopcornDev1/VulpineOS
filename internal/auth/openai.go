@@ -46,31 +46,43 @@ type PKCEPair struct {
 }
 
 const (
-	clientID      = "app_EMoamEEZ73f0CkXaXp7hrann"
-	authURL       = "https://auth.openai.com/oauth/authorize"
-	tokenURL      = "https://auth.openai.com/oauth/token"
-	redirectPort  = 1455
-	scope         = "openid profile email offline_access"
-	redirectPath  = "/auth/callback"
-	loginTimeout  = 5 * time.Minute
+	clientID     = "app_EMoamEEZ73f0CkXaXp7hrann"
+	authURL      = "https://auth.openai.com/oauth/authorize"
+	tokenURL     = "https://auth.openai.com/oauth/token"
+	redirectPort = 1455
+	scope        = "openid profile email offline_access"
+	redirectPath = "/auth/callback"
+	loginTimeout = 5 * time.Minute
 )
 
-func LoginOpenAI(w io.Writer) error {
+// OpenAILogin is an in-progress OpenAI (ChatGPT) OAuth login. Drive it from any
+// front-end (TUI or terminal): show AuthURL to the user and/or call OpenBrowser,
+// obtain the authorization code (WaitForCode while the local callback server is
+// up, or CodeFromRedirectURL from a pasted redirect), then Complete to exchange
+// and persist credentials. Always Close when finished.
+type OpenAILogin struct {
+	AuthURL       string // the authorize URL to open in a browser
+	CallbackBound bool   // true if the localhost callback server is listening
+	redirectURI   string
+	verifier      string
+	state         string
+	codeCh        chan string
+	cancel        func()
+}
+
+// BeginOpenAILogin starts an OAuth login: generates PKCE + state, tries to bind
+// the localhost callback server, and builds the authorize URL.
+func BeginOpenAILogin() (*OpenAILogin, error) {
 	pkce, err := generatePKCE()
 	if err != nil {
-		return fmt.Errorf("generate PKCE: %w", err)
+		return nil, fmt.Errorf("generate PKCE: %w", err)
 	}
-
 	state, err := generateState()
 	if err != nil {
-		return fmt.Errorf("generate state: %w", err)
+		return nil, fmt.Errorf("generate state: %w", err)
 	}
-
 	redirectURI := fmt.Sprintf("http://localhost:%d%s", redirectPort, redirectPath)
-
-	callbackCh, cancel := tryStartCallbackServer()
-	defer cancel()
-
+	codeCh, cancel := tryStartCallbackServer()
 	params := url.Values{
 		"response_type":              {"code"},
 		"client_id":                  {clientID},
@@ -83,73 +95,121 @@ func LoginOpenAI(w io.Writer) error {
 		"codex_cli_simplified_flow":  {"true"},
 		"originator":                 {"vulpineos"},
 	}
-	authorizeURL := authURL + "?" + params.Encode()
+	return &OpenAILogin{
+		AuthURL:       authURL + "?" + params.Encode(),
+		CallbackBound: codeCh != nil,
+		redirectURI:   redirectURI,
+		verifier:      pkce.Verifier,
+		state:         state,
+		codeCh:        codeCh,
+		cancel:        cancel,
+	}, nil
+}
 
-	fmt.Fprintf(w, "\nOpenAI Authentication\n")
-	fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Fprintf(w, "\nOpen this URL in your browser:\n   %s\n", authorizeURL)
-	fmt.Fprintf(w, "\nSign in with your ChatGPT Plus/Pro account.\n")
+// OpenBrowser best-effort opens the authorize URL in the user's browser.
+func (l *OpenAILogin) OpenBrowser() error { return openBrowser(l.AuthURL) }
 
-	if err := openBrowser(authorizeURL); err != nil {
-		fmt.Fprintf(w, "\n(We tried to open your browser but couldn't. Open the URL above manually.)\n")
+// WaitForCode blocks until the localhost callback receives the authorization
+// code, or the timeout elapses. Errors if the callback server isn't bound.
+func (l *OpenAILogin) WaitForCode(timeout time.Duration) (string, error) {
+	if l.codeCh == nil {
+		return "", fmt.Errorf("callback server not available; paste the redirect URL instead")
 	}
-
-	var code string
-	if callbackCh != nil {
-		fmt.Fprintf(w, "\nWaiting for authorization in browser...\n")
-		select {
-		case cb := <-callbackCh:
-			code = cb
-		case <-time.After(loginTimeout):
-			return fmt.Errorf("authorization timed out after 5 minutes")
+	select {
+	case code := <-l.codeCh:
+		if code == "" {
+			return "", fmt.Errorf("no authorization code received")
 		}
-	} else {
-		fmt.Fprintf(w, "\nAfter signing in, your browser will try to redirect to a local URL.\n")
-		fmt.Fprintf(w, "Copy that FULL URL from the address bar and paste it below:\n> ")
-
-		reader := bufio.NewReader(os.Stdin)
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("read input: %w", err)
-		}
-		input = strings.TrimSpace(input)
-		if input == "" {
-			return fmt.Errorf("no input provided")
-		}
-
-		parsed, err := url.Parse(input)
-		if err != nil || parsed.Scheme == "" {
-			return fmt.Errorf("invalid URL: %s", input)
-		}
-
-		code = parsed.Query().Get("code")
-		gotState := parsed.Query().Get("state")
-		if gotState != "" && gotState != state {
-			return fmt.Errorf("state mismatch: possible CSRF attack")
-		}
+		return code, nil
+	case <-time.After(timeout):
+		return "", fmt.Errorf("authorization timed out")
 	}
+}
 
+// CodeFromRedirectURL extracts (and state-validates) the authorization code from
+// a full redirect URL the user pastes when the callback server can't bind.
+func (l *OpenAILogin) CodeFromRedirectURL(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme == "" {
+		return "", fmt.Errorf("invalid redirect URL")
+	}
+	if got := parsed.Query().Get("state"); got != "" && got != l.state {
+		return "", fmt.Errorf("state mismatch: possible CSRF attack")
+	}
+	code := parsed.Query().Get("code")
 	if code == "" {
+		return "", fmt.Errorf("no authorization code in URL")
+	}
+	return code, nil
+}
+
+// Complete exchanges the authorization code for tokens and persists credentials.
+func (l *OpenAILogin) Complete(code string) error {
+	if strings.TrimSpace(code) == "" {
 		return fmt.Errorf("no authorization code received")
 	}
-
-	tokenResp, err := exchangeAuthCodeForTokens(code, redirectURI, pkce.Verifier)
+	tokenResp, err := exchangeAuthCodeForTokens(code, l.redirectURI, l.verifier)
 	if err != nil {
 		return fmt.Errorf("exchange authorization code: %w", err)
 	}
-
-	accountID := extractAccountID(tokenResp.AccessToken)
-
 	creds := OAuthCredentials{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
-		AccountID:    accountID,
+		AccountID:    extractAccountID(tokenResp.AccessToken),
 	}
 	if err := writeCredentials(creds); err != nil {
 		return fmt.Errorf("write credentials: %w", err)
 	}
+	return nil
+}
 
+// Close releases the callback server.
+func (l *OpenAILogin) Close() {
+	if l.cancel != nil {
+		l.cancel()
+	}
+}
+
+// LoginOpenAI runs the full OAuth login from a terminal writer/stdin. Front-ends
+// like the TUI use the OpenAILogin primitives directly instead.
+func LoginOpenAI(w io.Writer) error {
+	login, err := BeginOpenAILogin()
+	if err != nil {
+		return err
+	}
+	defer login.Close()
+
+	fmt.Fprintf(w, "\nOpenAI Authentication\n")
+	fmt.Fprintf(w, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Fprintf(w, "\nOpen this URL in your browser:\n   %s\n", login.AuthURL)
+	fmt.Fprintf(w, "\nSign in with your ChatGPT Plus/Pro account.\n")
+	if err := login.OpenBrowser(); err != nil {
+		fmt.Fprintf(w, "\n(We tried to open your browser but couldn't. Open the URL above manually.)\n")
+	}
+
+	var code string
+	if login.CallbackBound {
+		fmt.Fprintf(w, "\nWaiting for authorization in browser...\n")
+		code, err = login.WaitForCode(loginTimeout)
+		if err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(w, "\nAfter signing in, copy the FULL redirect URL and paste it below:\n> ")
+		input, rerr := bufio.NewReader(os.Stdin).ReadString('\n')
+		if rerr != nil {
+			return fmt.Errorf("read input: %w", rerr)
+		}
+		code, err = login.CodeFromRedirectURL(input)
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := login.Complete(code); err != nil {
+		return err
+	}
 	fmt.Fprintf(w, "\n✓ Authentication successful!\n")
 	fmt.Fprintf(w, "  Credentials saved to %s\n", OpenAICredentialPath())
 	return nil
@@ -231,7 +291,7 @@ func IsOAuthTokenExpired(creds *OAuthCredentials, buffer time.Duration) bool {
 func ValidAccessToken() (string, error) {
 	creds, err := readCredentials()
 	if err != nil {
-		return "", fmt.Errorf("not logged in: run 'vulpine auth login --provider openai' first")
+		return "", fmt.Errorf("not logged in: reconfigure in the TUI (press 'c') and choose OpenAI → Sign in")
 	}
 	if IsOAuthTokenExpired(creds, 5*time.Minute) {
 		creds, err = RefreshOpenAIToken()

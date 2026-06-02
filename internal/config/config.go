@@ -87,6 +87,18 @@ type Provider struct {
 	DefaultModel string   // e.g. "anthropic/claude-sonnet-4-6"
 	Models       []string // available models
 	NeedsKey     bool     // false for ollama
+
+	// OAuth marks a provider that authenticates via an OAuth sign-in flow
+	// (no API key), e.g. the ChatGPT/Codex provider. Such providers are
+	// runtime-only and hidden from the picker; the user reaches them by
+	// choosing "Sign in" on the base provider that references them.
+	OAuth bool
+	// OAuthProviderID, when set on a base provider, is the id of its OAuth
+	// variant — letting the setup wizard offer "API key OR Sign in" for it.
+	OAuthProviderID string
+	// Hidden excludes a provider from the setup picker (it is still resolvable
+	// at runtime via GetProvider).
+	Hidden bool
 }
 
 // Providers is the full registry of NanoClaw-supported AI providers.
@@ -100,7 +112,7 @@ var Providers = []Provider{
 	{ID: "openai", Name: "OpenAI (GPT)", EnvVar: "OPENAI_API_KEY",
 		DefaultModel: "openai/gpt-5.4",
 		Models:       []string{"openai/gpt-5.4", "openai/gpt-4.1", "openai/gpt-4.1-mini", "openai/o3"},
-		NeedsKey:     true},
+		NeedsKey:     true, OAuthProviderID: "openai-oauth"},
 	{ID: "google", Name: "Google (Gemini)", EnvVar: "GEMINI_API_KEY",
 		DefaultModel: "google/gemini-2.5-pro",
 		Models:       []string{"google/gemini-3.1-pro-preview", "google/gemini-2.5-pro", "google/gemini-2.5-flash"},
@@ -213,10 +225,12 @@ var Providers = []Provider{
 		NeedsKey:     true},
 
 	// --- OAuth providers (no API key required from user) ---
-	{ID: "openai-oauth", Name: "OpenAI (ChatGPT Plus)", EnvVar: "OPENAI_ACCESS_TOKEN",
-		DefaultModel: "openai/gpt-4.1",
-		Models:       []string{"openai/gpt-4.1", "openai/gpt-4.1-mini", "openai/o3"},
-		NeedsKey:     false},
+	// Reached via the "OpenAI (GPT)" provider's "Sign in" option, not picked
+	// directly — hence Hidden. Uses the Codex Responses API (gpt-5.5/5.4).
+	{ID: "openai-oauth", Name: "OpenAI (ChatGPT Sign-in)", EnvVar: "OPENAI_ACCESS_TOKEN",
+		DefaultModel: "openai/gpt-5.5",
+		Models:       []string{"openai/gpt-5.5", "openai/gpt-5.4"},
+		NeedsKey:     false, OAuth: true, Hidden: true},
 
 	// --- Local providers (no API key) ---
 	{ID: "ollama", Name: "Ollama (Local)", EnvVar: "",
