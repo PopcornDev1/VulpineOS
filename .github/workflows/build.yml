@@ -6,51 +6,30 @@ on:
     tags:
       - "*"
 
+env:
+  CAMOUFOX_REPO: daijro/camoufox
+
 jobs:
-  build:
-    runs-on: ubuntu-24.04
+  cli:
+    name: VulpineOS CLI (${{ matrix.goos }}-${{ matrix.goarch }})
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        target: [linux, windows, macos]
-        arch: [x86_64, arm64, i686]
-        exclude:
-          # Fails (.mozbuild does not include clang++-cl)
-          - target: windows
-            arch: arm64
-          # Unsuported
-          - target: macos
-            arch: i686
+        include:
+          - goos: linux
+            goarch: amd64
+            asset: vulpineos-linux-amd64
+          - goos: linux
+            goarch: arm64
+            asset: vulpineos-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            asset: vulpineos-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            asset: vulpineos-darwin-arm64
 
     steps:
-      - name: Maximize build space
-        uses: AdityaGarg8/remove-unwanted-software@v4.1
-        with:
-          remove-dotnet: "true"
-          remove-android: "true"
-          remove-haskell: "true"
-          remove-codeql: "true"
-          remove-docker-images: "true"
-          remove-cached-tools: "true"
-          remove-swapfile: "true"
-          verbose: "false"
-
-      - name: Remove unwanted tools
-        # Originally from here: https://github.com/AdityaGarg8/remove-unwanted-software/blob/master/action.yml
-        run: |
-          sudo apt-get remove -y '^aspnetcore-.*' > /dev/null
-          sudo apt-get remove -y '^dotnet-.*' > /dev/null
-          sudo apt-get remove -y '^llvm-.*' > /dev/null
-          sudo apt-get remove -y 'php.*' > /dev/null
-          sudo apt-get remove -y '^mongodb-.*' > /dev/null
-          sudo apt-get remove -y '^mysql-.*' > /dev/null
-          sudo apt-get remove -y azure-cli google-chrome-stable firefox ${POWERSHELL} mono-devel libgl1-mesa-dri --fix-missing > /dev/null
-          if [[ (${CODENAME} = focal) || (${CODENAME} = jammy) ]]; then
-            sudo apt-get remove -y google-cloud-sdk --fix-missing > /dev/null
-            sudo apt-get remove -y google-cloud-cli --fix-missing > /dev/null
-          fi
-          sudo apt-get autoremove -y > /dev/null
-          sudo apt-get clean > /dev/null
-
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
@@ -58,54 +37,110 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.23"
+          go-version: "1.26.1"
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Set up LLVM
-        run: |
-          wget https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 18
-          sudo apt-get install -y lld-18 clang-18
-          if [ "${{ matrix.arch }}" != "x86_64" ]; then
-            sudo apt-get install -y libc6-i386 lib32gcc-s1 lib32stdc++6 gcc-multilib g++-multilib
-          fi
-          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-18 100
-
-      - name: Check disk space
-        run: df -h
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y msitools p7zip-full aria2
-
-      - name: Fetch source
+      - name: Build CLI
         env:
-          CAMOUFOX_PASSWD: ${{ secrets.CAMOUFOX_PASSWD }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          ASSET: ${{ matrix.asset }}
         run: |
-          make fetch
-
-      - name: Setup and bootstrap
-        run: |
-          make setup-minimal
-          make mozbootstrap
           mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME:-dev}" -o "dist/${ASSET}" ./cmd/vulpineos/
 
-      - name: Create swap space
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: VulpineOSCLI-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/${{ matrix.asset }}
+
+  browser:
+    name: Camoufox (${{ matrix.target }}-${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: linux
+            arch: x86_64
+            plat: lin
+          - target: linux
+            arch: arm64
+            plat: lin
+          - target: macos
+            arch: x86_64
+            plat: mac
+          - target: macos
+            arch: arm64
+            plat: mac
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Get latest Camoufox release info
+        id: camrel
         run: |
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          free -h
+          API="https://api.github.com/repos/${{ env.CAMOUFOX_REPO }}/releases/latest"
+          TAG=$(curl -s "$API" | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+          VNUM="${TAG#v}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VNUM" >> $GITHUB_OUTPUT
 
-      - name: Build
-        run: python3 ./multibuild.py --target ${{ matrix.target }} --arch ${{ matrix.arch }}
+      - name: Download Camoufox binary
+        run: |
+          PATTERN="camoufox-*-${{ matrix.plat }}.${{ matrix.arch }}.zip"
+          API="https://api.github.com/repos/${{ env.CAMOUFOX_REPO }}/releases/tags/${{ steps.camrel.outputs.tag }}"
+          URL=$(curl -s "$API" | python3 -c "
+          import sys, json, fnmatch
+          data = json.load(sys.stdin)
+          for a in data.get('assets', []):
+              if fnmatch.fnmatch(a['name'], '$PATTERN'):
+                  print(a['browser_download_url'])
+                  break
+          ")
+          if [ -z "$URL" ]; then
+            echo "ERROR: No asset matching '$PATTERN' found in ${{ steps.camrel.outputs.tag }}"
+            exit 1
+          fi
+          echo "Downloading $URL"
+          curl -sL -o camoufox.zip "$URL"
+
+      - name: Extract and apply VulpineOS additions
+        run: |
+          mkdir -p dist tmp-extract
+          unzip -q camoufox.zip -d tmp-extract
+
+          # Determine extraction layout
+          if [ "${{ matrix.target }}" = "macos" ]; then
+            # macOS: Camoufox.app bundle
+            RES="tmp-extract/Camoufox.app/Contents/Resources"
+            cp -v settings/camoufox.cfg "$RES/camoufox.cfg"
+            cp -v settings/chrome.css "$RES/chrome.css"
+            cp -v settings/properties.json "$RES/properties.json"
+            mkdir -p "$RES/distribution"
+            cp -v settings/distribution/policies.json "$RES/distribution/policies.json"
+            mkdir -p "$RES/defaults/pref"
+            cp -v settings/defaults/pref/local-settings.js "$RES/defaults/pref/local-settings.js"
+          else
+            # Linux: flat extraction
+            cp -v settings/camoufox.cfg "tmp-extract/camoufox.cfg"
+            cp -v settings/chrome.css "tmp-extract/chrome.css"
+            cp -v settings/properties.json "tmp-extract/properties.json"
+            mkdir -p "tmp-extract/distribution"
+            cp -v settings/distribution/policies.json "tmp-extract/distribution/policies.json"
+            mkdir -p "tmp-extract/defaults/pref"
+            cp -v settings/defaults/pref/local-settings.js "tmp-extract/defaults/pref/local-settings.js"
+          fi
+
+      - name: Repackage
+        run: |
+          VERSION="${{ steps.camrel.outputs.version }}"
+          ASSET_NAME="camoufox-$VERSION-${{ matrix.plat }}.${{ matrix.arch }}"
+          cd tmp-extract
+          zip -r "../dist/$ASSET_NAME.zip" .
+          cd ..
+          ls -lh "dist/$ASSET_NAME.zip"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -114,7 +149,7 @@ jobs:
           path: dist/*
 
   release:
-    needs: build
+    needs: [cli, browser]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -124,6 +159,22 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
+
+      - name: Create checksums
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          root = Path("artifacts")
+          entries = []
+          for path in sorted(p for p in root.rglob("*") if p.is_file()):
+              if path.name == "SHA256SUMS":
+                  continue
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              entries.append(f"{digest}  {path.name}")
+          (root / "SHA256SUMS").write_text("\n".join(entries) + "\n")
+          PY
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
