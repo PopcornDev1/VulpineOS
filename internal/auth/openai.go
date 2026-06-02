@@ -93,7 +93,11 @@ func BeginOpenAILogin() (*OpenAILogin, error) {
 		"state":                      {state},
 		"id_token_add_organizations": {"true"},
 		"codex_cli_simplified_flow":  {"true"},
-		"originator":                 {"vulpineos"},
+		// OpenAI resolves the registered app from the (client_id, originator)
+		// pair; this client_id is the public Codex CLI app, so the originator
+		// must be "codex_cli_rs" to match it. Any other value (e.g. a custom
+		// "vulpineos") makes the authorize endpoint return invalid_client.
+		"originator": {"codex_cli_rs"},
 	}
 	return &OpenAILogin{
 		AuthURL:       authURL + "?" + params.Encode(),
