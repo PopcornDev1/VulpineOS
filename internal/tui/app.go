@@ -521,14 +521,14 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 					if !ok {
 						return
 					}
-				emitEvent(shared.ConversationEntryMsg{
-					AgentID:      msg.AgentID,
-					Role:         msg.Role,
-					Content:      msg.Content,
-					Tokens:       msg.Tokens,
-					Timestamp:    time.Now(),
-					StreamActive: msg.StreamActive,
-				})
+					emitEvent(shared.ConversationEntryMsg{
+						AgentID:      msg.AgentID,
+						Role:         msg.Role,
+						Content:      msg.Content,
+						Tokens:       msg.Tokens,
+						Timestamp:    time.Now(),
+						StreamActive: msg.StreamActive,
+					})
 				}
 			}
 		}()
@@ -880,26 +880,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Normal keybinds
 		switch msg.String() {
 		case "q", "ctrl+c":
-			// Graceful shutdown: pause all running agents so they save state
 			return a, a.shutdown()
-		case "p":
-			if a.selectedAgentID == "" {
-				a.notice = "No agent selected"
-				a.noticeTTL = 3
-				return a, nil
-			}
-			cmds = append(cmds, a.pauseSelectedAgent())
-		case "r":
-			if a.selectedAgentID == "" {
-				a.notice = "No agent selected"
-				a.noticeTTL = 3
-				return a, nil
-			}
-			cmds = append(cmds, a.resumeSelectedAgent())
-		case "P":
-			cmds = append(cmds, a.pauseAllAgents())
-		case "R":
-			cmds = append(cmds, a.resumePausedAgents())
 		case "X":
 			if a.confirmKillAll {
 				a.confirmKillAll = false
@@ -2465,9 +2446,9 @@ func (a App) renderStatusBar() string {
 	if contextID := a.contextList.SelectedContextID(); contextID != "" && a.focus == FocusContextList {
 		ctxHint = shared.MutedStyle.Render("  n:new-in-ctx " + shortContextID(contextID))
 	}
-	controls := "  n:new  p/r:agent  P/R:all  X:kill-all  x:del  v:view  o:log  m:resize  S:settings  Enter:chat  Tab:focus  t:trace  "
+	controls := "  n:new  X:kill-allx:del  v:view  o:log  m:resize  S:settings  Enter:chat  Tab:focus  t:trace  "
 	if a.control != nil {
-		controls = "  n:new  p/r:agent  P/R:all  X:kill-all  x:kill  v:view  o:log  m:resize  S:settings  Enter:chat  Tab:focus  t:trace  "
+		controls = "  n:new  X:kill-allx:kill  v:view  o:log  m:resize  S:settings  Enter:chat  Tab:focus  t:trace  "
 	}
 	prefix := shared.TitleStyle.Render("VULPINE") +
 		shared.MutedStyle.Render(" | ") +
@@ -2988,67 +2969,6 @@ func (a *App) createRemoteAgent(name, description, contextID string) tea.Cmd {
 	}
 }
 
-// pauseAgent pauses an agent.
-func (a App) pauseAgent(agentID string) tea.Cmd {
-	if a.control != nil {
-		return a.remoteAgentStatusCommand("agents.pause", agentID, "paused", "Remote agent paused: ")
-	}
-	return func() tea.Msg {
-		if a.orch == nil {
-			return statusNotice{text: "No orchestrator"}
-		}
-		if err := a.orch.Agents.PauseAgent(agentID); err != nil {
-			return statusNotice{text: "Pause failed: " + err.Error()}
-		}
-		if a.vault != nil {
-			a.vault.UpdateAgentStatus(agentID, "paused")
-		}
-		return shared.BulkAgentStatusMsg{
-			AgentIDs: []string{agentID},
-			Status:   "paused",
-			Notice:   "Agent paused: " + agentID,
-		}
-	}
-}
-
-// resumeAgent resumes an agent from saved session.
-func (a App) resumeAgent(agentID string) tea.Cmd {
-	if a.control != nil {
-		return a.remoteAgentStatusCommand("agents.resume", agentID, "active", "Remote agent resumed: ")
-	}
-	return func() tea.Msg {
-		if a.orch == nil {
-			return statusNotice{text: "No orchestrator"}
-		}
-		if a.vault == nil {
-			return statusNotice{text: "No vault available"}
-		}
-		sessionName := "vulpine-" + agentID
-		agent, err := a.vault.GetAgent(agentID)
-		if err != nil {
-			return statusNotice{text: "Resume failed: " + err.Error()}
-		}
-		configPath, cleanup, err := a.agentRuntimeConfig(agent)
-		if err != nil {
-			return statusNotice{text: "Resume failed: " + err.Error()}
-		}
-		message := "Continue from the saved session and resume the current task."
-		message = a.agentTurnPrompt(agentID, message)
-		_, err = a.orch.Agents.SpawnWithSessionIsolated(agentID, message, sessionName, configPath, cleanup)
-		if err != nil {
-			return statusNotice{text: "Resume failed: " + err.Error()}
-		}
-		if a.vault != nil {
-			a.vault.UpdateAgentStatus(agentID, "active")
-		}
-		return shared.BulkAgentStatusMsg{
-			AgentIDs: []string{agentID},
-			Status:   "active",
-			Notice:   "Agent resumed: " + agentID,
-		}
-	}
-}
-
 func (a App) remoteAgentStatusCommand(method, agentID, status, noticePrefix string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -3254,109 +3174,6 @@ func (a App) selectedAgentStatus() string {
 		return ""
 	}
 	return agent.Status
-}
-
-func (a App) pauseSelectedAgent() tea.Cmd {
-	status := a.selectedAgentStatus()
-	switch status {
-	case "":
-		return statusNoticeCmd("Agent state unavailable")
-	case "paused":
-		return statusNoticeCmd("Agent already paused")
-	case "completed", "error", "failed", "interrupted":
-		return statusNoticeCmd("Agent is not running")
-	}
-	return a.pauseAgent(a.selectedAgentID)
-}
-
-func (a App) resumeSelectedAgent() tea.Cmd {
-	status := a.selectedAgentStatus()
-	switch status {
-	case "":
-		return statusNoticeCmd("Agent state unavailable")
-	case "active", "running", "thinking", "starting":
-		return statusNoticeCmd("Agent already active")
-	case "completed":
-		return statusNoticeCmd("Completed agents cannot be resumed")
-	}
-	return a.resumeAgent(a.selectedAgentID)
-}
-
-func (a App) pauseAllAgents() tea.Cmd {
-	if a.control != nil {
-		ids := a.agentList.IDsByStatus(map[string]bool{
-			"running": true, "thinking": true, "starting": true, "active": true,
-		})
-		return a.remoteBulkAgentStatusCommand("agents.pauseMany", ids, "paused", "Paused %d remote agents")
-	}
-	return func() tea.Msg {
-		if a.orch == nil || a.vault == nil {
-			return statusNotice{text: "Pause all unavailable"}
-		}
-		statuses := a.orch.Agents.List()
-		paused := 0
-		affected := make([]string, 0, len(statuses))
-		for _, status := range statuses {
-			switch status.Status {
-			case "running", "thinking", "starting", "active":
-				if err := a.orch.Agents.PauseAgent(status.AgentID); err == nil {
-					_ = a.vault.UpdateAgentStatus(status.AgentID, "paused")
-					paused++
-					affected = append(affected, status.AgentID)
-				}
-			}
-		}
-		if paused == 0 {
-			return statusNotice{text: "No active agents to pause"}
-		}
-		return shared.BulkAgentStatusMsg{
-			AgentIDs: affected,
-			Status:   "paused",
-			Notice:   fmt.Sprintf("Paused %d agents", paused),
-		}
-	}
-}
-
-func (a App) resumePausedAgents() tea.Cmd {
-	if a.control != nil {
-		ids := a.agentList.IDsByStatus(map[string]bool{"paused": true})
-		return a.remoteBulkAgentStatusCommand("agents.resumeMany", ids, "active", "Resumed %d remote agents")
-	}
-	return func() tea.Msg {
-		if a.orch == nil || a.vault == nil {
-			return statusNotice{text: "Resume all unavailable"}
-		}
-		agents, err := a.vault.ListAgentsByStatus("paused")
-		if err != nil {
-			return statusNotice{text: "Resume all failed: " + err.Error()}
-		}
-		resumed := 0
-		affected := make([]string, 0, len(agents))
-		for i := range agents {
-			configPath, cleanup, cfgErr := a.agentRuntimeConfig(&agents[i])
-			if cfgErr != nil {
-				continue
-			}
-			sessionName := "vulpine-" + agents[i].ID
-			if _, err := a.orch.Agents.ResumeWithSessionIsolated(agents[i].ID, sessionName, configPath, cleanup); err == nil {
-				_ = a.vault.UpdateAgentStatus(agents[i].ID, "active")
-				resumed++
-				affected = append(affected, agents[i].ID)
-				continue
-			}
-			if cleanup != nil {
-				cleanup()
-			}
-		}
-		if resumed == 0 {
-			return statusNotice{text: "No paused agents resumed"}
-		}
-		return shared.BulkAgentStatusMsg{
-			AgentIDs: affected,
-			Status:   "active",
-			Notice:   fmt.Sprintf("Resumed %d agents", resumed),
-		}
-	}
 }
 
 func (a App) killAllAgents() tea.Cmd {

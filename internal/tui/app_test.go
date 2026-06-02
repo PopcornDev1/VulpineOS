@@ -1065,25 +1065,6 @@ func TestRemoteControlNewAgentShortcutStartsCreation(t *testing.T) {
 	}
 }
 
-func TestRemoteControlPauseSelectedUsesAgentListStatus(t *testing.T) {
-	control := &fakeControlClient{responses: map[string]any{
-		"agents.pause": map[string]any{"status": "ok"},
-	}}
-	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, control)
-	app.agentList.SetAgents([]vault.Agent{{ID: "agent-1", Name: "Remote", Status: "active"}})
-	app.agentList.SelectAgentID("agent-1")
-	app.selectedAgentID = "agent-1"
-
-	msg := app.pauseSelectedAgent()()
-	bulk, ok := msg.(shared.BulkAgentStatusMsg)
-	if !ok {
-		t.Fatalf("pauseSelectedAgent returned %#v, want BulkAgentStatusMsg", msg)
-	}
-	if len(bulk.AgentIDs) != 1 || bulk.AgentIDs[0] != "agent-1" || bulk.Status != "paused" {
-		t.Fatalf("bulk status = %+v", bulk)
-	}
-}
-
 func TestRemoteControlStatusEventRefreshesSelectedDetail(t *testing.T) {
 	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, &fakeControlClient{})
 	app.agentList.SetAgents([]vault.Agent{{
@@ -2651,111 +2632,6 @@ func TestTraceModeHotkeyTogglesConversationTrace(t *testing.T) {
 	}
 	if !strings.Contains(app.notice, "Trace mode disabled") {
 		t.Fatalf("unexpected trace disable notice: %q", app.notice)
-	}
-}
-
-func TestPauseResumeKeybindings(t *testing.T) {
-	db := openTestVault(t)
-
-	paused, err := db.CreateAgent("paused-agent", "task", "{}")
-	if err != nil {
-		t.Fatalf("create paused agent: %v", err)
-	}
-	if err := db.UpdateAgentStatus(paused.ID, "paused"); err != nil {
-		t.Fatalf("set paused status: %v", err)
-	}
-
-	active, err := db.CreateAgent("active-agent", "task", "{}")
-	if err != nil {
-		t.Fatalf("create active agent: %v", err)
-	}
-	if err := db.UpdateAgentStatus(active.ID, "active"); err != nil {
-		t.Fatalf("set active status: %v", err)
-	}
-
-	app := NewApp(nil, nil, nil, db, nil, nil)
-	if err := db.UpdateAgentStatus(active.ID, "active"); err != nil {
-		t.Fatalf("restore active status after startup reconciliation: %v", err)
-	}
-
-	app.selectedAgentID = active.ID
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if cmd == nil {
-		t.Fatal("expected pause key to return a command")
-	}
-	pauseMsg, ok := cmd().(statusNotice)
-	if !ok {
-		t.Fatalf("pause command returned %T, want statusNotice", cmd())
-	}
-	if pauseMsg.text != "No orchestrator" {
-		t.Fatalf("pause notice = %q, want %q", pauseMsg.text, "No orchestrator")
-	}
-	app = model.(App)
-
-	app.selectedAgentID = paused.ID
-	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if cmd == nil {
-		t.Fatal("expected resume key to return a command")
-	}
-	resumeMsg, ok := cmd().(statusNotice)
-	if !ok {
-		t.Fatalf("resume command returned %T, want statusNotice", cmd())
-	}
-	if resumeMsg.text != "No orchestrator" {
-		t.Fatalf("resume notice = %q, want %q", resumeMsg.text, "No orchestrator")
-	}
-}
-
-func TestPauseResumeKeybindingsShortCircuitOnAgentState(t *testing.T) {
-	db := openTestVault(t)
-
-	paused, err := db.CreateAgent("paused-agent", "task", "{}")
-	if err != nil {
-		t.Fatalf("create paused agent: %v", err)
-	}
-	if err := db.UpdateAgentStatus(paused.ID, "paused"); err != nil {
-		t.Fatalf("set paused status: %v", err)
-	}
-
-	active, err := db.CreateAgent("active-agent", "task", "{}")
-	if err != nil {
-		t.Fatalf("create active agent: %v", err)
-	}
-	if err := db.UpdateAgentStatus(active.ID, "active"); err != nil {
-		t.Fatalf("set active status: %v", err)
-	}
-
-	app := NewApp(nil, nil, nil, db, nil, nil)
-	if err := db.UpdateAgentStatus(active.ID, "active"); err != nil {
-		t.Fatalf("restore active status after startup reconciliation: %v", err)
-	}
-
-	app.selectedAgentID = paused.ID
-	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if cmd == nil {
-		t.Fatal("expected pause key to return a command")
-	}
-	msg := cmd()
-	notice, ok := msg.(statusNotice)
-	if !ok {
-		t.Fatalf("pause command returned %T, want statusNotice", msg)
-	}
-	if notice.text != "Agent already paused" {
-		t.Fatalf("pause notice = %q, want %q", notice.text, "Agent already paused")
-	}
-
-	app.selectedAgentID = active.ID
-	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if cmd == nil {
-		t.Fatal("expected resume key to return a command")
-	}
-	msg = cmd()
-	notice, ok = msg.(statusNotice)
-	if !ok {
-		t.Fatalf("resume command returned %T, want statusNotice", msg)
-	}
-	if notice.text != "Agent already active" {
-		t.Fatalf("resume notice = %q, want %q", notice.text, "Agent already active")
 	}
 }
 
