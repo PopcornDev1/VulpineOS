@@ -526,6 +526,18 @@ export class PageAgent {
   }
 
   _installSentinelProbeHooks() {
+    // The Sentinel probe wraps native methods to observe what a site fingerprints.
+    // That wrapping is itself web-detectable (wrapped fn .toString(), marker
+    // props, install flag), so it is OFF by default and must only be enabled for
+    // explicit observability sessions — never on stealth/production runs.
+    let enabled = false;
+    try {
+      enabled = Services.prefs.getBoolPref('vulpineos.sentinel.probe.enabled', false);
+    } catch (e) {
+      enabled = false;
+    }
+    if (!enabled)
+      return;
     this._frameTree.addBinding('', SENTINEL_PROBE_BINDING_NAME, SENTINEL_PROBE_BINDING_SCRIPT);
     this._frameTree.addInitScript('', SENTINEL_PROBE_INIT_SCRIPT);
   }

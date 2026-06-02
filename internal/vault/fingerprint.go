@@ -5,14 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"math/rand"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"vulpineos/internal/extensions"
 )
+
+// browserForgeWarnOnce ensures the "BrowserForge unavailable" warning is logged
+// at most once per process.
+var browserForgeWarnOnce sync.Once
 
 const fallbackFirefoxVersion = "146.0"
 
@@ -123,6 +129,13 @@ func GenerateFingerprint(seed string) (string, error) {
 	// Tier 2: BrowserForge public default (when the Python pipeline is present).
 	if fp, err := generateBrowserForge(seed, hostOS); err == nil && strings.TrimSpace(fp) != "" {
 		return fp, nil
+	} else if err != nil {
+		// Loudly warn once: production should run with BrowserForge so agents get
+		// full, distribution-realistic fingerprints. The offline fallback is
+		// per-context (incl. WebGL vendor/renderer) but lower fidelity.
+		browserForgeWarnOnce.Do(func() {
+			log.Printf("vault: WARNING — BrowserForge unavailable (%v); using offline fallback fingerprints (reduced realism). Install python3 + browserforge for production.", err)
+		})
 	}
 
 	// Tier 3: deterministic offline fallback (always available).
@@ -195,6 +208,11 @@ func generateFallback(seed, hostOS string) (string, error) {
 		Platform string
 		OsCPU    string
 		Fonts    []string
+		// GL holds {UNMASKED_VENDOR, UNMASKED_RENDERER} pairs in the real
+		// per-OS Firefox WebGL format, picked per-seed so offline fallback
+		// fingerprints still differ per agent rather than all sharing one
+		// global GL string. (BrowserForge is the richer primary source.)
+		GL [][2]string
 	}
 
 	profileMap := map[string]osProfile{
@@ -203,18 +221,36 @@ func generateFallback(seed, hostOS string) (string, error) {
 			Platform: "Win32",
 			OsCPU:    "Windows NT 10.0; Win64; x64",
 			Fonts:    []string{"Arial", "Calibri", "Cambria", "Consolas", "Segoe UI", "Tahoma", "Times New Roman", "Verdana"},
+			GL: [][2]string{
+				{"Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E9B) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
+				{"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
+				{"Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 6600 (0x000073FF) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
+				{"Google Inc. (Intel)", "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
+			},
 		},
 		"mac": {
 			UA:       DefaultUserAgentForHost("mac"),
 			Platform: "MacIntel",
 			OsCPU:    "Intel Mac OS X 10.15",
 			Fonts:    []string{"Arial", "Helvetica", "Helvetica Neue", "Menlo", "Monaco", "San Francisco", "Times New Roman"},
+			GL: [][2]string{
+				{"Apple", "Apple M1"},
+				{"Apple", "Apple M2"},
+				{"Apple", "Apple M3"},
+				{"Apple", "Apple M1 Pro"},
+				{"Apple", "Apple M2 Pro"},
+			},
 		},
 		"lin": {
 			UA:       DefaultUserAgentForHost("lin"),
 			Platform: "Linux x86_64",
 			OsCPU:    "Linux x86_64",
 			Fonts:    []string{"Arial", "DejaVu Sans", "Liberation Mono", "Liberation Sans", "Noto Sans", "Ubuntu"},
+			GL: [][2]string{
+				{"Mesa", "Mesa Intel(R) UHD Graphics 620 (KBL GT2)"},
+				{"Mesa", "Mesa Intel(R) Xe Graphics (TGL GT2)"},
+				{"AMD", "AMD Radeon RX 6600 (radeonsi, navi23, LLVM 15.0.7, DRM 3.49, 6.2.0)"},
+			},
 		},
 	}
 
@@ -251,6 +287,14 @@ func generateFallback(seed, hostOS string) (string, error) {
 		"canvas:seed":                   r.Uint32(),
 		"audio:seed":                    r.Uint32(),
 		"fonts:spacing_seed":            r.Uint32(),
+	}
+
+	// Per-seed WebGL vendor/renderer so even offline (no BrowserForge) two
+	// agents do not collide on the high-entropy GL strings.
+	if len(p.GL) > 0 {
+		gl := p.GL[r.Intn(len(p.GL))]
+		config["webGl:vendor"] = gl[0]
+		config["webGl:renderer"] = gl[1]
 	}
 
 	data, err := json.Marshal(config)
