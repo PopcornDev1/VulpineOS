@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"vulpineos/internal/agentmsg"
 	"vulpineos/internal/juggler"
-	"vulpineos/internal/nanoclaw"
 	"vulpineos/internal/runtimeaudit"
 )
 
@@ -21,7 +21,7 @@ import (
 // in-process and drives the host Camoufox directly through the MCP/Juggler
 // tools.
 //
-// It emits the existing nanoclaw.ConversationMsg / nanoclaw.AgentStatus value
+// It emits the existing agentmsg.ConversationMsg / agentmsg.AgentStatus value
 // types so existing consumers (TUI, web panel, remote broadcasts) work
 // unchanged. That dependency is transitional and can move to a neutral package
 // once NanoClaw is removed.
@@ -34,10 +34,10 @@ type Manager struct {
 	closed bool
 	audit  *runtimeaudit.Manager
 
-	statusSource       chan nanoclaw.AgentStatus
-	conversationSource chan nanoclaw.ConversationMsg
-	statusSubs         map[chan nanoclaw.AgentStatus]struct{}
-	conversationSubs   map[chan nanoclaw.ConversationMsg]struct{}
+	statusSource       chan agentmsg.AgentStatus
+	conversationSource chan agentmsg.ConversationMsg
+	statusSubs         map[chan agentmsg.AgentStatus]struct{}
+	conversationSubs   map[chan agentmsg.ConversationMsg]struct{}
 }
 
 type nativeAgent struct {
@@ -57,10 +57,10 @@ func NewManager(client *juggler.Client, cfg Config) *Manager {
 		client:             client,
 		cfg:                cfg,
 		agents:             make(map[string]*nativeAgent),
-		statusSource:       make(chan nanoclaw.AgentStatus, 64),
-		conversationSource: make(chan nanoclaw.ConversationMsg, 64),
-		statusSubs:         make(map[chan nanoclaw.AgentStatus]struct{}),
-		conversationSubs:   make(map[chan nanoclaw.ConversationMsg]struct{}),
+		statusSource:       make(chan agentmsg.AgentStatus, 64),
+		conversationSource: make(chan agentmsg.ConversationMsg, 64),
+		statusSubs:         make(map[chan agentmsg.AgentStatus]struct{}),
+		conversationSubs:   make(map[chan agentmsg.ConversationMsg]struct{}),
 	}
 	go m.fanOutStatus()
 	go m.fanOutConversation()
@@ -75,8 +75,8 @@ func (m *Manager) SetRuntimeAudit(audit *runtimeaudit.Manager) {
 }
 
 // StatusChan returns a new subscriber channel for agent status updates.
-func (m *Manager) StatusChan() <-chan nanoclaw.AgentStatus {
-	ch := make(chan nanoclaw.AgentStatus, 64)
+func (m *Manager) StatusChan() <-chan agentmsg.AgentStatus {
+	ch := make(chan agentmsg.AgentStatus, 64)
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -89,8 +89,8 @@ func (m *Manager) StatusChan() <-chan nanoclaw.AgentStatus {
 }
 
 // ConversationChan returns a new subscriber channel for conversation messages.
-func (m *Manager) ConversationChan() <-chan nanoclaw.ConversationMsg {
-	ch := make(chan nanoclaw.ConversationMsg, 64)
+func (m *Manager) ConversationChan() <-chan agentmsg.ConversationMsg {
+	ch := make(chan agentmsg.ConversationMsg, 64)
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -204,12 +204,12 @@ func (m *Manager) Count() int {
 }
 
 // List returns the status of active agents.
-func (m *Manager) List() []nanoclaw.AgentStatus {
+func (m *Manager) List() []agentmsg.AgentStatus {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]nanoclaw.AgentStatus, 0, len(m.agents))
+	out := make([]agentmsg.AgentStatus, 0, len(m.agents))
 	for _, ag := range m.agents {
-		out = append(out, nanoclaw.AgentStatus{AgentID: ag.id, ContextID: ag.contextID, Status: ag.status, Objective: ag.objective})
+		out = append(out, agentmsg.AgentStatus{AgentID: ag.id, ContextID: ag.contextID, Status: ag.status, Objective: ag.objective})
 	}
 	return out
 }
@@ -271,11 +271,11 @@ func (m *Manager) emitStatus(agentID, contextID, status, objective string) {
 		tokens = ag.tokens
 	}
 	m.mu.Unlock()
-	m.safeSendStatus(nanoclaw.AgentStatus{AgentID: agentID, ContextID: contextID, Status: status, Objective: objective, Tokens: tokens})
+	m.safeSendStatus(agentmsg.AgentStatus{AgentID: agentID, ContextID: contextID, Status: status, Objective: objective, Tokens: tokens})
 }
 
 func (m *Manager) emitConversation(agentID, role, content string) {
-	m.safeSendConversation(nanoclaw.ConversationMsg{AgentID: agentID, Role: role, Content: content})
+	m.safeSendConversation(agentmsg.ConversationMsg{AgentID: agentID, Role: role, Content: content})
 }
 
 // addTokens accumulates a turn's token usage onto the agent's running total.
@@ -297,7 +297,7 @@ func (m *Manager) agentTokens(agentID string) int {
 	return 0
 }
 
-func (m *Manager) safeSendStatus(s nanoclaw.AgentStatus) {
+func (m *Manager) safeSendStatus(s agentmsg.AgentStatus) {
 	defer func() { _ = recover() }()
 	select {
 	case m.statusSource <- s:
@@ -305,7 +305,7 @@ func (m *Manager) safeSendStatus(s nanoclaw.AgentStatus) {
 	}
 }
 
-func (m *Manager) safeSendConversation(c nanoclaw.ConversationMsg) {
+func (m *Manager) safeSendConversation(c agentmsg.ConversationMsg) {
 	defer func() { _ = recover() }()
 	select {
 	case m.conversationSource <- c:
@@ -370,11 +370,11 @@ type managerEvents struct {
 }
 
 func (e *managerEvents) OnTextDelta(delta string) {
-	e.m.safeSendConversation(nanoclaw.ConversationMsg{AgentID: e.agentID, Role: "stream", Content: delta, StreamActive: true})
+	e.m.safeSendConversation(agentmsg.ConversationMsg{AgentID: e.agentID, Role: "stream", Content: delta, StreamActive: true})
 }
 func (e *managerEvents) OnAssistant(text string) {
 	if strings.TrimSpace(text) != "" {
-		e.m.safeSendConversation(nanoclaw.ConversationMsg{AgentID: e.agentID, Role: "assistant", Content: text, Tokens: e.m.agentTokens(e.agentID)})
+		e.m.safeSendConversation(agentmsg.ConversationMsg{AgentID: e.agentID, Role: "assistant", Content: text, Tokens: e.m.agentTokens(e.agentID)})
 	}
 }
 func (e *managerEvents) OnToolCall(name, args string) {

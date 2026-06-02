@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"vulpineos/internal/agentmsg"
 	"vulpineos/internal/config"
 	"vulpineos/internal/nanoclaw"
 )
@@ -78,7 +79,7 @@ func TestIntegration_MultiAgentSessionSoak(t *testing.T) {
 	}
 }
 
-func waitForAssistantContainsAll(t *testing.T, convCh <-chan nanoclaw.ConversationMsg, wants map[string]string, timeout time.Duration) {
+func waitForAssistantContainsAll(t *testing.T, convCh <-chan agentmsg.ConversationMsg, wants map[string]string, timeout time.Duration) {
 	t.Helper()
 
 	pending := make(map[string]string, len(wants))

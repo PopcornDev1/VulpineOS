@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"vulpineos/internal/agentmsg"
 	"vulpineos/internal/config"
 	"vulpineos/internal/foxbridge"
 	"vulpineos/internal/juggler"
@@ -339,7 +340,7 @@ func elementCenter(t *testing.T, client *juggler.Client, tracker *ContextTracker
 	return payload.X, payload.Y
 }
 
-func waitForAssistantContains(t *testing.T, convCh <-chan nanoclaw.ConversationMsg, agentID, want string, timeout time.Duration) {
+func waitForAssistantContains(t *testing.T, convCh <-chan agentmsg.ConversationMsg, agentID, want string, timeout time.Duration) {
 	t.Helper()
 
 	deadline := time.After(timeout)

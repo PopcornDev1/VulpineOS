@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"vulpineos/internal/agentmsg"
 )
 
 var traceBearerPattern = regexp.MustCompile(`(?i)(bearer\s+)[^\s,;"]+`)
@@ -18,23 +20,11 @@ var traceQuerySecretPattern = regexp.MustCompile(`(?i)([?&](?:api[_-]?key|apikey
 var traceJSONSecretPattern = regexp.MustCompile(`(?i)("(?:apiKey|api_key|apikey|token|access_token|access_key|secret|password|credential|authorization|cookie|session)"\s*:\s*")[^"]+(")`)
 var traceKVSecretPattern = regexp.MustCompile(`(?i)(^|[^?&A-Za-z0-9_])((?:api[_-]?key|apikey|token|access[_-]?token|access[_-]?key|secret|password|credential|authorization|cookie|session)\s*=\s*)[^\s,;"]+`)
 
-// ConversationMsg represents a captured conversation message from an agent.
-type ConversationMsg struct {
-	AgentID      string
-	Role         string
-	Content      string
-	Tokens       int
-	StreamActive bool
-}
-
-// AgentStatus represents an agent's current state.
-type AgentStatus struct {
-	AgentID   string `json:"agent_id"`
-	ContextID string `json:"context_id"`
-	Status    string `json:"status"`    // starting, running, thinking, paused, completed, error, failed, interrupted
-	Objective string `json:"objective"` // current task description
-	Tokens    int    `json:"tokens"`    // tokens consumed
-}
+// ConversationMsg and AgentStatus are the runtime-neutral value types, now
+// defined in internal/agentmsg. Aliased here so existing nanoclaw code compiles
+// during the migration to the native runtime.
+type ConversationMsg = agentmsg.ConversationMsg
+type AgentStatus = agentmsg.AgentStatus
 
 // AgentOutput is a JSON message from the agent's stdout.
 type AgentOutput struct {

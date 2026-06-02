@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"vulpineos/internal/agentmsg"
 	"vulpineos/internal/nanoclaw"
 	"vulpineos/internal/runtimeaudit"
 )
@@ -14,13 +15,13 @@ import (
 //     host Camoufox directly through the MCP/Juggler tools (the native backend).
 //
 // The backend is chosen by the caller via Opts.AgentRuntime; when unset the
-// orchestrator defaults to NanoClaw. Both emit the same nanoclaw.ConversationMsg
-// / nanoclaw.AgentStatus value types so the TUI, web panel, and remote
+// orchestrator defaults to NanoClaw. Both emit the same agentmsg.ConversationMsg
+// / agentmsg.AgentStatus value types so the TUI, web panel, and remote
 // broadcasts work unchanged regardless of backend.
 type AgentRuntime interface {
 	SetRuntimeAudit(*runtimeaudit.Manager)
-	StatusChan() <-chan nanoclaw.AgentStatus
-	ConversationChan() <-chan nanoclaw.ConversationMsg
+	StatusChan() <-chan agentmsg.AgentStatus
+	ConversationChan() <-chan agentmsg.ConversationMsg
 	SpawnIsolated(contextID, sopFile, configPath string, cleanup func(), extraArgs ...string) (string, error)
 	SpawnWithSessionIsolated(agentID, task, sessionName, configPath string, cleanup func()) (string, error)
 	ResumeWithSessionIsolated(agentID, sessionName, configPath string, cleanup func()) (string, error)
@@ -29,7 +30,7 @@ type AgentRuntime interface {
 	KillAll()
 	Dispose()
 	Count() int
-	List() []nanoclaw.AgentStatus
+	List() []agentmsg.AgentStatus
 }
 
 // Compile-time check that the NanoClaw manager satisfies the runtime contract.
