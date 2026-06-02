@@ -111,7 +111,7 @@ func useNativeAgentRuntime() bool {
 // (so the orchestrator falls back to NanoClaw) when native mode is off or
 // prerequisites are missing. The native backend drives the host Camoufox
 // directly via the MCP/Juggler tools — no daemon, no per-agent container.
-func nativeAgentRuntime(cfg *config.Config, client *juggler.Client) orchestrator.AgentRuntime {
+func nativeAgentRuntime(cfg *config.Config, client *juggler.Client, v *vault.DB) orchestrator.AgentRuntime {
 	if !useNativeAgentRuntime() || cfg == nil || client == nil {
 		return nil
 	}
@@ -121,6 +121,10 @@ func nativeAgentRuntime(cfg *config.Config, client *juggler.Client) orchestrator
 		APIKey:         cfg.APIKey,
 		FallbackModels: nativeFallbackModels(cfg.Provider),
 	})
+	// Reuse each agent's pooled, identity-applied context across chat turns.
+	if v != nil {
+		mgr.SetVault(v)
+	}
 	log.Printf("agent runtime: native in-process (provider=%s model=%s)", cfg.Provider, cfg.Model)
 	return mgr
 }
@@ -794,7 +798,7 @@ func runServe(binaryPath string, headless bool, profileDir string, host string, 
 		if cfg != nil {
 			model = cfg.Model
 		}
-		nativeRT := nativeAgentRuntime(cfg, client)
+		nativeRT := nativeAgentRuntime(cfg, client, v)
 		orch = orchestrator.New(k, client, v, pool.DefaultConfig(), "nanoclaw", orchestrator.Opts{
 			AgentBus:     agentbus.New(),
 			Costs:        costtrack.New(model),
@@ -1109,7 +1113,7 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 						if cfg != nil {
 							model = cfg.Model
 						}
-						nativeRT := nativeAgentRuntime(cfg, client)
+						nativeRT := nativeAgentRuntime(cfg, client, v)
 						orch = orchestrator.New(k, client, v, pool.DefaultConfig(), "nanoclaw", orchestrator.Opts{
 							AgentBus:     agentbus.New(),
 							Costs:        costtrack.New(model),

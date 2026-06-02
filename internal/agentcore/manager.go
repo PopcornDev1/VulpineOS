@@ -12,7 +12,15 @@ import (
 	"vulpineos/internal/agentmsg"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/runtimeaudit"
+	"vulpineos/internal/vault"
 )
+
+// agentStore is the minimal vault surface the native runtime needs to make chat
+// stateful across turns: resolving the agent's pooled browser context so each
+// turn reuses the same identity-applied context instead of a throwaway one.
+type agentStore interface {
+	GetAgent(id string) (*vault.Agent, error)
+}
 
 // Manager is the native, in-process agent runtime. It implements the same
 // method surface the orchestrator/TUI/remote use on the NanoClaw manager, so it
@@ -33,6 +41,7 @@ type Manager struct {
 	agents map[string]*nativeAgent
 	closed bool
 	audit  *runtimeaudit.Manager
+	store  agentStore
 
 	statusSource       chan agentmsg.AgentStatus
 	conversationSource chan agentmsg.ConversationMsg
@@ -74,6 +83,35 @@ func (m *Manager) SetRuntimeAudit(audit *runtimeaudit.Manager) {
 	m.mu.Unlock()
 }
 
+// SetVault attaches the vault so chat turns reuse the agent's pooled, identity-
+// applied browser context (resolved from agent metadata) instead of a fresh
+// throwaway context each turn.
+func (m *Manager) SetVault(store agentStore) {
+	m.mu.Lock()
+	m.store = store
+	m.mu.Unlock()
+}
+
+// resolveContextID returns the agent's stored browser context id (set by the
+// orchestrator's EnsureAgentBrowserContext), or "" when unknown.
+func (m *Manager) resolveContextID(agentID string) string {
+	m.mu.RLock()
+	store := m.store
+	m.mu.RUnlock()
+	if store == nil {
+		return ""
+	}
+	a, err := store.GetAgent(agentID)
+	if err != nil || a == nil {
+		return ""
+	}
+	meta, err := vault.ParseAgentMetadata(a.Metadata)
+	if err != nil {
+		return ""
+	}
+	return meta.ContextID
+}
+
 // StatusChan returns a new subscriber channel for agent status updates.
 func (m *Manager) StatusChan() <-chan agentmsg.AgentStatus {
 	ch := make(chan agentmsg.AgentStatus, 64)
@@ -111,17 +149,18 @@ func (m *Manager) SpawnIsolated(contextID string, sopFile string, configPath str
 }
 
 // SpawnWithSessionIsolated starts/continues a native agent turn. agentID/session
-// identify the agent; task is the user message. The agent runs on contextID
-// resolved from prior state, or a fresh page when none.
+// identify the agent; task is the user message (which already carries recent
+// visible chat history via the caller's turn prompt). The turn runs on the
+// agent's pooled, identity-applied context when one is known, so cookies,
+// storage, and identity persist across turns — matching the prior runtime.
 func (m *Manager) SpawnWithSessionIsolated(agentID, task, sessionName, configPath string, cleanup func()) (string, error) {
-	return m.spawn(agentID, "", task, cleanup)
+	return m.spawn(agentID, m.resolveContextID(agentID), task, cleanup)
 }
 
-// ResumeWithSessionIsolated re-activates a saved session by re-running the loop
-// with a continue instruction. (Native turns are request/response; resume is a
-// fresh turn seeded with the continue prompt.)
+// ResumeWithSessionIsolated re-activates an agent by running a fresh turn seeded
+// with a continue instruction, on the agent's pooled context.
 func (m *Manager) ResumeWithSessionIsolated(agentID, sessionName, configPath string, cleanup func()) (string, error) {
-	return m.spawn(agentID, "", "Continue from the saved session and resume the current task.", cleanup)
+	return m.spawn(agentID, m.resolveContextID(agentID), "Continue from the saved session and resume the current task.", cleanup)
 }
 
 // spawn runs one agent turn in a goroutine, streaming events to subscribers.
