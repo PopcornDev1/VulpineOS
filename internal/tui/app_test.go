@@ -744,8 +744,7 @@ func TestArrowKeysNavigateAgentsWhenResizeModeDisabled(t *testing.T) {
 		t.Fatalf("set second last_active: %v", err)
 	}
 
-	cfg := &config.Config{ResizePanelsWithArrows: false}
-	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.focus = FocusAgentList
 
 	originalSplit := app.leftSplit
@@ -753,50 +752,13 @@ func TestArrowKeysNavigateAgentsWhenResizeModeDisabled(t *testing.T) {
 	app = model.(App)
 
 	if app.leftSplit != originalSplit {
-		t.Fatalf("leftSplit changed from %d to %d with resize mode disabled", originalSplit, app.leftSplit)
+		t.Fatalf("leftSplit changed from %d to %d on arrow navigation", originalSplit, app.leftSplit)
 	}
 	if app.selectedAgentID != second.ID {
 		t.Fatalf("selected agent = %q, want %q after down arrow", app.selectedAgentID, second.ID)
 	}
 	if !strings.Contains(app.renderStatusBar(), "q:quit") {
 		t.Fatalf("status bar missing quit hint: %s", app.renderStatusBar())
-	}
-}
-
-func TestStatusBarStartsNavigateWhenLegacyResizeDefaultSet(t *testing.T) {
-	db := openTestVault(t)
-	cfg := &config.Config{ResizePanelsWithArrows: true}
-	app := NewApp(nil, nil, nil, db, cfg, nil)
-	app.width = 180
-
-	if !strings.Contains(app.renderStatusBar(), "q:quit") {
-		t.Fatalf("status bar missing quit hint: %s", app.renderStatusBar())
-	}
-}
-
-func TestResizeModeKeepsVerticalSplitsUsableAfterTerminalShrink(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
-	app.width = 80
-	app.height = 16
-	app.focus = FocusAgentList
-	app.resizeMode = true
-	app.leftSplit = 30
-	app.rightSplit = 30
-
-	app.updatePanelSizes()
-
-	if app.leftSplit >= 30 {
-		t.Fatalf("left split was not clamped after shrink: %d", app.leftSplit)
-	}
-	if app.rightSplit >= 30 {
-		t.Fatalf("right split was not clamped after shrink: %d", app.rightSplit)
-	}
-	clampedLeft := app.leftSplit
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyUp})
-	app = model.(App)
-
-	if app.leftSplit != clampedLeft-1 {
-		t.Fatalf("up arrow leftSplit = %d, want %d after clamp", app.leftSplit, clampedLeft-1)
 	}
 }
 
@@ -1341,10 +1303,9 @@ func TestViewKeepsRenderedLinesWithinTerminalWidthAfterShrink(t *testing.T) {
 
 func TestSettingsViewKeepsRenderedLinesWithinTerminalAfterShrink(t *testing.T) {
 	cfg := &config.Config{
-		Provider:               "anthropic",
-		Model:                  "anthropic/claude-sonnet-4-6-with-a-long-display-name",
-		APIKey:                 "sk-test",
-		ResizePanelsWithArrows: true,
+		Provider: "anthropic",
+		Model:    "anthropic/claude-sonnet-4-6-with-a-long-display-name",
+		APIKey:   "sk-test",
 	}
 	app := NewApp(nil, nil, nil, nil, cfg, nil)
 	app.width = 58
@@ -1520,46 +1481,6 @@ func TestStatusBarPreservesModeAndQuitHints(t *testing.T) {
 	}
 	if width := lipgloss.Width(bar); width > app.width {
 		t.Fatalf("status bar width = %d, want <= %d:\n%s", width, app.width, bar)
-	}
-}
-
-func TestModeHotkeyTogglesResizeMode(t *testing.T) {
-	db := openTestVault(t)
-	cfg := &config.Config{ResizePanelsWithArrows: false}
-	app := NewApp(nil, nil, nil, db, cfg, nil)
-
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
-	if !app.resizeModeEnabled() {
-		t.Fatal("resize mode should be enabled after pressing m")
-	}
-	if app.notice == "" || !strings.Contains(app.notice, "Resize mode enabled") {
-		t.Fatalf("unexpected notice after enabling resize mode: %q", app.notice)
-	}
-
-	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
-	if app.resizeModeEnabled() {
-		t.Fatal("resize mode should be disabled after pressing m again")
-	}
-	if app.notice == "" || !strings.Contains(app.notice, "Resize mode disabled") {
-		t.Fatalf("unexpected notice after disabling resize mode: %q", app.notice)
-	}
-}
-
-func TestModeHotkeyDoesNotPersistResizePreference(t *testing.T) {
-	db := openTestVault(t)
-	cfg := &config.Config{ResizePanelsWithArrows: false}
-	app := NewApp(nil, nil, nil, db, cfg, nil)
-
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
-
-	if !app.resizeModeEnabled() {
-		t.Fatal("resize mode should be enabled after pressing m")
-	}
-	if cfg.ResizePanelsWithArrows {
-		t.Fatal("mode hotkey should not persist the resize preference")
 	}
 }
 
@@ -1976,35 +1897,6 @@ func TestFocusedEmptyChatAllowsViewShortcut(t *testing.T) {
 	}
 }
 
-func TestFocusedEmptyChatAllowsModeShortcut(t *testing.T) {
-	db := openTestVault(t)
-	cfg := &config.Config{}
-	app := NewApp(nil, nil, nil, db, cfg, nil)
-	app.conversation.SetSize(80, 20)
-
-	agent, err := db.CreateAgent("Scraper", "Scrape prices", "{}")
-	if err != nil {
-		t.Fatalf("create agent: %v", err)
-	}
-	app.selectedAgentID = agent.ID
-	app.focus = FocusConversation
-	app.inputMode = "chat"
-	app.conversation.SetAgentID(agent.ID)
-	app.conversation.SetAgentName(agent.Name)
-	app.conversation.SetAwake(true)
-	app.conversation.Focus()
-
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
-
-	if !app.resizeModeEnabled() {
-		t.Fatal("mode shortcut should enable resize mode from empty focused chat")
-	}
-	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when mode shortcut is used from empty focused chat", got)
-	}
-}
-
 func TestFocusedEmptyChatAllowsSettingsShortcut(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
@@ -2082,7 +1974,7 @@ func TestFocusedEmptyChatAllowsReconfigureShortcut(t *testing.T) {
 }
 
 func TestFocusedDraftChatTreatsShortcutLettersAsText(t *testing.T) {
-	for _, key := range []rune{'v', 't', 'o', 'm', 'c', 'S'} {
+	for _, key := range []rune{'v', 't', 'o', 'c', 'S'} {
 		t.Run(string(key), func(t *testing.T) {
 			db := openTestVault(t)
 			cfg := &config.Config{}
@@ -2527,38 +2419,6 @@ func TestTraceModeHotkeyTogglesConversationTrace(t *testing.T) {
 	}
 }
 
-func TestBulkKillKeybindingWithoutOrchestrator(t *testing.T) {
-	db := openTestVault(t)
-
-	app := NewApp(nil, nil, nil, db, nil, nil)
-
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
-	if cmd != nil {
-		t.Fatal("did not expect first X press to return a command")
-	}
-	app = model.(App)
-	if !app.confirmKillAll {
-		t.Fatal("expected bulk kill confirmation to be armed")
-	}
-
-	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
-	if cmd == nil {
-		t.Fatal("expected second X press to return a command")
-	}
-	app = model.(App)
-	if app.confirmKillAll {
-		t.Fatal("expected bulk kill confirmation to clear after execution")
-	}
-	msg := cmd()
-	notice, ok := msg.(statusNotice)
-	if !ok {
-		t.Fatalf("bulk kill command returned %T, want statusNotice", msg)
-	}
-	if notice.text != "Kill all unavailable" {
-		t.Fatalf("bulk kill notice = %q, want %q", notice.text, "Kill all unavailable")
-	}
-}
-
 func TestLocalKillPathsUseOrchestratorCleanup(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "app.go", nil, 0)
@@ -2581,13 +2441,6 @@ func TestLocalKillPathsUseOrchestratorCleanup(t *testing.T) {
 			}
 			if strings.Contains(body, "a.orch.Agents.Kill(agentID)") {
 				t.Fatal("deleteAgent bypasses orchestrator cleanup via Agents.Kill")
-			}
-		case strings.Contains(body, "func (a App) killAllAgents"):
-			if !strings.Contains(body, "a.orch.KillAgent(status.AgentID)") {
-				t.Fatal("killAllAgents should use Orchestrator.KillAgent for each live agent")
-			}
-			if strings.Contains(body, "a.orch.Agents.KillAll()") {
-				t.Fatal("killAllAgents bypasses orchestrator cleanup via Agents.KillAll")
 			}
 		}
 	}
@@ -3166,7 +3019,7 @@ func TestRemoteStatusUpdatesSystemPanel(t *testing.T) {
 	app = model.(App)
 
 	view := app.systemInfo.View()
-	for _, want := range []string{"RUNNING", "PID 1234", "Mode HEADLESS", "Route camoufox", "Win headless", "Pool: 2/3/5"} {
+	for _, want := range []string{"RUNNING", "PID 1234", "Pool: 2/3/5"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("system view missing %q:\n%s", want, view)
 		}

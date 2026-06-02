@@ -163,20 +163,6 @@ func (m Model) View() string {
 	upStr := formatDuration(m.uptime)
 	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Up %s", upStr)))
 	b.WriteString("\n")
-	modeLabel := "GUI"
-	if m.headless {
-		modeLabel = "HEADLESS"
-	}
-	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Mode %s", modeLabel)))
-	b.WriteString("\n")
-	if strings.TrimSpace(m.browserRoute) != "" {
-		b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Route %s", m.browserRoute)))
-		b.WriteString("\n")
-	}
-	if strings.TrimSpace(m.browserWindow) != "" {
-		b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Win %s", m.browserWindow)))
-		b.WriteString("\n")
-	}
 	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Pool: %d/%d/%d", m.poolAvailable, m.poolActive, m.poolTotal)))
 	b.WriteString("\n")
 	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Ctx: %d Pg: %d", m.activeContexts, m.activePages)))

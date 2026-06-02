@@ -138,7 +138,6 @@ func newWithConfigAndProviders(existing *config.Config, providers []config.Provi
 	m.cfg.APIKey = existing.APIKey
 	m.cfg.Model = existing.Model
 	m.cfg.BinaryPath = existing.BinaryPath
-	m.cfg.ResizePanelsWithArrows = existing.ResizePanelsWithArrows
 	m.cfg.GlobalSkills = append([]config.SkillEntry(nil), existing.GlobalSkills...)
 	if len(existing.AgentSkills) > 0 {
 		m.cfg.AgentSkills = make(map[string][]config.SkillEntry, len(existing.AgentSkills))

@@ -83,7 +83,6 @@ type configSummary struct {
 	Model                   string  `json:"model"`
 	APIKeySet               bool    `json:"apiKeySet"`
 	SetupComplete           bool    `json:"setupComplete"`
-	ResizePanelsWithArrows  bool    `json:"resizePanelsWithArrows"`
 	DefaultBudgetMaxCostUSD float64 `json:"defaultBudgetMaxCostUsd,omitempty"`
 	DefaultBudgetMaxTokens  int64   `json:"defaultBudgetMaxTokens,omitempty"`
 }
@@ -138,12 +137,11 @@ func (api *ControlAPI) configSet(params json.RawMessage) (json.RawMessage, error
 		return nil, fmt.Errorf("config not available")
 	}
 	var p struct {
-		Provider               string `json:"provider"`
-		Model                  string `json:"model"`
-		APIKey                 string `json:"apiKey"`
-		KeepAPIKey             bool   `json:"keepApiKey"`
-		SetupComplete          *bool  `json:"setupComplete"`
-		ResizePanelsWithArrows *bool  `json:"resizePanelsWithArrows"`
+		Provider      string `json:"provider"`
+		Model         string `json:"model"`
+		APIKey        string `json:"apiKey"`
+		KeepAPIKey    bool   `json:"keepApiKey"`
+		SetupComplete *bool  `json:"setupComplete"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
@@ -159,9 +157,6 @@ func (api *ControlAPI) configSet(params json.RawMessage) (json.RawMessage, error
 	} else if !p.KeepAPIKey {
 		// A blank key is treated as "preserve existing" by default so remote
 		// settings never need to read the host secret back.
-	}
-	if p.ResizePanelsWithArrows != nil {
-		api.Config.ResizePanelsWithArrows = *p.ResizePanelsWithArrows
 	}
 	api.Config.RefreshSetupComplete()
 	if p.SetupComplete != nil && !*p.SetupComplete {
@@ -302,7 +297,6 @@ func summarizeConfig(cfg *config.Config) configSummary {
 		Model:                   cfg.Model,
 		APIKeySet:               strings.TrimSpace(cfg.APIKey) != "",
 		SetupComplete:           cfg.SetupComplete,
-		ResizePanelsWithArrows:  cfg.ResizePanelsWithArrows,
 		DefaultBudgetMaxCostUSD: cfg.DefaultBudgetMaxCostUSD,
 		DefaultBudgetMaxTokens:  cfg.DefaultBudgetMaxTokens,
 	}

@@ -11,7 +11,7 @@ import (
 	"vulpineos/internal/vault"
 )
 
-func TestKernelStatusViewShowsModeAndRoute(t *testing.T) {
+func TestKernelStatusViewOmitsModeRouteAndWindow(t *testing.T) {
 	model := New()
 	model.SetHeight(20)
 
@@ -25,14 +25,14 @@ func TestKernelStatusViewShowsModeAndRoute(t *testing.T) {
 	})
 
 	view := updated.View()
-	if !strings.Contains(view, "Mode GUI") {
-		t.Fatalf("expected GUI mode in view, got:\n%s", view)
+	if strings.Contains(view, "Mode ") {
+		t.Fatalf("did not expect Mode line in view, got:\n%s", view)
 	}
-	if !strings.Contains(view, "Route CAMOUFOX") {
-		t.Fatalf("expected CAMOUFOX route in view, got:\n%s", view)
+	if strings.Contains(view, "Route ") {
+		t.Fatalf("did not expect Route line in view, got:\n%s", view)
 	}
-	if !strings.Contains(view, "Win HIDDEN") {
-		t.Fatalf("expected window state in view, got:\n%s", view)
+	if strings.Contains(view, "Win ") {
+		t.Fatalf("did not expect Win line in view, got:\n%s", view)
 	}
 }
 

@@ -17,7 +17,6 @@ type Config struct {
 	BinaryPath              string                  `json:"binaryPath,omitempty"`
 	DefaultBudgetMaxCostUSD float64                 `json:"defaultBudgetMaxCostUsd,omitempty"`
 	DefaultBudgetMaxTokens  int64                   `json:"defaultBudgetMaxTokens,omitempty"`
-	ResizePanelsWithArrows  bool                    `json:"resizePanelsWithArrows,omitempty"`
 	FoxbridgeCDPURL         string                  `json:"-"`                      // runtime-only: set when foxbridge is running
 	GlobalSkills            []SkillEntry            `json:"globalSkills,omitempty"` // skills enabled for all agents
 	AgentSkills             map[string][]SkillEntry `json:"agentSkills,omitempty"`  // agentID → skills for that agent only

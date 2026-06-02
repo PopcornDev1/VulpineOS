@@ -140,11 +140,10 @@ type remoteSkillsLoadedMsg struct {
 }
 
 type remoteConfigSummary struct {
-	Provider               string `json:"provider"`
-	Model                  string `json:"model"`
-	APIKeySet              bool   `json:"apiKeySet"`
-	SetupComplete          bool   `json:"setupComplete"`
-	ResizePanelsWithArrows bool   `json:"resizePanelsWithArrows"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	APIKeySet     bool   `json:"apiKeySet"`
+	SetupComplete bool   `json:"setupComplete"`
 }
 
 type remoteProxySummary struct {
@@ -201,8 +200,6 @@ type App struct {
 	notice                  string
 	noticeTTL               int  // number of ticks before notice is cleared
 	confirmDelete           bool // true when waiting for delete confirmation
-	confirmKillAll          bool // true when waiting for bulk kill confirmation
-	resizeMode              bool
 	pendingChatFocusAgentID string
 	liveAgentContexts       map[string]string
 
@@ -656,10 +653,9 @@ func (a App) loadRemoteSettings() tea.Cmd {
 
 func configFromRemoteSummary(item remoteConfigSummary) *config.Config {
 	cfg := &config.Config{
-		Provider:               item.Provider,
-		Model:                  item.Model,
-		SetupComplete:          item.SetupComplete,
-		ResizePanelsWithArrows: item.ResizePanelsWithArrows,
+		Provider:      item.Provider,
+		Model:         item.Model,
+		SetupComplete: item.SetupComplete,
 	}
 	if item.APIKeySet {
 		cfg.APIKey = remoteAPIKeyPlaceholder
@@ -870,34 +866,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.confirmDelete = false
 			a.notice = ""
 		}
-		// Cancel bulk kill confirmation on any key except X
-		if a.confirmKillAll && msg.String() != "X" {
-			a.confirmKillAll = false
-			a.notice = ""
-		}
 
 		// Normal keybinds
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return a, a.shutdown()
-		case "X":
-			if a.confirmKillAll {
-				a.confirmKillAll = false
-				cmds = append(cmds, a.killAllAgents())
-			} else {
-				a.confirmKillAll = true
-				a.notice = "Press X again to kill all live agents, or any other key to cancel"
-				a.noticeTTL = 5
-			}
-		case "m":
-			enabled := !a.resizeModeEnabled()
-			a.resizeMode = enabled
-			if enabled {
-				a.notice = "Resize mode enabled — arrow keys resize panels"
-			} else {
-				a.notice = "Resize mode disabled — arrow keys navigate and scroll"
-			}
-			a.noticeTTL = 3
 		case "t":
 			a.handleTraceToggle()
 		case "j":
@@ -995,38 +968,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.conversation.Blur()
 			a.inputMode = ""
 			a.focus = FocusAgentList
-		case "left":
-			if a.resizeModeEnabled() {
-				switch a.focus {
-				case FocusAgentList:
-					if a.leftWidth > 12 {
-						a.leftWidth -= 2
-						a.updatePanelSizes()
-					}
-				case FocusContextList:
-					// Left arrow on right panel = expand (pull edge left)
-					if a.rightWidth < 30 {
-						a.rightWidth += 2
-						a.updatePanelSizes()
-					}
-				}
-			}
-		case "right":
-			if a.resizeModeEnabled() {
-				switch a.focus {
-				case FocusAgentList:
-					if a.leftWidth < 30 {
-						a.leftWidth += 2
-						a.updatePanelSizes()
-					}
-				case FocusContextList:
-					// Right arrow on right panel = shrink (push edge right)
-					if a.rightWidth > 12 {
-						a.rightWidth -= 2
-						a.updatePanelSizes()
-					}
-				}
-			}
 		case "up":
 			switch a.focus {
 			case FocusConversation:
@@ -1034,61 +975,22 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.conversation, cmd = a.conversation.Update(msg)
 				return a, cmd
 			case FocusAgentList:
-				if a.resizeModeEnabled() {
-					if a.leftSplit > minSplit {
-						a.leftSplit--
-						a.updatePanelSizes()
-					}
-				} else {
-					a.agentList.MoveUp()
-					cmds = append(cmds, a.selectCurrentAgent())
-				}
-			case FocusAgentDetail:
-				if a.resizeModeEnabled() && a.rightSplit > minSplit {
-					a.rightSplit--
-					a.updatePanelSizes()
-				}
+				a.agentList.MoveUp()
+				cmds = append(cmds, a.selectCurrentAgent())
 			case FocusContextList:
-				if a.resizeModeEnabled() {
-					if a.rightSplit > minSplit {
-						a.rightSplit--
-						a.updatePanelSizes()
-					}
-				} else {
-					a.contextList.MoveUp()
-				}
+				a.contextList.MoveUp()
 			}
 		case "down":
-			maxH := a.height - 2
 			switch a.focus {
 			case FocusConversation:
 				var cmd tea.Cmd
 				a.conversation, cmd = a.conversation.Update(msg)
 				return a, cmd
 			case FocusAgentList:
-				if a.resizeModeEnabled() {
-					if a.leftSplit < maxH-minSplit {
-						a.leftSplit++
-						a.updatePanelSizes()
-					}
-				} else {
-					a.agentList.MoveDown()
-					cmds = append(cmds, a.selectCurrentAgent())
-				}
-			case FocusAgentDetail:
-				if a.resizeModeEnabled() && a.rightSplit < maxH*maxSplitRatio/100 {
-					a.rightSplit++
-					a.updatePanelSizes()
-				}
+				a.agentList.MoveDown()
+				cmds = append(cmds, a.selectCurrentAgent())
 			case FocusContextList:
-				if a.resizeModeEnabled() {
-					if a.rightSplit < maxH*maxSplitRatio/100 {
-						a.rightSplit++
-						a.updatePanelSizes()
-					}
-				} else {
-					a.contextList.MoveDown()
-				}
+				a.contextList.MoveDown()
 			}
 		case "S":
 			if a.control != nil {
@@ -1855,7 +1757,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a App) allowFocusedChatShortcut(msg tea.KeyMsg) bool {
 	switch msg.String() {
-	case "v", "t", "o", "m", "S", "c":
+	case "v", "t", "o", "S", "c":
 		if strings.TrimSpace(a.conversation.TextInput().Value()) == "" || !a.conversation.IsInputFocused() {
 			return true
 		}
@@ -2424,9 +2326,9 @@ func (a App) renderStatusBar() string {
 	if contextID := a.contextList.SelectedContextID(); contextID != "" && a.focus == FocusContextList {
 		ctxHint = shared.MutedStyle.Render("  n:new-in-ctx " + shortContextID(contextID))
 	}
-	controls := "  ↑/↓:select  Enter:chat  Esc:back  n:new  x:del  X:kill-all  v:view  o:log  m:resize  S:settings  t:trace  "
+	controls := "  ↑/↓:select  Enter:chat  Esc:back  n:new  x:del  v:view  o:log  S:settings  t:trace  "
 	if a.control != nil {
-		controls = "  ↑/↓:select  Enter:chat  Esc:back  n:new  x:kill  X:kill-all  v:view  o:log  m:resize  S:settings  t:trace  "
+		controls = "  ↑/↓:select  Enter:chat  Esc:back  n:new  x:kill  v:view  o:log  S:settings  t:trace  "
 	}
 	prefix := shared.TitleStyle.Render("VULPINE") +
 		shared.MutedStyle.Render(" | ") +
@@ -2565,10 +2467,6 @@ func shrinkSideWidths(left, right, budget int) (int, int) {
 	return left, budget - left
 }
 
-func (a *App) resizeModeEnabled() bool {
-	return a.resizeMode
-}
-
 func (a *App) startEmbeddedReconfigure() tea.Cmd {
 	cfg := a.cfg
 	if cfg == nil {
@@ -2655,12 +2553,11 @@ func (a *App) applySetupConfig(updated *config.Config) error {
 			apiKey = ""
 		}
 		params := map[string]any{
-			"provider":               updated.Provider,
-			"model":                  updated.Model,
-			"apiKey":                 apiKey,
-			"keepApiKey":             keepAPIKey,
-			"setupComplete":          updated.SetupComplete,
-			"resizePanelsWithArrows": updated.ResizePanelsWithArrows,
+			"provider":      updated.Provider,
+			"model":         updated.Model,
+			"apiKey":        apiKey,
+			"keepApiKey":    keepAPIKey,
+			"setupComplete": updated.SetupComplete,
 		}
 		if err := a.control.ControlCall(ctx, "config.set", params, &result); err != nil {
 			return err
@@ -2677,7 +2574,6 @@ func (a *App) applySetupConfig(updated *config.Config) error {
 	a.cfg.Model = updated.Model
 	a.cfg.SetupComplete = updated.SetupComplete
 	a.cfg.BinaryPath = updated.BinaryPath
-	a.cfg.ResizePanelsWithArrows = updated.ResizePanelsWithArrows
 	a.cfg.GlobalSkills = append([]config.SkillEntry(nil), updated.GlobalSkills...)
 	if len(updated.AgentSkills) > 0 {
 		a.cfg.AgentSkills = make(map[string][]config.SkillEntry, len(updated.AgentSkills))
@@ -3111,43 +3007,6 @@ func (a App) selectedAgentStatus() string {
 		return ""
 	}
 	return agent.Status
-}
-
-func (a App) killAllAgents() tea.Cmd {
-	if a.control != nil {
-		ids := a.agentList.IDsByStatus(map[string]bool{
-			"running": true, "thinking": true, "starting": true, "active": true,
-		})
-		return a.remoteBulkAgentStatusCommand("agents.killMany", ids, "interrupted", "Killed %d remote agents")
-	}
-	return func() tea.Msg {
-		if a.orch == nil || a.vault == nil {
-			return statusNotice{text: "Kill all unavailable"}
-		}
-		statuses := a.orch.Agents.List()
-		if len(statuses) == 0 {
-			return statusNotice{text: "No live agents to kill"}
-		}
-
-		affected := make([]string, 0, len(statuses))
-		for _, status := range statuses {
-			if err := a.orch.KillAgent(status.AgentID); err != nil {
-				continue
-			}
-			affected = append(affected, status.AgentID)
-		}
-		if len(affected) == 0 {
-			return statusNotice{text: "No live agents killed"}
-		}
-		for _, agentID := range affected {
-			_ = a.vault.UpdateAgentStatus(agentID, "interrupted")
-		}
-		return shared.BulkAgentStatusMsg{
-			AgentIDs: affected,
-			Status:   "interrupted",
-			Notice:   fmt.Sprintf("Killed %d agents", len(affected)),
-		}
-	}
 }
 
 func (a App) remoteBulkAgentStatusCommand(method string, agentIDs []string, status string, noticeFormat string) tea.Cmd {
