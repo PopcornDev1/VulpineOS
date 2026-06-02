@@ -57,20 +57,24 @@ func liveConfig(t *testing.T) Config {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	if strings.TrimSpace(cfg.APIKey) == "" {
+	oauth := strings.EqualFold(strings.TrimSpace(cfg.Provider), "openai-oauth")
+	if strings.TrimSpace(cfg.APIKey) == "" && !oauth {
 		t.Skip("no APIKey configured in ~/.vulpineos/config.json")
 	}
-	return Config{
-		Provider: cfg.Provider,
-		Model:    cfg.Model,
-		APIKey:   cfg.APIKey,
-		// Live free models that exist as of testing; the loop falls through on 429.
-		FallbackModels: []string{
-			"openrouter/z-ai/glm-4.5-air:free",
-			"openrouter/nvidia/nemotron-nano-9b-v2:free",
-		},
+	out := Config{
+		Provider:      cfg.Provider,
+		Model:         cfg.Model,
+		APIKey:        cfg.APIKey,
 		MaxIterations: 12,
 	}
+	// OpenRouter shares a free-model fallback chain; codex/other providers don't.
+	if strings.EqualFold(strings.TrimSpace(cfg.Provider), "openrouter") {
+		out.FallbackModels = []string{
+			"openrouter/z-ai/glm-4.5-air:free",
+			"openrouter/nvidia/nemotron-nano-9b-v2:free",
+		}
+	}
+	return out
 }
 
 // TestLive_NativeAgent_TextReply proves the native runtime end-to-end with a
