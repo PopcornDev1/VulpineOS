@@ -15,6 +15,34 @@ import (
 	"vulpineos/internal/juggler"
 )
 
+// plainFirefoxUserAgent returns the real Firefox UA for the host OS, with no
+// Camoufox token. Keep the version aligned with the engine (bump on upgrades).
+func plainFirefoxUserAgent() string {
+	const v = "146.0"
+	switch runtime.GOOS {
+	case "windows":
+		return "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:" + v + ") Gecko/20100101 Firefox/" + v
+	case "darwin":
+		return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:" + v + ") Gecko/20100101 Firefox/" + v
+	default:
+		return "Mozilla/5.0 (X11; Linux x86_64; rv:" + v + ") Gecko/20100101 Firefox/" + v
+	}
+}
+
+// writeDefaultUserAgentPref appends a plain-Firefox general.useragent.override
+// to the profile's user.js (append-mode, coexists with other writers) so the
+// default UA never advertises Camoufox.
+func writeDefaultUserAgentPref(profileDir string) {
+	line := fmt.Sprintf("\n// VulpineOS: default UA scrub (no Camoufox token)\nuser_pref(\"general.useragent.override\", %q);\n", plainFirefoxUserAgent())
+	path := filepath.Join(profileDir, "user.js")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(line)
+}
+
 // Kernel manages the Firefox/VulpineOS browser process.
 type Kernel struct {
 	cmd        *exec.Cmd
@@ -128,6 +156,12 @@ func (k *Kernel) Start(cfg Config) error {
 		}
 		profileDir = tempProfileDir
 	}
+
+	// Scrub the "Camoufox" product token from the DEFAULT user agent: any
+	// context without a per-context UA override (default context, early reads,
+	// nomad/MCP paths) otherwise leaks "Camoufox/<ver>". Per-context overrides
+	// (Browser.setUserAgentOverride -> customUserAgent) still take precedence.
+	writeDefaultUserAgentPref(profileDir)
 
 	// Build args
 	args := []string{

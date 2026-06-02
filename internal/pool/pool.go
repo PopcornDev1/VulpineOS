@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -13,9 +15,14 @@ import (
 // ContextSlot represents a reusable browser context.
 type ContextSlot struct {
 	ContextID string
-	SessionID string
-	UseCount  int
-	CreatedAt time.Time
+	// UserContextID is the numeric Firefox container id (originAttributes
+	// userContextId) for this context. It is the per-context join key used by
+	// the C++ fingerprint setters' storage and the networklab ctx-N identity
+	// map. The default context is 0.
+	UserContextID uint32
+	SessionID     string
+	UseCount      int
+	CreatedAt     time.Time
 }
 
 // Config holds pool configuration.
@@ -27,11 +34,33 @@ type Config struct {
 
 // DefaultConfig returns sensible defaults for a $40/month VPS.
 func DefaultConfig() Config {
-	return Config{
+	cfg := Config{
 		PreWarm:        10,
 		MaxActive:      20,
 		MaxUsesPerSlot: 50,
 	}
+	// Production deployments running many agents in one process raise these via
+	// env (e.g. VULPINE_POOL_MAX_ACTIVE=300). Load-test on a prod-sized box —
+	// each active context costs memory/FDs; the default 20 is conservative.
+	if v := envPositiveInt("VULPINE_POOL_MAX_ACTIVE"); v > 0 {
+		cfg.MaxActive = v
+	}
+	if v := envPositiveInt("VULPINE_POOL_PREWARM"); v > 0 {
+		cfg.PreWarm = v
+	}
+	if v := envPositiveInt("VULPINE_POOL_MAX_USES"); v > 0 {
+		cfg.MaxUsesPerSlot = v
+	}
+	return cfg
+}
+
+func envPositiveInt(name string) int {
+	if s := os.Getenv(name); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 // Pool manages a pool of reusable browser contexts.
@@ -271,14 +300,16 @@ func (p *Pool) createSlotNoCount() (*ContextSlot, error) {
 
 	var ctx struct {
 		BrowserContextID string `json:"browserContextId"`
+		UserContextID    uint32 `json:"userContextId"`
 	}
 	if err := json.Unmarshal(result, &ctx); err != nil {
 		return nil, fmt.Errorf("parse context result: %w", err)
 	}
 
 	return &ContextSlot{
-		ContextID: ctx.BrowserContextID,
-		CreatedAt: time.Now(),
+		ContextID:     ctx.BrowserContextID,
+		UserContextID: ctx.UserContextID,
+		CreatedAt:     time.Now(),
 	}, nil
 }
 

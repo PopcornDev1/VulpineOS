@@ -477,25 +477,25 @@ index 6a0570cdf7..cf69daa15d 100644
  
 +// Per-context navigator platform spoofing
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::NavigatorManager::IsPlatformFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setNavigatorPlatform(DOMString platform);
 +};
 +
 +// Per-context navigator oscpu spoofing
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::NavigatorManager::IsOscpuFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setNavigatorOscpu(DOMString oscpu);
 +};
 +
 +// Per-context navigator hardware concurrency spoofing
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::NavigatorManager::IsHwcFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setNavigatorHardwareConcurrency(unsigned long cores);
 +};
 +
 +// Per-context navigator user agent spoofing
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::NavigatorManager::IsUaFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setNavigatorUserAgent(DOMString ua);
 +};
 +

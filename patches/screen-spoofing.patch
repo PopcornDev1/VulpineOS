@@ -277,13 +277,13 @@ index a6f0d96a36..b1c2d3e4f5 100644
 
 +// Screen dimension for per-context screen spoofing
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::ScreenDimensionManager::IsFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setScreenDimensions(long width, long height);
 +};
 +
 +// Screen color depth for per-context screen spoofing
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::ScreenDimensionManager::IsFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setScreenColorDepth(long colorDepth);
 +};
 +

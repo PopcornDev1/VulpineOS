@@ -1,19 +1,32 @@
 package vault
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"math/rand"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
+
+	"vulpineos/internal/extensions"
 )
+
+// browserForgeWarnOnce ensures the "BrowserForge unavailable" warning is logged
+// at most once per process.
+var browserForgeWarnOnce sync.Once
 
 const fallbackFirefoxVersion = "146.0"
 
-// FingerprintData holds the key fields we display in the TUI.
+// FingerprintData holds the key fields we display in the TUI and the
+// per-context surfaces driven through Page.applyFingerprintOverrides / the
+// per-context init script (webgl/audio/fonts/hwconc/oscpu). Keys are the
+// camoufox dotted/colon config namespace shared by the BrowserForge bridge and
+// the offline fallback.
 type FingerprintData struct {
 	UserAgent    string   `json:"navigator.userAgent,omitempty"`
 	Platform     string   `json:"navigator.platform,omitempty"`
@@ -24,6 +37,30 @@ type FingerprintData struct {
 	Languages    []string `json:"navigator.languages,omitempty"`
 	Timezone     string   `json:"timezone,omitempty"`
 	DeviceScale  float64  `json:"window.devicePixelRatio,omitempty"`
+
+	// Per-context high-entropy surfaces (currently global without per-context
+	// application). Present in BrowserForge configs; the offline fallback emits
+	// seeds + fonts but not webgl vendor/renderer.
+	Fonts               []string `json:"fonts,omitempty"`
+	AudioSeed           uint32   `json:"audio:seed,omitempty"`
+	FontSpacingSeed     uint32   `json:"fonts:spacing_seed,omitempty"`
+	WebGLVendor         string   `json:"webGl:vendor,omitempty"`
+	WebGLRenderer       string   `json:"webGl:renderer,omitempty"`
+	HardwareConcurrency int      `json:"navigator.hardwareConcurrency,omitempty"`
+	// WebRTC IPs are injected by the proxy sync (proxy exit IP) so WebRTC does
+	// not leak the real host IP; applied per-context so each agent reports its
+	// own proxy's IP.
+	WebRTCIPv4 string `json:"webrtc:ipv4,omitempty"`
+	WebRTCIPv6 string `json:"webrtc:ipv6,omitempty"`
+	// WebGL parameter sets (the 147-param fingerprint surface) as raw JSON
+	// objects keyed by GLenum. Delivered per-context so concurrent agents do
+	// not share an identical GL parameter set. Populated by BrowserForge.
+	WebGLParams  json.RawMessage `json:"webGl:parameters,omitempty"`
+	WebGL2Params json.RawMessage `json:"webGl2:parameters,omitempty"`
+	// WebGL supported-extension lists (raw JSON arrays). Delivered per-context
+	// so concurrent agents do not share an identical extension set.
+	WebGLExtensions  json.RawMessage `json:"webGl:supportedExtensions,omitempty"`
+	WebGL2Extensions json.RawMessage `json:"webGl2:supportedExtensions,omitempty"`
 }
 
 // UnmarshalJSON accepts both the current array form and the older comma-string
@@ -81,10 +118,42 @@ func DefaultPlatformForHostOS() string {
 	}
 }
 
-// GenerateFingerprint returns a deterministic public profile config for the host OS.
-// Private builds can replace this path with a richer provider.
+// GenerateFingerprint returns a per-identity fingerprint config (camoufox
+// dotted-key JSON) for the host OS, seeded by the supplied stable id.
+//
+// It generates through three tiers, in priority order:
+//
+//  1. A registered private FingerprintProvider, when one is available AND it
+//     can produce a real value for this identity. A provider that returns
+//     ErrUnavailable is skipped — we never substitute a guessed provider value.
+//  2. BrowserForge — the public default generator (pythonlib/genfp.py). Used
+//     whenever the Python pipeline is installed.
+//  3. The deterministic offline fallback — used when neither of the above is
+//     available, so generation always succeeds even with no Python present.
 func GenerateFingerprint(seed string) (string, error) {
-	return generateFallback(seed, HostOS())
+	hostOS := HostOS()
+
+	// Tier 1: private provider (never guess — fall through on unavailable/error).
+	if p := extensions.Registry.Fingerprint(); p != nil && p.Available() {
+		if fp, err := p.Generate(context.Background(), seed, hostOS); err == nil && strings.TrimSpace(fp) != "" {
+			return fp, nil
+		}
+	}
+
+	// Tier 2: BrowserForge public default (when the Python pipeline is present).
+	if fp, err := generateBrowserForge(seed, hostOS); err == nil && strings.TrimSpace(fp) != "" {
+		return fp, nil
+	} else if err != nil {
+		// Loudly warn once: production should run with BrowserForge so agents get
+		// full, distribution-realistic fingerprints. The offline fallback is
+		// per-context (incl. WebGL vendor/renderer) but lower fidelity.
+		browserForgeWarnOnce.Do(func() {
+			log.Printf("vault: WARNING — BrowserForge unavailable (%v); using offline fallback fingerprints (reduced realism). Install python3 + browserforge for production.", err)
+		})
+	}
+
+	// Tier 3: deterministic offline fallback (always available).
+	return generateFallback(seed, hostOS)
 }
 
 // DefaultUserAgentForHost returns a Firefox-compatible user agent for the
@@ -153,6 +222,11 @@ func generateFallback(seed, hostOS string) (string, error) {
 		Platform string
 		OsCPU    string
 		Fonts    []string
+		// GL holds {UNMASKED_VENDOR, UNMASKED_RENDERER} pairs in the real
+		// per-OS Firefox WebGL format, picked per-seed so offline fallback
+		// fingerprints still differ per agent rather than all sharing one
+		// global GL string. (BrowserForge is the richer primary source.)
+		GL [][2]string
 	}
 
 	profileMap := map[string]osProfile{
@@ -161,18 +235,36 @@ func generateFallback(seed, hostOS string) (string, error) {
 			Platform: "Win32",
 			OsCPU:    "Windows NT 10.0; Win64; x64",
 			Fonts:    []string{"Arial", "Calibri", "Cambria", "Consolas", "Segoe UI", "Tahoma", "Times New Roman", "Verdana"},
+			GL: [][2]string{
+				{"Google Inc. (Intel)", "ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E9B) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
+				{"Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002503) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
+				{"Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 6600 (0x000073FF) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
+				{"Google Inc. (Intel)", "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics (0x00009A49) Direct3D11 vs_5_0 ps_5_0, D3D11)"},
+			},
 		},
 		"mac": {
 			UA:       DefaultUserAgentForHost("mac"),
 			Platform: "MacIntel",
 			OsCPU:    "Intel Mac OS X 10.15",
 			Fonts:    []string{"Arial", "Helvetica", "Helvetica Neue", "Menlo", "Monaco", "San Francisco", "Times New Roman"},
+			GL: [][2]string{
+				{"Apple", "Apple M1"},
+				{"Apple", "Apple M2"},
+				{"Apple", "Apple M3"},
+				{"Apple", "Apple M1 Pro"},
+				{"Apple", "Apple M2 Pro"},
+			},
 		},
 		"lin": {
 			UA:       DefaultUserAgentForHost("lin"),
 			Platform: "Linux x86_64",
 			OsCPU:    "Linux x86_64",
 			Fonts:    []string{"Arial", "DejaVu Sans", "Liberation Mono", "Liberation Sans", "Noto Sans", "Ubuntu"},
+			GL: [][2]string{
+				{"Mesa", "Mesa Intel(R) UHD Graphics 620 (KBL GT2)"},
+				{"Mesa", "Mesa Intel(R) Xe Graphics (TGL GT2)"},
+				{"AMD", "AMD Radeon RX 6600 (radeonsi, navi23, LLVM 15.0.7, DRM 3.49, 6.2.0)"},
+			},
 		},
 	}
 
@@ -209,6 +301,14 @@ func generateFallback(seed, hostOS string) (string, error) {
 		"canvas:seed":                   r.Uint32(),
 		"audio:seed":                    r.Uint32(),
 		"fonts:spacing_seed":            r.Uint32(),
+	}
+
+	// Per-seed WebGL vendor/renderer so even offline (no BrowserForge) two
+	// agents do not collide on the high-entropy GL strings.
+	if len(p.GL) > 0 {
+		gl := p.GL[r.Intn(len(p.GL))]
+		config["webGl:vendor"] = gl[0]
+		config["webGl:renderer"] = gl[1]
 	}
 
 	data, err := json.Marshal(config)

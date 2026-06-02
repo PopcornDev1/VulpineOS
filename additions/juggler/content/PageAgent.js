@@ -303,6 +303,7 @@ export class PageAgent {
         dispatchKeyEvent: this._dispatchKeyEvent.bind(this),
         dispatchDragEvent: this._dispatchDragEvent.bind(this),
         dispatchDragEventWithData: this._dispatchDragEventWithData.bind(this),
+        applyFingerprintOverrides: this._applyFingerprintOverrides.bind(this),
         dispatchTouchEvent: this._dispatchTouchEvent.bind(this),
         dispatchTapEvent: this._dispatchTapEvent.bind(this),
         getContentQuads: this._getContentQuads.bind(this),
@@ -525,6 +526,18 @@ export class PageAgent {
   }
 
   _installSentinelProbeHooks() {
+    // The Sentinel probe wraps native methods to observe what a site fingerprints.
+    // That wrapping is itself web-detectable (wrapped fn .toString(), marker
+    // props, install flag), so it is OFF by default and must only be enabled for
+    // explicit observability sessions — never on stealth/production runs.
+    let enabled = false;
+    try {
+      enabled = Services.prefs.getBoolPref('vulpineos.sentinel.probe.enabled', false);
+    } catch (e) {
+      enabled = false;
+    }
+    if (!enabled)
+      return;
     this._frameTree.addBinding('', SENTINEL_PROBE_BINDING_NAME, SENTINEL_PROBE_BINDING_SCRIPT);
     this._frameTree.addInitScript('', SENTINEL_PROBE_INIT_SCRIPT);
   }
@@ -762,6 +775,59 @@ export class PageAgent {
     if (typeof win.windowUtils.dispatchDragEventWithData !== 'function')
       throw new Error('dispatchDragEventWithData is not available in this build');
     win.windowUtils.dispatchDragEventWithData(type, x, y, data, dataType || 'text/plain');
+  }
+
+  // _applyFingerprintOverrides drives the chrome-gated window.set* fingerprint
+  // setters for THIS context's window. The setters are one-shot (they
+  // self-destruct after the first call), so this must run once on the initial
+  // about:blank window before the context navigates. Each setter is guarded so
+  // an unavailable or already-consumed setter never aborts the rest, and the
+  // names actually applied are returned for diagnostics.
+  async _applyFingerprintOverrides(overrides) {
+    const win = this._frameTree.mainFrame().domWindow();
+    const applied = [];
+    const u32 = v => (v >>> 0);
+    const call = (name, fn) => {
+      try {
+        if (typeof win[name] !== 'function')
+          return;
+        fn();
+        applied.push(name);
+      } catch (e) {
+        // Self-destructed or unavailable setter — skip without aborting others.
+      }
+    };
+    if (overrides.webglVendor !== undefined)
+      call('setWebGLVendor', () => win.setWebGLVendor(overrides.webglVendor));
+    if (overrides.webglRenderer !== undefined)
+      call('setWebGLRenderer', () => win.setWebGLRenderer(overrides.webglRenderer));
+    if (overrides.audioSeed !== undefined)
+      call('setAudioFingerprintSeed', () => win.setAudioFingerprintSeed(u32(overrides.audioSeed)));
+    if (overrides.fontSpacingSeed !== undefined)
+      call('setFontSpacingSeed', () => win.setFontSpacingSeed(u32(overrides.fontSpacingSeed)));
+    if (overrides.fontList !== undefined)
+      call('setFontList', () => win.setFontList(overrides.fontList));
+    if (overrides.speechVoices !== undefined)
+      call('setSpeechVoices', () => win.setSpeechVoices(overrides.speechVoices));
+    if (overrides.timezone !== undefined)
+      call('setTimezone', () => win.setTimezone(overrides.timezone));
+    if (overrides.screenWidth !== undefined && overrides.screenHeight !== undefined)
+      call('setScreenDimensions', () => win.setScreenDimensions(overrides.screenWidth, overrides.screenHeight));
+    if (overrides.screenColorDepth !== undefined)
+      call('setScreenColorDepth', () => win.setScreenColorDepth(overrides.screenColorDepth));
+    if (overrides.navUserAgent !== undefined)
+      call('setNavigatorUserAgent', () => win.setNavigatorUserAgent(overrides.navUserAgent));
+    if (overrides.navPlatform !== undefined)
+      call('setNavigatorPlatform', () => win.setNavigatorPlatform(overrides.navPlatform));
+    if (overrides.navOscpu !== undefined)
+      call('setNavigatorOscpu', () => win.setNavigatorOscpu(overrides.navOscpu));
+    if (overrides.hardwareConcurrency !== undefined)
+      call('setNavigatorHardwareConcurrency', () => win.setNavigatorHardwareConcurrency(u32(overrides.hardwareConcurrency)));
+    if (overrides.webrtcIPv4 !== undefined)
+      call('setWebRTCIPv4', () => win.setWebRTCIPv4(overrides.webrtcIPv4));
+    if (overrides.webrtcIPv6 !== undefined)
+      call('setWebRTCIPv6', () => win.setWebRTCIPv6(overrides.webrtcIPv6));
+    return { applied };
   }
 
   async _insertText({text}) {
