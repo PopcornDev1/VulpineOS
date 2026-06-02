@@ -613,3 +613,83 @@ func TestReconcileNonTerminalAgentsPreservesTerminalStatuses(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkAgentSelected(t *testing.T) {
+	db := openTestDB(t)
+
+	a1, err := db.CreateAgent("a1", "task", "{}")
+	if err != nil {
+		t.Fatalf("create a1: %v", err)
+	}
+	a2, err := db.CreateAgent("a2", "task", "{}")
+	if err != nil {
+		t.Fatalf("create a2: %v", err)
+	}
+
+	got, err := db.GetAgent(a1.ID)
+	if err != nil {
+		t.Fatalf("get a1: %v", err)
+	}
+	if !got.LastSelectedAt.IsZero() {
+		t.Fatalf("a1 LastSelectedAt = %v, want zero", got.LastSelectedAt)
+	}
+
+	now := time.Now().Truncate(time.Second)
+	if err := db.MarkAgentSelected(a1.ID, now); err != nil {
+		t.Fatalf("mark a1 selected: %v", err)
+	}
+
+	got, err = db.GetAgent(a1.ID)
+	if err != nil {
+		t.Fatalf("get a1 after mark: %v", err)
+	}
+	if !got.LastSelectedAt.Equal(now) {
+		t.Fatalf("a1 LastSelectedAt = %v, want %v", got.LastSelectedAt, now)
+	}
+
+	got2, err := db.GetAgent(a2.ID)
+	if err != nil {
+		t.Fatalf("get a2: %v", err)
+	}
+	if !got2.LastSelectedAt.IsZero() {
+		t.Fatalf("a2 LastSelectedAt = %v, want zero (other agent must not be touched)", got2.LastSelectedAt)
+	}
+}
+
+func TestLastSelectedAtPersistsAcrossReopen(t *testing.T) {
+	f, err := os.CreateTemp("", "vault-agent-persist-*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	t.Cleanup(func() { os.Remove(f.Name()) })
+
+	db, err := OpenPath(f.Name())
+	if err != nil {
+		t.Fatalf("open vault: %v", err)
+	}
+	a, err := db.CreateAgent("a", "task", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	now := time.Now().Truncate(time.Second)
+	if err := db.MarkAgentSelected(a.ID, now); err != nil {
+		t.Fatalf("mark selected: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close vault: %v", err)
+	}
+
+	db2, err := OpenPath(f.Name())
+	if err != nil {
+		t.Fatalf("reopen vault: %v", err)
+	}
+	defer db2.Close()
+	got, err := db2.GetAgent(a.ID)
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if !got.LastSelectedAt.Equal(now) {
+		t.Fatalf("LastSelectedAt after reopen = %v, want %v", got.LastSelectedAt, now)
+	}
+}

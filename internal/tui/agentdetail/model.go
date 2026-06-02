@@ -208,14 +208,6 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Controls
-	b.WriteString("\n")
-	controls := "[Enter] chat  [p/r] agent  [o] log  [P/R] all  [x] delete"
-	if m.remote {
-		controls = "[Enter] chat  [p/r] agent  [o] log  [P/R] all  [x] kill"
-	}
-	b.WriteString(shared.MutedStyle.Render(controls))
-
 	// Truncate to allocated height so the panel never overflows
 	result := b.String()
 	if m.width > 0 {

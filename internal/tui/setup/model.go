@@ -505,7 +505,7 @@ func (m *Model) viewProvider() string {
 	if len(filtered) == 0 {
 		b.WriteString(mutedStyle.Render("No providers match."))
 		b.WriteString("\n\n")
-		b.WriteString(mutedStyle.Render("[Backspace] edit  [Esc] clear  [q] quit"))
+		b.WriteString(mutedStyle.Render("[Backspace] edit  [Esc] quit"))
 		return b.String()
 	}
 
@@ -559,7 +559,7 @@ func (m *Model) viewProvider() string {
 	if strings.TrimSpace(m.providerQuery) == "" {
 		count = fmt.Sprintf("%d providers", len(m.providers))
 	}
-	b.WriteString(fitSetupLine(mutedStyle.Render(fmt.Sprintf("[↑/↓] navigate  type to filter  [Enter] select  [Esc] clear  [q] quit  (%s)", count)), m.contentWidth()))
+	b.WriteString(fitSetupLine(mutedStyle.Render(fmt.Sprintf("[↑/↓] navigate  type to filter  [Enter] select  [Esc] quit  (%s)", count)), m.contentWidth()))
 	return b.String()
 }
 

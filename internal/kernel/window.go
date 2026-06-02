@@ -42,7 +42,7 @@ func (w *WindowController) IsVisible() bool {
 func (w *WindowController) CachedStatus() (bool, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if runtime.GOOS != "darwin" {
+	if !windowControlSupported() {
 		return w.visible, true
 	}
 	return w.visible, w.found
@@ -110,7 +110,7 @@ func (w *WindowController) Hide() error {
 
 // HideWhenReady waits for the browser window to appear, then hides it.
 func (w *WindowController) HideWhenReady() {
-	if runtime.GOOS != "darwin" {
+	if !windowControlSupported() {
 		return
 	}
 
@@ -206,6 +206,15 @@ func (w *WindowController) HideAll() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if len(w.contextWindows) == 0 {
+		if err := w.hide(); err != nil {
+			return err
+		}
+		w.visible = false
+		w.found = true
+		return nil
+	}
+
 	var lastErr error
 	for contextID, pids := range w.contextWindows {
 		for _, pid := range pids {
@@ -229,6 +238,11 @@ func (w *WindowController) IsContextVisible(contextID string) bool {
 	pids := w.contextWindows[contextID]
 	w.mu.Unlock()
 
+	if len(pids) == 0 {
+		visible, _ := w.Status()
+		return visible
+	}
+
 	for _, pid := range pids {
 		wc := NewWindowController(pid)
 		if visible, _ := wc.Status(); visible {
@@ -239,6 +253,9 @@ func (w *WindowController) IsContextVisible(contextID string) bool {
 }
 
 func (w *WindowController) show() error {
+	if runtime.GOOS == "linux" {
+		return w.showLinux()
+	}
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
@@ -266,6 +283,9 @@ func (w *WindowController) show() error {
 }
 
 func (w *WindowController) hide() error {
+	if runtime.GOOS == "linux" {
+		return w.hideLinux()
+	}
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
@@ -356,6 +376,9 @@ func (w *WindowController) candidatePIDs() []int {
 }
 
 func (w *WindowController) refreshVisibleLocked() bool {
+	if runtime.GOOS == "linux" {
+		return w.refreshLinuxVisibleLocked()
+	}
 	if runtime.GOOS != "darwin" {
 		w.found = true
 		return true
@@ -390,6 +413,167 @@ func (w *WindowController) refreshVisibleLocked() bool {
 	}
 	w.found = false
 	return false
+}
+
+func windowControlSupported() bool {
+	return runtime.GOOS == "darwin" || runtime.GOOS == "linux"
+}
+
+func (w *WindowController) showLinux() error {
+	ids := w.linuxWindowIDs()
+	if len(ids) == 0 {
+		return fmt.Errorf("show browser process tree rooted at %d", w.pid)
+	}
+
+	var lastErr error
+	for _, id := range ids {
+		if err := showLinuxWindow(id); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil {
+		return fmt.Errorf("show browser process tree rooted at %d: %w", w.pid, lastErr)
+	}
+	return fmt.Errorf("show browser process tree rooted at %d", w.pid)
+}
+
+func (w *WindowController) hideLinux() error {
+	ids := w.linuxWindowIDs()
+	if len(ids) == 0 {
+		return fmt.Errorf("hide browser process tree rooted at %d", w.pid)
+	}
+
+	var lastErr error
+	var hidden bool
+	for _, id := range ids {
+		if err := hideLinuxWindow(id); err != nil {
+			lastErr = err
+			continue
+		}
+		hidden = true
+	}
+	if hidden {
+		return nil
+	}
+	if lastErr != nil {
+		return fmt.Errorf("hide browser process tree rooted at %d: %w", w.pid, lastErr)
+	}
+	return fmt.Errorf("hide browser process tree rooted at %d", w.pid)
+}
+
+func hideLinuxWindow(id string) error {
+	if _, err := runWindowCommand("xdotool", "windowminimize", id); err == nil {
+		return nil
+	} else if _, fallbackErr := runWindowCommand("wmctrl", "-ir", id, "-b", "add,hidden"); fallbackErr != nil {
+		return err
+	}
+	return nil
+}
+
+func showLinuxWindow(id string) error {
+	if _, err := runWindowCommand("xdotool", "windowmap", id); err == nil {
+		_, _ = runWindowCommand("xdotool", "windowactivate", id)
+		return nil
+	} else if _, fallbackErr := runWindowCommand("wmctrl", "-ia", id); fallbackErr != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *WindowController) refreshLinuxVisibleLocked() bool {
+	ids := w.linuxWindowIDs()
+	if len(ids) == 0 {
+		w.found = false
+		return false
+	}
+
+	w.found = true
+	w.visible = false
+	for _, id := range ids {
+		hidden, ok := linuxWindowHidden(id)
+		if !ok || !hidden {
+			w.visible = true
+			return true
+		}
+	}
+	return true
+}
+
+func linuxWindowHidden(id string) (bool, bool) {
+	out, err := runWindowCommand("xprop", "-id", id, "_NET_WM_STATE")
+	if err != nil {
+		return false, false
+	}
+	return strings.Contains(out, "_NET_WM_STATE_HIDDEN"), true
+}
+
+func (w *WindowController) linuxWindowIDs() []string {
+	pids := w.candidatePIDs()
+	if len(pids) == 0 {
+		return nil
+	}
+	if ids := linuxWindowIDsFromXDoTool(pids); len(ids) > 0 {
+		return ids
+	}
+	return linuxWindowIDsFromWMCTRL(pids)
+}
+
+func linuxWindowIDsFromXDoTool(pids []int) []string {
+	seen := make(map[string]struct{})
+	var ids []string
+	for _, pid := range pids {
+		out, err := runWindowCommand("xdotool", "search", "--pid", strconv.Itoa(pid))
+		if err != nil {
+			continue
+		}
+		ids = appendWindowIDs(ids, seen, out)
+	}
+	return ids
+}
+
+func linuxWindowIDsFromWMCTRL(pids []int) []string {
+	out, err := runWindowCommand("wmctrl", "-lp")
+	if err != nil {
+		return nil
+	}
+	pidSet := make(map[int]struct{}, len(pids))
+	for _, pid := range pids {
+		pidSet[pid] = struct{}{}
+	}
+	seen := make(map[string]struct{})
+	var ids []string
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[2])
+		if err != nil {
+			continue
+		}
+		if _, ok := pidSet[pid]; !ok {
+			continue
+		}
+		ids = appendWindowIDs(ids, seen, fields[0])
+	}
+	return ids
+}
+
+func appendWindowIDs(ids []string, seen map[string]struct{}, out string) []string {
+	for _, id := range strings.Fields(out) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func parseAppleScriptBool(out string) (bool, bool) {

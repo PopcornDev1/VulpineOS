@@ -74,6 +74,24 @@ func openTestVault(t *testing.T) *vault.DB {
 	return db
 }
 
+func runSlashCommand(t *testing.T, app App, command string) (App, tea.Cmd) {
+	t.Helper()
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	app = model.(App)
+	for _, r := range command {
+		model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = model.(App)
+	}
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if cmd == nil {
+		return app, nil
+	}
+	model, cmd = app.Update(cmd())
+	app = model.(App)
+	return app, cmd
+}
+
 func startFakeNanoClawSocket(t *testing.T) func() {
 	t.Helper()
 	home, err := os.MkdirTemp("/tmp", "vot-*")
@@ -198,6 +216,24 @@ func TestNewAppReconcilesNonTerminalAgentsToPaused(t *testing.T) {
 	}
 	if completedAgent.Status != "completed" {
 		t.Fatalf("completed agent status = %q, want completed", completedAgent.Status)
+	}
+}
+
+func TestNewAppStartsNewAgentPromptWhenNoLocalAgents(t *testing.T) {
+	db := openTestVault(t)
+	orch := orchestrator.New(nil, nil, db, pool.Config{}, "")
+	app := NewApp(nil, nil, orch, db, nil, nil)
+	t.Cleanup(app.stopForwarders)
+
+	if app.inputMode != "new-agent-name" {
+		t.Fatalf("inputMode = %q, want new-agent-name", app.inputMode)
+	}
+	if !app.nameInput.Focused() {
+		t.Fatal("new-agent name input should be focused")
+	}
+	view := app.agentInputView()
+	if !strings.Contains(view, "NEW AGENT") || !strings.Contains(view, "Agent name") {
+		t.Fatalf("expected new-agent prompt, got:\n%s", view)
 	}
 }
 
@@ -426,7 +462,9 @@ func TestDeletingOnlySelectedAgentClearsWorkbenchState(t *testing.T) {
 		t.Fatalf("append message: %v", err)
 	}
 
-	app := NewApp(nil, nil, nil, db, nil, nil)
+	orch := orchestrator.New(nil, nil, db, pool.Config{}, "")
+	app := NewApp(nil, nil, orch, db, nil, nil)
+	t.Cleanup(app.stopForwarders)
 	app.conversation.SetSize(80, 20)
 	app.agentDetail.SetSize(40, 8)
 	app.selectedAgentID = agent.ID
@@ -448,13 +486,12 @@ func TestDeletingOnlySelectedAgentClearsWorkbenchState(t *testing.T) {
 	if app.agentDetail.HasAgent() {
 		t.Fatal("expected agent detail to clear after deleting final agent")
 	}
-	conversationView := app.conversation.View()
-	if !strings.Contains(conversationView, "to create a new agent") {
-		t.Fatalf("expected empty conversation prompt, got:\n%s", conversationView)
+	if app.inputMode != "new-agent-name" {
+		t.Fatalf("inputMode = %q, want new-agent-name", app.inputMode)
 	}
-	detailView := app.agentDetail.View()
-	if !strings.Contains(detailView, "to create a new agent") {
-		t.Fatalf("expected empty detail prompt, got:\n%s", detailView)
+	inputView := app.agentInputView()
+	if !strings.Contains(inputView, "NEW AGENT") || !strings.Contains(inputView, "Agent name") {
+		t.Fatalf("expected new-agent prompt, got:\n%s", inputView)
 	}
 }
 
@@ -557,7 +594,7 @@ func TestExistingReadyAgentWithNoMessagesOpensUnlockedChat(t *testing.T) {
 	}
 }
 
-func TestStartupLockedChatDoesNotAcceptInput(t *testing.T) {
+func TestStartupLockedChatAcceptsDraftButDoesNotSubmit(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -573,11 +610,9 @@ func TestStartupLockedChatDoesNotAcceptInput(t *testing.T) {
 	app = model.(App)
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
 	app = model.(App)
-	if cmd != nil {
-		t.Fatalf("locked startup input returned command: %#v", cmd())
-	}
-	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("locked startup input value = %q, want empty", got)
+	_ = cmd
+	if got := app.conversation.TextInput().Value(); got != "h" {
+		t.Fatalf("locked startup input value = %q, want h", got)
 	}
 
 	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -587,6 +622,9 @@ func TestStartupLockedChatDoesNotAcceptInput(t *testing.T) {
 	}
 	if app.conversation.IsAwake() {
 		t.Fatal("conversation should remain locked before first reply")
+	}
+	if got := app.conversation.TextInput().Value(); got != "h" {
+		t.Fatalf("locked startup enter should preserve draft, got %q", got)
 	}
 }
 
@@ -620,7 +658,7 @@ func TestStartupLockedChatEnterFromListDoesNotWakeInput(t *testing.T) {
 	}
 }
 
-func TestStartupLockedChatAllowsQuitShortcut(t *testing.T) {
+func TestStartupLockedChatAllowsSlashQuitCommand(t *testing.T) {
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.conversation.SetSize(80, 20)
@@ -633,17 +671,16 @@ func TestStartupLockedChatAllowsQuitShortcut(t *testing.T) {
 
 	model, _ := app.Update(shared.AgentCreatedMsg{Agent: *agent})
 	app = model.(App)
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	app = model.(App)
+	app, cmd := runSlashCommand(t, app, "quit")
 
 	if cmd == nil {
-		t.Fatal("locked startup quit returned no command")
+		t.Fatal("locked startup slash quit returned no command")
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatal("locked startup quit did not return tea.QuitMsg")
+		t.Fatal("locked startup slash quit did not return tea.QuitMsg")
 	}
 	if app.conversation.TextInput().Value() != "" {
-		t.Fatal("locked startup quit should not type into chat")
+		t.Fatal("locked startup slash quit should not leave command text in chat")
 	}
 }
 
@@ -684,7 +721,7 @@ func TestFocusedChatAllowsQuitShortcut(t *testing.T) {
 	}
 }
 
-func TestFocusedChatAllowsTabFocusCycle(t *testing.T) {
+func TestFocusedChatTabDoesNotCycleFocus(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
 	app.selectedAgentID = "agent-1"
 	app.focus = FocusConversation
@@ -695,19 +732,21 @@ func TestFocusedChatAllowsTabFocusCycle(t *testing.T) {
 
 	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})
 	app = model.(App)
-	if app.focus != FocusAgentDetail {
-		t.Fatalf("focus = %d, want agent detail after tab from focused chat", app.focus)
+	// Tab should NOT cycle focus from chat — user stays in conversation
+	if app.focus != FocusConversation {
+		t.Fatalf("focus = %d, want FocusConversation after tab in chat", app.focus)
 	}
-	if app.inputMode != "" {
-		t.Fatalf("inputMode = %q, want empty after tab focus cycle", app.inputMode)
+	if app.inputMode != "chat" {
+		t.Fatalf("inputMode = %q, want chat after tab in chat", app.inputMode)
 	}
-	if app.conversation.Focused() {
-		t.Fatal("conversation should blur after tab focus cycle")
+	if !app.conversation.Focused() {
+		t.Fatal("conversation should stay focused after tab in chat")
 	}
 }
 
 func TestSettingsAllowsGlobalQuitShortcut(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
+	app.inputMode = ""
 	app.focus = FocusSettings
 	app.settings.SetActive(true)
 
@@ -722,6 +761,7 @@ func TestSettingsAllowsGlobalQuitShortcut(t *testing.T) {
 
 func TestSettingsProxyImportAcceptsLifecycleKeyCharacters(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
+	app.inputMode = ""
 	app.focus = FocusSettings
 	app.settings.SetActive(true)
 
@@ -814,6 +854,7 @@ func TestArrowKeysNavigateAgentsWhenResizeModeDisabled(t *testing.T) {
 
 	cfg := &config.Config{ResizePanelsWithArrows: false}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app.inputMode = ""
 	app.focus = FocusAgentList
 
 	originalSplit := app.leftSplit
@@ -826,38 +867,35 @@ func TestArrowKeysNavigateAgentsWhenResizeModeDisabled(t *testing.T) {
 	if app.selectedAgentID != second.ID {
 		t.Fatalf("selected agent = %q, want %q after down arrow", app.selectedAgentID, second.ID)
 	}
-	if !strings.Contains(app.renderStatusBar(), "q:quit") {
-		t.Fatalf("status bar missing quit hint: %s", app.renderStatusBar())
-	}
 }
 
-func TestStatusBarStartsNavigateWhenLegacyResizeDefaultSet(t *testing.T) {
+func TestWorkbenchOmitsPersistentStatusBar(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{ResizePanelsWithArrows: true}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
 	app.width = 180
+	app.height = 24
+	app.updatePanelSizes()
 
-	if !strings.Contains(app.renderStatusBar(), "q:quit") {
-		t.Fatalf("status bar missing quit hint: %s", app.renderStatusBar())
+	view := app.View()
+	if strings.Contains(view, "VULPINE") || strings.Contains(view, "q:quit") {
+		t.Fatalf("workbench should not render persistent status bar:\n%s", view)
 	}
 }
 
 func TestResizeModeKeepsVerticalSplitsUsableAfterTerminalShrink(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
+	app.inputMode = ""
 	app.width = 80
 	app.height = 16
 	app.focus = FocusAgentList
 	app.resizeMode = true
 	app.leftSplit = 30
-	app.rightSplit = 30
 
 	app.updatePanelSizes()
 
 	if app.leftSplit >= 30 {
 		t.Fatalf("left split was not clamped after shrink: %d", app.leftSplit)
-	}
-	if app.rightSplit >= 30 {
-		t.Fatalf("right split was not clamped after shrink: %d", app.rightSplit)
 	}
 	clampedLeft := app.leftSplit
 	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyUp})
@@ -875,9 +913,159 @@ func TestUpdatePanelSizesUsesInnerPanelWidthForConversation(t *testing.T) {
 	app.updatePanelSizes()
 
 	widths := resolveWorkbenchWidths(app.width, app.leftWidth, app.rightWidth)
-	wantInputWidth := widths.center - 6
+	wantInputWidth := widths.center - 10
 	if got := app.conversation.TextInput().Width; got != wantInputWidth {
 		t.Fatalf("conversation input width = %d, want %d from inner panel width", got, wantInputWidth)
+	}
+}
+
+func TestConversationInputUsesConfiguredModelLabel(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, &config.Config{Provider: "openai", Model: "openai/gpt-5.4"}, nil)
+	app.conversation.SetSize(80, 12)
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Research Fox")
+	app.conversation.SetAgentStatus("ready")
+	app.conversation.SetAwake(true)
+
+	view := app.conversation.View()
+	if !strings.Contains(view, "Research Fox") || !strings.Contains(view, "GPT-5.4 OpenAI") {
+		t.Fatalf("conversation input missing configured model label:\n%s", view)
+	}
+	if strings.Contains(view, "Ready") || strings.Contains(view, "Build") || strings.Contains(view, ">") {
+		t.Fatalf("conversation input should show agent name and no status/prompt marker:\n%s", view)
+	}
+}
+
+func TestModelSlashCommandOpensEmbeddedWizard(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := &config.Config{
+		Provider:      "anthropic",
+		APIKey:        "sk-test",
+		Model:         "anthropic/claude-sonnet-4-6",
+		SetupComplete: true,
+	}
+	app := NewApp(nil, nil, nil, nil, cfg, nil)
+	app.width = 100
+	app.height = 30
+	app.conversation.SetSize(80, 12)
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Research Fox")
+	app.conversation.SetAwake(true)
+
+	app, cmd := runSlashCommand(t, app, "model")
+	if cmd != nil {
+		_ = cmd()
+	}
+	if !app.setupActive || app.setupWizard == nil {
+		t.Fatalf("/model should open the embedded setup wizard: setupActive=%t wizard=%v", app.setupActive, app.setupWizard)
+	}
+	if app.focus != FocusSettings {
+		t.Fatalf("focus = %d, want FocusSettings while wizard is open", app.focus)
+	}
+
+	var model tea.Model
+	for i := 0; i < 4; i++ {
+		model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		app = model.(App)
+		if cmd == nil {
+			continue
+		}
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(tea.QuitMsg); ok {
+				t.Fatal("embedded setup completion should not quit the workbench")
+			}
+		}
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if !loaded.SetupComplete {
+		t.Fatal("saved config should remain setup complete")
+	}
+	if loaded.Provider != "anthropic" || loaded.Model != "anthropic/claude-sonnet-4-6" || loaded.APIKey != "sk-test" {
+		t.Fatalf("saved config changed unexpectedly: provider=%q model=%q key=%q", loaded.Provider, loaded.Model, loaded.APIKey)
+	}
+	if app.cfg == nil || app.cfg.Model != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("runtime config after wizard = %#v", app.cfg)
+	}
+	if !strings.Contains(app.notice, "Configuration updated") {
+		t.Fatalf("notice = %q, want configuration updated", app.notice)
+	}
+	if app.setupActive || app.setupWizard != nil {
+		t.Fatalf("wizard should be cleared after completion: setupActive=%t wizard=%v", app.setupActive, app.setupWizard)
+	}
+	if app.focus != FocusConversation || app.settings.IsActive() {
+		t.Fatalf("focus/settings = %d/%t, want conversation focused with settings closed after /model", app.focus, app.settings.IsActive())
+	}
+}
+
+func TestModelSlashCommandOpensEmbeddedWizardRemote(t *testing.T) {
+	control := &fakeControlClient{responses: map[string]any{
+		"config.set": map[string]any{
+			"provider":      "anthropic",
+			"model":         "anthropic/claude-sonnet-4-6",
+			"apiKeySet":     true,
+			"setupComplete": true,
+		},
+	}}
+	cfg := &config.Config{Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6", APIKey: remoteAPIKeyPlaceholder, SetupComplete: true}
+	app := NewAppWithControl(nil, nil, nil, nil, cfg, nil, control)
+	app.width = 100
+	app.height = 30
+
+	app, cmd := runSlashCommand(t, app, "model")
+	if cmd != nil {
+		_ = cmd()
+	}
+	if !app.setupActive || app.setupWizard == nil {
+		t.Fatalf("/model should open the embedded setup wizard on remote: setupActive=%t wizard=%v", app.setupActive, app.setupWizard)
+	}
+	if app.focus != FocusSettings {
+		t.Fatalf("focus = %d, want FocusSettings while wizard is open", app.focus)
+	}
+
+	var model tea.Model
+	for i := 0; i < 4; i++ {
+		model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		app = model.(App)
+		if cmd == nil {
+			continue
+		}
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(tea.QuitMsg); ok {
+				t.Fatal("embedded setup completion should not quit the workbench")
+			}
+		}
+	}
+
+	var configSet *fakeControlCall
+	for i := range control.calls {
+		if control.calls[i].method == "config.set" {
+			configSet = &control.calls[i]
+			break
+		}
+	}
+	if configSet == nil {
+		t.Fatalf("control calls = %+v, want a config.set call", control.calls)
+	}
+	var params struct {
+		Provider   string `json:"provider"`
+		Model      string `json:"model"`
+		APIKey     string `json:"apiKey"`
+		KeepAPIKey bool   `json:"keepApiKey"`
+	}
+	if err := json.Unmarshal(configSet.params, &params); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	if params.Provider != "anthropic" || params.Model != "anthropic/claude-sonnet-4-6" || params.APIKey != "" || !params.KeepAPIKey {
+		t.Fatalf("remote config.set params = %+v", params)
+	}
+	if app.cfg == nil || app.cfg.Model != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("remote config after wizard = %#v", app.cfg)
 	}
 }
 
@@ -888,7 +1076,7 @@ func TestCompactWorkbenchPersistsInnerPanelWidthForConversation(t *testing.T) {
 	app.focus = FocusConversation
 	app.updatePanelSizes()
 
-	wantInputWidth := app.width - 10
+	wantInputWidth := app.width - 14
 	if got := app.conversation.TextInput().Width; got != wantInputWidth {
 		t.Fatalf("compact conversation input width = %d, want %d from compact inner width", got, wantInputWidth)
 	}
@@ -1051,17 +1239,37 @@ func TestRemoteAgentsLoadedMarksSelectedLiveAgentThinking(t *testing.T) {
 	}
 }
 
-func TestRemoteControlNewAgentShortcutStartsCreation(t *testing.T) {
+func TestRemoteAgentsLoadedEmptyStartsNewAgentPrompt(t *testing.T) {
 	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, &fakeControlClient{})
 
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	model, cmd := app.Update(remoteAgentsLoadedMsg{})
 	app = model.(App)
+
+	if app.selectedAgentID != "" {
+		t.Fatalf("selected agent = %q, want empty", app.selectedAgentID)
+	}
+	if app.inputMode != "new-agent-name" {
+		t.Fatalf("inputMode = %q, want new-agent-name", app.inputMode)
+	}
+	if cmd == nil {
+		t.Fatal("empty remote load should focus the new-agent name input")
+	}
+	view := app.agentInputView()
+	if !strings.Contains(view, "NEW AGENT") || !strings.Contains(view, "Agent name") {
+		t.Fatalf("expected new-agent prompt, got:\n%s", view)
+	}
+}
+
+func TestRemoteControlNewAgentSlashCommandStartsCreation(t *testing.T) {
+	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, &fakeControlClient{})
+
+	app, cmd := runSlashCommand(t, app, "new")
 
 	if app.inputMode != "new-agent-name" {
 		t.Fatalf("inputMode = %q, want new-agent-name", app.inputMode)
 	}
 	if cmd == nil {
-		t.Fatal("new-agent shortcut should focus the name input")
+		t.Fatal("new-agent slash command should focus the name input")
 	}
 }
 
@@ -1188,25 +1396,23 @@ func TestRemoteControlBulkStatusExcludesFailures(t *testing.T) {
 	}
 }
 
-func TestRemoteControlLabelsExposeRemoteSettingsAndLogs(t *testing.T) {
-	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, &fakeControlClient{})
+func TestAgentDetailOmitsControlsLine(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, nil, nil)
 	app.width = 160
-	app.agentDetail.SetAgent("agent-1", "Remote", "task", "active", 0, "", "", time.Now())
+	app.agentDetail.SetAgent("agent-1", "Local", "task", "active", 0, "", "", time.Now())
+	if strings.Contains(app.agentDetail.View(), "[x]") {
+		t.Fatalf("local detail should no longer render a controls line: %s", app.agentDetail.View())
+	}
 
-	status := app.renderStatusBar()
-	detail := app.agentDetail.View()
-	if !strings.Contains(status, "o:log") || !strings.Contains(status, "S:settings") || !strings.Contains(status, "x:kill") {
-		t.Fatalf("remote status bar missing remote controls: %s", status)
-	}
-	if strings.Contains(status, "x:del") {
-		t.Fatalf("remote status bar advertises local delete: %s", status)
-	}
-	if !strings.Contains(detail, "[o] log") || strings.Contains(detail, "[x] delete") {
-		t.Fatalf("remote detail controls are wrong: %s", detail)
+	remote := NewAppWithControl(nil, nil, nil, nil, nil, nil, &fakeControlClient{})
+	remote.width = 160
+	remote.agentDetail.SetAgent("agent-1", "Remote", "task", "active", 0, "", "", time.Now())
+	if strings.Contains(remote.agentDetail.View(), "[x]") {
+		t.Fatalf("remote detail should no longer render a controls line: %s", remote.agentDetail.View())
 	}
 }
 
-func TestRemoteControlOpensSettingsAndStartsReconfigure(t *testing.T) {
+func TestRemoteControlOpensSettingsAndStartsReconfigureWithSlashCommands(t *testing.T) {
 	control := &fakeControlClient{responses: map[string]any{
 		"settings.get": map[string]any{
 			"config": map[string]any{
@@ -1223,9 +1429,9 @@ func TestRemoteControlOpensSettingsAndStartsReconfigure(t *testing.T) {
 	app.width = 100
 	app.height = 30
 
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
-	app = model.(App)
+	app, cmd := runSlashCommand(t, app, "settings")
 	if cmd != nil {
+		var model tea.Model
 		model, cmd = app.Update(cmd())
 		app = model.(App)
 	}
@@ -1239,12 +1445,7 @@ func TestRemoteControlOpensSettingsAndStartsReconfigure(t *testing.T) {
 		t.Fatalf("control calls = %+v, want settings.get", control.calls)
 	}
 
-	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
-	app = model.(App)
-	if cmd != nil {
-		model, _ = app.Update(cmd())
-		app = model.(App)
-	}
+	app, _ = runSlashCommand(t, app, "config")
 	if !strings.Contains(app.View(), "First Time Setup") {
 		t.Fatalf("remote reconfigure should show setup wizard:\n%s", app.View())
 	}
@@ -1370,8 +1571,7 @@ func TestRemoteControlKillConfirmationUsesKillLanguage(t *testing.T) {
 	app.agentList.SelectAgentID("agent-1")
 	app.selectedAgentID = "agent-1"
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "delete")
 
 	if !app.confirmDelete {
 		t.Fatal("expected remote kill confirmation to be armed")
@@ -1390,8 +1590,7 @@ func TestRemoteControlKillIgnoresNonLiveAgents(t *testing.T) {
 	app.agentList.SelectAgentID("agent-1")
 	app.selectedAgentID = "agent-1"
 
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
-	app = model.(App)
+	app, cmd := runSlashCommand(t, app, "delete")
 
 	if cmd != nil {
 		t.Fatal("paused remote kill should not return command")
@@ -1415,7 +1614,6 @@ func TestViewKeepsRenderedLinesWithinTerminalWidthAfterShrink(t *testing.T) {
 	app.leftWidth = 30
 	app.rightWidth = 30
 	app.leftSplit = 13
-	app.rightSplit = 10
 	app.updatePanelSizes()
 
 	view := app.View()
@@ -1439,7 +1637,6 @@ func TestSettingsViewKeepsRenderedLinesWithinTerminalAfterShrink(t *testing.T) {
 	app.leftWidth = 30
 	app.rightWidth = 30
 	app.leftSplit = 13
-	app.rightSplit = 10
 	app.updatePanelSizes()
 	app.focus = FocusSettings
 	app.settings.SetActive(true)
@@ -1474,7 +1671,6 @@ func TestSettingsWorkbenchViewRendersFullContainerFrame(t *testing.T) {
 	app.leftWidth = 28
 	app.rightWidth = 28
 	app.leftSplit = 10
-	app.rightSplit = 10
 	app.focus = FocusSettings
 	app.settings.SetActive(true)
 	app.settings.SetConfig(cfg)
@@ -1488,7 +1684,7 @@ func TestSettingsWorkbenchViewRendersFullContainerFrame(t *testing.T) {
 
 	border := lipgloss.RoundedBorder()
 	topLine := lines[0]
-	bodyBottomLine := lines[len(lines)-2]
+	bodyBottomLine := lines[len(lines)-1]
 	if got := strings.Count(topLine, border.TopLeft) + strings.Count(topLine, border.TopRight); got < 6 {
 		t.Fatalf("top workbench row has %d panel corners, want at least 6:\n%s", got, view)
 	}
@@ -1497,20 +1693,23 @@ func TestSettingsWorkbenchViewRendersFullContainerFrame(t *testing.T) {
 	}
 }
 
-func TestWorkbenchBodyHeightReservesOneStatusRow(t *testing.T) {
+func TestWorkbenchBodyHeightOnlyReservesNoticeRow(t *testing.T) {
 	tests := []struct {
 		terminalHeight int
+		reserveFooter  bool
 		want           int
 	}{
-		{terminalHeight: 24, want: 23},
-		{terminalHeight: 4, want: 3},
-		{terminalHeight: 1, want: 1},
-		{terminalHeight: 0, want: 1},
+		{terminalHeight: 24, reserveFooter: false, want: 24},
+		{terminalHeight: 24, reserveFooter: true, want: 23},
+		{terminalHeight: 4, reserveFooter: false, want: 4},
+		{terminalHeight: 4, reserveFooter: true, want: 3},
+		{terminalHeight: 1, reserveFooter: true, want: 1},
+		{terminalHeight: 0, reserveFooter: false, want: 1},
 	}
 
 	for _, tt := range tests {
-		if got := workbenchBodyHeight(tt.terminalHeight); got != tt.want {
-			t.Fatalf("workbenchBodyHeight(%d) = %d, want %d", tt.terminalHeight, got, tt.want)
+		if got := workbenchBodyHeight(tt.terminalHeight, tt.reserveFooter); got != tt.want {
+			t.Fatalf("workbenchBodyHeight(%d, %t) = %d, want %d", tt.terminalHeight, tt.reserveFooter, got, tt.want)
 		}
 	}
 }
@@ -1540,7 +1739,6 @@ func TestViewHandlesNarrowWorkbenchWithoutOverflow(t *testing.T) {
 	app.leftWidth = 18
 	app.rightWidth = 18
 	app.leftSplit = 13
-	app.rightSplit = 10
 	app.updatePanelSizes()
 
 	view := app.View()
@@ -1555,15 +1753,14 @@ func TestViewHandlesNarrowWorkbenchWithoutOverflow(t *testing.T) {
 	}
 }
 
-func TestCompactWorkbenchShowsNewAgentInput(t *testing.T) {
+func TestCompactWorkbenchShowsNewAgentInputFromSlashCommand(t *testing.T) {
 	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, &fakeControlClient{})
 	app.width = 40
 	app.height = 10
 	app.focus = FocusAgentList
 	app.updatePanelSizes()
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "new")
 
 	view := app.View()
 	if !strings.Contains(view, "NEW AGENT") {
@@ -1594,55 +1791,53 @@ func TestNoticeStatusLineIsWidthConstrained(t *testing.T) {
 	}
 }
 
-func TestStatusBarPreservesModeAndQuitHints(t *testing.T) {
+func TestWorkbenchNoticeLineIsStillShown(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, nil, nil)
 	app.width = 80
+	app.height = 12
+	app.notice = "Resize mode enabled"
+	app.updatePanelSizes()
 
-	bar := app.renderStatusBar()
-	for _, want := range []string{"q:quit"} {
-		if !strings.Contains(bar, want) {
-			t.Fatalf("status bar missing %q:\n%s", want, bar)
-		}
+	view := app.View()
+	if !strings.Contains(view, "Resize mode enabled") {
+		t.Fatalf("notice line missing:\n%s", view)
 	}
-	if width := lipgloss.Width(bar); width > app.width {
-		t.Fatalf("status bar width = %d, want <= %d:\n%s", width, app.width, bar)
+	if strings.Contains(view, "VULPINE") || strings.Contains(view, "q:quit") {
+		t.Fatalf("notice should not restore persistent status bar:\n%s", view)
 	}
 }
 
-func TestModeHotkeyTogglesResizeMode(t *testing.T) {
+func TestResizeSlashCommandTogglesResizeMode(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{ResizePanelsWithArrows: false}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "resize")
 	if !app.resizeModeEnabled() {
-		t.Fatal("resize mode should be enabled after pressing m")
+		t.Fatal("resize mode should be enabled after /resize")
 	}
 	if app.notice == "" || !strings.Contains(app.notice, "Resize mode enabled") {
 		t.Fatalf("unexpected notice after enabling resize mode: %q", app.notice)
 	}
 
-	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "resize")
 	if app.resizeModeEnabled() {
-		t.Fatal("resize mode should be disabled after pressing m again")
+		t.Fatal("resize mode should be disabled after /resize again")
 	}
 	if app.notice == "" || !strings.Contains(app.notice, "Resize mode disabled") {
 		t.Fatalf("unexpected notice after disabling resize mode: %q", app.notice)
 	}
 }
 
-func TestModeHotkeyDoesNotPersistResizePreference(t *testing.T) {
+func TestResizeSlashCommandDoesNotPersistResizePreference(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{ResizePanelsWithArrows: false}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "resize")
 
 	if !app.resizeModeEnabled() {
-		t.Fatal("resize mode should be enabled after pressing m")
+		t.Fatal("resize mode should be enabled after /resize")
 	}
 	if cfg.ResizePanelsWithArrows {
 		t.Fatal("mode hotkey should not persist the resize preference")
@@ -1903,7 +2098,7 @@ func TestChatInputKeystrokeRefocusesAndCapturesFirstRune(t *testing.T) {
 	}
 }
 
-func TestUnfocusedChatAllowsViewShortcut(t *testing.T) {
+func TestChatAllowsViewSlashCommand(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -1921,11 +2116,10 @@ func TestUnfocusedChatAllowsViewShortcut(t *testing.T) {
 	app.conversation.SetAwake(true)
 	app.conversation.Blur()
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "view")
 
 	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when view shortcut is used", got)
+		t.Fatalf("conversation input = %q, want empty after /view", got)
 	}
 }
 
@@ -2036,7 +2230,7 @@ func TestAgentTurnPromptIncludesPersistedVisibleHistory(t *testing.T) {
 	}
 }
 
-func TestFocusedEmptyChatAllowsViewShortcut(t *testing.T) {
+func TestFocusedEmptyChatAllowsViewSlashCommand(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -2054,15 +2248,14 @@ func TestFocusedEmptyChatAllowsViewShortcut(t *testing.T) {
 	app.conversation.SetAwake(true)
 	app.conversation.Focus()
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "view")
 
 	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when v shortcut is used from empty focused chat", got)
+		t.Fatalf("conversation input = %q, want empty after /view", got)
 	}
 }
 
-func TestFocusedEmptyChatAllowsModeShortcut(t *testing.T) {
+func TestFocusedEmptyChatAllowsResizeSlashCommand(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -2080,18 +2273,17 @@ func TestFocusedEmptyChatAllowsModeShortcut(t *testing.T) {
 	app.conversation.SetAwake(true)
 	app.conversation.Focus()
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "resize")
 
 	if !app.resizeModeEnabled() {
-		t.Fatal("mode shortcut should enable resize mode from empty focused chat")
+		t.Fatal("/resize should enable resize mode from empty focused chat")
 	}
 	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when mode shortcut is used from empty focused chat", got)
+		t.Fatalf("conversation input = %q, want empty after /resize", got)
 	}
 }
 
-func TestFocusedEmptyChatAllowsSettingsShortcut(t *testing.T) {
+func TestFocusedEmptyChatAllowsSettingsSlashCommand(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -2109,18 +2301,17 @@ func TestFocusedEmptyChatAllowsSettingsShortcut(t *testing.T) {
 	app.conversation.SetAwake(true)
 	app.conversation.Focus()
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "settings")
 
 	if app.focus != FocusSettings || !app.settings.IsActive() {
-		t.Fatal("settings shortcut should open settings from empty focused chat")
+		t.Fatal("/settings should open settings from empty focused chat")
 	}
 	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when settings shortcut is used from empty focused chat", got)
+		t.Fatalf("conversation input = %q, want empty after /settings", got)
 	}
 }
 
-func TestFocusedEmptyChatAllowsReconfigureShortcut(t *testing.T) {
+func TestFocusedEmptyChatAllowsConfigSlashCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -2143,8 +2334,7 @@ func TestFocusedEmptyChatAllowsReconfigureShortcut(t *testing.T) {
 	app.conversation.SetAwake(true)
 	app.conversation.Focus()
 
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
-	app = model.(App)
+	app, cmd := runSlashCommand(t, app, "config")
 
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
@@ -2154,7 +2344,7 @@ func TestFocusedEmptyChatAllowsReconfigureShortcut(t *testing.T) {
 		}
 	}
 	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when reconfigure shortcut is used from empty focused chat", got)
+		t.Fatalf("conversation input = %q, want empty after /config", got)
 	}
 	if !cfg.SetupComplete {
 		t.Fatal("reconfigure shortcut should not clear setupComplete on the active config")
@@ -2163,7 +2353,7 @@ func TestFocusedEmptyChatAllowsReconfigureShortcut(t *testing.T) {
 		t.Fatal("reconfigure shortcut should not queue a next-launch setup marker")
 	}
 	if !strings.Contains(app.View(), "First Time Setup") {
-		t.Fatalf("reconfigure shortcut should show setup in the current TUI:\n%s", app.View())
+		t.Fatalf("/config should show setup in the current TUI:\n%s", app.View())
 	}
 }
 
@@ -2233,7 +2423,88 @@ func TestThinkingChatDoesNotStartSecondTurn(t *testing.T) {
 	}
 }
 
-func TestUnfocusedChatAllowsTraceShortcut(t *testing.T) {
+func TestThinkingChatStillAcceptsDraftTyping(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Researcher", "Research", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.SetAgentName(agent.Name)
+	app.conversation.SetAwake(true)
+	app.conversation.SetThinking(true)
+	app.conversation.Focus()
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("next question")})
+	app = model.(App)
+	_ = cmd
+	if got := app.conversation.TextInput().Value(); got != "next question" {
+		t.Fatalf("draft while thinking = %q, want next question", got)
+	}
+}
+
+func TestThinkingChatEscConfirmsPauseAgent(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Researcher", "Research", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if err := db.UpdateAgentStatus(agent.ID, "active"); err != nil {
+		t.Fatalf("set active status: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.SetAgentName(agent.Name)
+	app.conversation.SetAwake(true)
+	app.conversation.SetThinking(true)
+	app.conversation.Focus()
+	app.conversation.TextInput().SetValue("draft stays")
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	app = model.(App)
+	if cmd != nil {
+		t.Fatal("first Esc should only arm pause confirmation")
+	}
+	if !app.confirmPause {
+		t.Fatal("first Esc should arm pause confirmation")
+	}
+	if !strings.Contains(app.notice, "Press Esc again to pause agent") {
+		t.Fatalf("notice = %q, want Esc pause confirmation", app.notice)
+	}
+	if got := app.conversation.TextInput().Value(); got != "draft stays" {
+		t.Fatalf("draft after first Esc = %q, want preserved", got)
+	}
+
+	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	app = model.(App)
+	if app.confirmPause {
+		t.Fatal("second Esc should clear pause confirmation")
+	}
+	if cmd == nil {
+		t.Fatal("second Esc should dispatch pause command")
+	}
+	msg := cmd()
+	notice, ok := msg.(statusNotice)
+	if !ok {
+		t.Fatalf("pause command returned %T, want statusNotice without orchestrator", msg)
+	}
+	if notice.text != "No orchestrator" {
+		t.Fatalf("pause notice = %q, want No orchestrator", notice.text)
+	}
+}
+
+func TestChatAllowsTraceSlashCommand(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -2251,18 +2522,17 @@ func TestUnfocusedChatAllowsTraceShortcut(t *testing.T) {
 	app.conversation.SetAwake(true)
 	app.conversation.Blur()
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "trace")
 
 	if !app.conversation.TraceOnly() {
-		t.Fatal("trace shortcut should enable trace mode from unfocused chat state")
+		t.Fatal("/trace should enable trace mode from chat state")
 	}
 	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when trace shortcut is used", got)
+		t.Fatalf("conversation input = %q, want empty after /trace", got)
 	}
 }
 
-func TestFocusedEmptyChatAllowsTraceShortcut(t *testing.T) {
+func TestFocusedEmptyChatAllowsTraceSlashCommand(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -2280,18 +2550,17 @@ func TestFocusedEmptyChatAllowsTraceShortcut(t *testing.T) {
 	app.conversation.SetAwake(true)
 	app.conversation.Focus()
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "trace")
 
 	if !app.conversation.TraceOnly() {
-		t.Fatal("trace shortcut should enable trace mode from empty focused chat state")
+		t.Fatal("/trace should enable trace mode from empty focused chat state")
 	}
 	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when trace shortcut is used from empty focused chat", got)
+		t.Fatalf("conversation input = %q, want empty after /trace", got)
 	}
 }
 
-func TestReconfigureShortcutStartsSetupInPlaceWithoutClearingConfig(t *testing.T) {
+func TestConfigSlashCommandStartsSetupInPlaceWithoutClearingConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -2305,28 +2574,27 @@ func TestReconfigureShortcutStartsSetupInPlaceWithoutClearingConfig(t *testing.T
 	app.width = 100
 	app.height = 30
 
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
-	updated := model.(App)
+	updated, cmd := runSlashCommand(t, app, "config")
 
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
 			if _, ok := msg.(tea.QuitMsg); ok {
-				t.Fatal("reconfigure shortcut should stay in the TUI instead of quitting")
+				t.Fatal("/config should stay in the TUI instead of quitting")
 			}
 		}
 	}
 	if !cfg.SetupComplete {
-		t.Fatal("reconfigure shortcut should not clear setupComplete on the active config")
+		t.Fatal("/config should not clear setupComplete on the active config")
 	}
 	if config.ReconfigureRequested() {
-		t.Fatal("reconfigure shortcut should not queue the setup wizard for next launch")
+		t.Fatal("/config should not queue the setup wizard for next launch")
 	}
 	if !strings.Contains(updated.View(), "First Time Setup") {
-		t.Fatalf("reconfigure shortcut should show setup in the current TUI:\n%s", updated.View())
+		t.Fatalf("/config should show setup in the current TUI:\n%s", updated.View())
 	}
 }
 
-func TestSettingsReconfigureShortcutStartsSetupInPlace(t *testing.T) {
+func TestConfigSlashCommandStartsSetupInPlaceFromSettings(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -2340,31 +2608,24 @@ func TestSettingsReconfigureShortcutStartsSetupInPlace(t *testing.T) {
 	app.width = 100
 	app.height = 30
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
-	app = model.(App)
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
-	app = model.(App)
-	if cmd == nil {
-		t.Fatal("settings reconfigure shortcut should emit a reconfigure message")
-	}
-	model, cmd = app.Update(cmd())
-	updated := model.(App)
+	app, _ = runSlashCommand(t, app, "settings")
+	updated, cmd := runSlashCommand(t, app, "config")
 
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
 			if _, ok := msg.(tea.QuitMsg); ok {
-				t.Fatal("settings reconfigure shortcut should stay in the TUI instead of quitting")
+				t.Fatal("/config should stay in the TUI instead of quitting")
 			}
 		}
 	}
 	if config.ReconfigureRequested() {
-		t.Fatal("settings reconfigure shortcut should not queue the setup wizard")
+		t.Fatal("/config should not queue the setup wizard")
 	}
 	if !cfg.SetupComplete {
-		t.Fatal("settings reconfigure shortcut should not clear setupComplete")
+		t.Fatal("/config should not clear setupComplete")
 	}
 	if !strings.Contains(updated.View(), "First Time Setup") {
-		t.Fatalf("settings reconfigure shortcut should show setup in the current TUI:\n%s", updated.View())
+		t.Fatalf("/config should show setup in the current TUI:\n%s", updated.View())
 	}
 }
 
@@ -2382,13 +2643,15 @@ func TestEmbeddedReconfigureCompletionSavesConfigWithoutQuitting(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, cfg, nil)
 	app.width = 100
 	app.height = 30
+	app.focus = FocusSettings
+	app.settings.SetActive(true)
 
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
-	app = model.(App)
+	app, cmd := runSlashCommand(t, app, "config")
 	if cmd != nil {
 		_ = cmd()
 	}
 
+	var model tea.Model
 	for i := 0; i < 4; i++ {
 		model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		app = model.(App)
@@ -2415,15 +2678,15 @@ func TestEmbeddedReconfigureCompletionSavesConfigWithoutQuitting(t *testing.T) {
 	if app.cfg == nil || app.cfg.FoxbridgeCDPURL != "ws://127.0.0.1:9222" {
 		t.Fatalf("runtime foxbridge route was not preserved: %#v", app.cfg)
 	}
-	if app.focus != FocusSettings || !app.settings.IsActive() {
-		t.Fatalf("focus/settings = %d/%t, want settings active after setup", app.focus, app.settings.IsActive())
+	if app.focus != FocusConversation || app.settings.IsActive() {
+		t.Fatalf("focus/settings = %d/%t, want conversation focused with settings closed after setup", app.focus, app.settings.IsActive())
 	}
 	if !strings.Contains(app.notice, "Configuration updated") {
 		t.Fatalf("notice = %q, want configuration updated", app.notice)
 	}
 }
 
-func TestUnfocusedChatAllowsOpenLogShortcut(t *testing.T) {
+func TestChatAllowsOpenLogSlashCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -2463,11 +2726,10 @@ func TestUnfocusedChatAllowsOpenLogShortcut(t *testing.T) {
 	app.focus = FocusConversation
 	app.inputMode = "chat"
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
-	updated := model.(App)
+	updated, _ := runSlashCommand(t, app, "log")
 
 	if got := updated.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when open-log shortcut is used", got)
+		t.Fatalf("conversation input = %q, want empty after /log", got)
 	}
 	if len(opened) != 2 || opened[0] != "open" || opened[1] != logPath {
 		t.Fatalf("unexpected open command: %#v", opened)
@@ -2528,7 +2790,7 @@ func TestFocusedChatAllowsCtrlOpenLogShortcut(t *testing.T) {
 	}
 }
 
-func TestFocusedEmptyChatAllowsOpenLogShortcut(t *testing.T) {
+func TestFocusedEmptyChatAllowsOpenLogSlashCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -2568,11 +2830,10 @@ func TestFocusedEmptyChatAllowsOpenLogShortcut(t *testing.T) {
 	app.inputMode = "chat"
 	app.conversation.Focus()
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
-	updated := model.(App)
+	updated, _ := runSlashCommand(t, app, "log")
 
 	if got := updated.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when open-log shortcut is used from empty focused chat", got)
+		t.Fatalf("conversation input = %q, want empty after /log", got)
 	}
 	if len(opened) != 2 || opened[0] != "open" || opened[1] != logPath {
 		t.Fatalf("unexpected open command: %#v", opened)
@@ -2623,38 +2884,35 @@ func TestOpenSessionLogRejectsUnsafeAgentID(t *testing.T) {
 	app.focus = FocusConversation
 	app.inputMode = "chat"
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
-	updated := model.(App)
+	updated, _ := runSlashCommand(t, app, "log")
 	if updated.notice != "Invalid agent id" {
 		t.Fatalf("notice = %q, want invalid agent id", updated.notice)
 	}
 }
 
-func TestTraceModeHotkeyTogglesConversationTrace(t *testing.T) {
+func TestTraceSlashCommandTogglesConversationTrace(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "trace")
 	if !app.conversation.TraceOnly() {
-		t.Fatal("trace mode should be enabled after pressing t")
+		t.Fatal("trace mode should be enabled after /trace")
 	}
 	if !strings.Contains(app.notice, "Trace mode enabled") {
 		t.Fatalf("unexpected trace enable notice: %q", app.notice)
 	}
 
-	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
-	app = model.(App)
+	app, _ = runSlashCommand(t, app, "trace")
 	if app.conversation.TraceOnly() {
-		t.Fatal("trace mode should be disabled after pressing t again")
+		t.Fatal("trace mode should be disabled after /trace again")
 	}
 	if !strings.Contains(app.notice, "Trace mode disabled") {
 		t.Fatalf("unexpected trace disable notice: %q", app.notice)
 	}
 }
 
-func TestPauseResumeKeybindings(t *testing.T) {
+func TestPauseResumeSlashCommands(t *testing.T) {
 	db := openTestVault(t)
 
 	paused, err := db.CreateAgent("paused-agent", "task", "{}")
@@ -2679,9 +2937,10 @@ func TestPauseResumeKeybindings(t *testing.T) {
 	}
 
 	app.selectedAgentID = active.ID
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	app.conversation.SetAgentID(active.ID)
+	modelApp, cmd := runSlashCommand(t, app, "pause")
 	if cmd == nil {
-		t.Fatal("expected pause key to return a command")
+		t.Fatal("expected /pause to return a command")
 	}
 	pauseMsg, ok := cmd().(statusNotice)
 	if !ok {
@@ -2690,12 +2949,13 @@ func TestPauseResumeKeybindings(t *testing.T) {
 	if pauseMsg.text != "No orchestrator" {
 		t.Fatalf("pause notice = %q, want %q", pauseMsg.text, "No orchestrator")
 	}
-	app = model.(App)
+	app = modelApp
 
 	app.selectedAgentID = paused.ID
-	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	app.conversation.SetAgentID(paused.ID)
+	_, cmd = runSlashCommand(t, app, "resume")
 	if cmd == nil {
-		t.Fatal("expected resume key to return a command")
+		t.Fatal("expected /resume to return a command")
 	}
 	resumeMsg, ok := cmd().(statusNotice)
 	if !ok {
@@ -2706,7 +2966,7 @@ func TestPauseResumeKeybindings(t *testing.T) {
 	}
 }
 
-func TestPauseResumeKeybindingsShortCircuitOnAgentState(t *testing.T) {
+func TestPauseResumeSlashCommandsShortCircuitOnAgentState(t *testing.T) {
 	db := openTestVault(t)
 
 	paused, err := db.CreateAgent("paused-agent", "task", "{}")
@@ -2731,9 +2991,10 @@ func TestPauseResumeKeybindingsShortCircuitOnAgentState(t *testing.T) {
 	}
 
 	app.selectedAgentID = paused.ID
-	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	app.conversation.SetAgentID(paused.ID)
+	_, cmd := runSlashCommand(t, app, "pause")
 	if cmd == nil {
-		t.Fatal("expected pause key to return a command")
+		t.Fatal("expected /pause to return a command")
 	}
 	msg := cmd()
 	notice, ok := msg.(statusNotice)
@@ -2745,9 +3006,10 @@ func TestPauseResumeKeybindingsShortCircuitOnAgentState(t *testing.T) {
 	}
 
 	app.selectedAgentID = active.ID
-	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	app.conversation.SetAgentID(active.ID)
+	_, cmd = runSlashCommand(t, app, "resume")
 	if cmd == nil {
-		t.Fatal("expected resume key to return a command")
+		t.Fatal("expected /resume to return a command")
 	}
 	msg = cmd()
 	notice, ok = msg.(statusNotice)
@@ -2759,23 +3021,22 @@ func TestPauseResumeKeybindingsShortCircuitOnAgentState(t *testing.T) {
 	}
 }
 
-func TestBulkKillKeybindingWithoutOrchestrator(t *testing.T) {
+func TestBulkKillSlashCommandWithoutOrchestrator(t *testing.T) {
 	db := openTestVault(t)
 
 	app := NewApp(nil, nil, nil, db, nil, nil)
 
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
+	app, cmd := runSlashCommand(t, app, "killall")
 	if cmd != nil {
-		t.Fatal("did not expect first X press to return a command")
+		t.Fatal("did not expect first /killall to return a command")
 	}
-	app = model.(App)
 	if !app.confirmKillAll {
 		t.Fatal("expected bulk kill confirmation to be armed")
 	}
 
-	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("expected second X press to return a command")
+		t.Fatal("expected Enter confirmation to return a command")
 	}
 	app = model.(App)
 	if app.confirmKillAll {
@@ -2908,12 +3169,6 @@ func TestBrowserToggleContextIDUsesSelectedAgentLiveContext(t *testing.T) {
 	app.selectedAgentID = agent.ID
 	app.liveAgentContexts[agent.ID] = "ctx-agent-live"
 	app.focus = FocusAgentList
-	app.contextList, _ = app.contextList.Update(shared.TargetAttachedMsg{
-		SessionID: "session-other",
-		TargetID:  "target-other",
-		ContextID: "ctx-other",
-		URL:       "https://other.example",
-	})
 
 	contextID, notice := app.browserToggleContextID()
 	if contextID != "ctx-agent-live" || notice != "" {
@@ -2944,57 +3199,6 @@ func TestBrowserToggleContextIDUsesSelectedAgentPinnedContext(t *testing.T) {
 	contextID, notice := app.browserToggleContextID()
 	if contextID != "ctx-agent-pinned" || notice != "" {
 		t.Fatalf("toggle target = (%q, %q), want selected agent pinned context", contextID, notice)
-	}
-}
-
-func TestBrowserToggleContextIDUsesHighlightedContextWhenFocused(t *testing.T) {
-	db := openTestVault(t)
-	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
-
-	agent, err := db.CreateAgent("Browser Agent", "Use a live context", "{}")
-	if err != nil {
-		t.Fatalf("create agent: %v", err)
-	}
-	app.agentList.SetAgents([]vault.Agent{*agent})
-	app.agentList.SelectAgentID(agent.ID)
-	app.selectedAgentID = agent.ID
-	app.liveAgentContexts[agent.ID] = "ctx-agent-live"
-	app.focus = FocusContextList
-	app.contextList, _ = app.contextList.Update(shared.TargetAttachedMsg{
-		SessionID: "session-selected",
-		TargetID:  "target-selected",
-		ContextID: "ctx-highlighted",
-		URL:       "https://selected.example",
-	})
-
-	contextID, notice := app.browserToggleContextID()
-	if contextID != "ctx-highlighted" || notice != "" {
-		t.Fatalf("toggle target = (%q, %q), want highlighted context", contextID, notice)
-	}
-}
-
-func TestBrowserToggleContextIDFallsBackToAgentContextFromContextPanel(t *testing.T) {
-	db := openTestVault(t)
-	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
-
-	agent, err := db.CreateAgent("Browser Agent", "Use a live context", "{}")
-	if err != nil {
-		t.Fatalf("create agent: %v", err)
-	}
-	app.agentList.SetAgents([]vault.Agent{*agent})
-	app.agentList.SelectAgentID(agent.ID)
-	app.selectedAgentID = agent.ID
-	app.liveAgentContexts[agent.ID] = "ctx-agent-live"
-	app.focus = FocusContextList
-	app.contextList, _ = app.contextList.Update(shared.TargetAttachedMsg{
-		SessionID: "session-without-context-id",
-		TargetID:  "target-without-context-id",
-		URL:       "about:blank",
-	})
-
-	contextID, notice := app.browserToggleContextID()
-	if contextID != "ctx-agent-live" || notice != "" {
-		t.Fatalf("toggle target = (%q, %q), want selected agent live context fallback", contextID, notice)
 	}
 }
 

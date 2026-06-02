@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1032,7 +1033,10 @@ func prepareNanoClawSourceRuntime(profileDir string) error {
 	if dockerImageExists(image) {
 		return nil
 	}
-	return buildNanoClawAgentImage(profileDir, image)
+	if err := buildNanoClawAgentImage(profileDir, image); err != nil {
+		log.Printf("Warning: NanoClaw agent container image build failed (agents will run without container isolation): %v", err)
+	}
+	return nil
 }
 
 func nanoClawAgentImageName(profileDir string) string {

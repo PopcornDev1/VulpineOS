@@ -14,16 +14,17 @@ import (
 
 // AgentListItem represents one agent in the list.
 type AgentListItem struct {
-	ID          string
-	Name        string
-	Task        string
-	Status      string
-	Tokens      int
-	Fingerprint string
-	ProxyConfig string
-	Metadata    string
-	CreatedAt   time.Time
-	Unread      int
+	ID             string
+	Name           string
+	Task           string
+	Status         string
+	Tokens         int
+	Fingerprint    string
+	ProxyConfig    string
+	Metadata       string
+	CreatedAt      time.Time
+	LastSelectedAt time.Time
+	Unread         int
 }
 
 // Model holds the selectable agent list state.
@@ -80,15 +81,16 @@ func (m *Model) SetAgents(agents []vault.Agent) {
 	m.agents = make([]AgentListItem, len(agents))
 	for i, a := range agents {
 		m.agents[i] = AgentListItem{
-			ID:          a.ID,
-			Name:        a.Name,
-			Task:        a.Task,
-			Status:      a.Status,
-			Tokens:      a.TotalTokens,
-			Fingerprint: a.Fingerprint,
-			ProxyConfig: a.ProxyConfig,
-			Metadata:    a.Metadata,
-			CreatedAt:   a.CreatedAt,
+			ID:             a.ID,
+			Name:           a.Name,
+			Task:           a.Task,
+			Status:         a.Status,
+			Tokens:         a.TotalTokens,
+			Fingerprint:    a.Fingerprint,
+			ProxyConfig:    a.ProxyConfig,
+			Metadata:       a.Metadata,
+			CreatedAt:      a.CreatedAt,
+			LastSelectedAt: a.LastSelectedAt,
 		}
 	}
 	if m.selected >= len(m.agents) {
@@ -126,6 +128,13 @@ func (m Model) SelectedAgent() (AgentListItem, bool) {
 	return m.agents[m.selected], true
 }
 
+// Agents returns a copy of all agent list items.
+func (m Model) Agents() []AgentListItem {
+	result := make([]AgentListItem, len(m.agents))
+	copy(result, m.agents)
+	return result
+}
+
 // Agent returns an item by ID.
 func (m Model) Agent(id string) (AgentListItem, bool) {
 	for _, agent := range m.agents {
@@ -147,18 +156,76 @@ func (m *Model) SelectAgentID(id string) bool {
 	return false
 }
 
+// SelectIndex selects the agent at the given absolute index. It returns
+// false if the index is out of range. Used by mouse click handlers to
+// translate a screen Y coordinate into an agent selection.
+func (m *Model) SelectIndex(i int) bool {
+	if i < 0 || i >= len(m.agents) {
+		return false
+	}
+	m.selected = i
+	return true
+}
+
+// SelectedIndex returns the currently selected agent's index, or -1 if
+// the list is empty.
+func (m Model) SelectedIndex() int {
+	if len(m.agents) == 0 {
+		return -1
+	}
+	return m.selected
+}
+
+// ClickNearest selects the agent whose screen Y position is closest to
+// the given click Y, where panelY is the on-screen Y of the agent list
+// panel's top border. Returns the selected AgentListItem and true, or
+// (zero, false) if the list is empty. This is robust to both scroll
+// position and imprecise mouse coordinates.
+func (m *Model) ClickNearest(clickY, panelY int) (AgentListItem, bool) {
+	if len(m.agents) == 0 {
+		return AgentListItem{}, false
+	}
+	capacity := m.height - 3 // border (2) + title (1)
+	if capacity < 1 {
+		capacity = len(m.agents)
+	}
+	start, end := VisibleRange(len(m.agents), m.selected, capacity)
+	if start >= end {
+		return AgentListItem{}, false
+	}
+	// Each agent row is 1 line. Row 0 is the title, rows 1+ are agents.
+	// Agent at index i is at content row (i - start + 1), which is at
+	// screen Y = panelY + 1 (border) + 1 (title) + (i - start).
+	bestIdx := start
+	bestDist := -1
+	for i := start; i < end && i < len(m.agents); i++ {
+		rowY := panelY + 2 + (i - start)
+		dist := clickY - rowY
+		if dist < 0 {
+			dist = -dist
+		}
+		if bestDist == -1 || dist < bestDist {
+			bestDist = dist
+			bestIdx = i
+		}
+	}
+	m.selected = bestIdx
+	return m.agents[bestIdx], true
+}
+
 // AddAgent adds a new agent to the list.
 func (m *Model) AddAgent(a vault.Agent) {
 	m.agents = append(m.agents, AgentListItem{
-		ID:          a.ID,
-		Name:        a.Name,
-		Task:        a.Task,
-		Status:      a.Status,
-		Tokens:      a.TotalTokens,
-		Fingerprint: a.Fingerprint,
-		ProxyConfig: a.ProxyConfig,
-		Metadata:    a.Metadata,
-		CreatedAt:   a.CreatedAt,
+		ID:             a.ID,
+		Name:           a.Name,
+		Task:           a.Task,
+		Status:         a.Status,
+		Tokens:         a.TotalTokens,
+		Fingerprint:    a.Fingerprint,
+		ProxyConfig:    a.ProxyConfig,
+		Metadata:       a.Metadata,
+		CreatedAt:      a.CreatedAt,
+		LastSelectedAt: a.LastSelectedAt,
 	})
 }
 
@@ -180,6 +247,16 @@ func (m *Model) UpdateStatus(id, status string) {
 	for i := range m.agents {
 		if m.agents[i].ID == id {
 			m.agents[i].Status = status
+			return
+		}
+	}
+}
+
+// RenameAgent updates an agent's display name by ID.
+func (m *Model) RenameAgent(id, name string) {
+	for i := range m.agents {
+		if m.agents[i].ID == id {
+			m.agents[i].Name = name
 			return
 		}
 	}
@@ -268,7 +345,7 @@ func (m Model) View() string {
 		return b.String()
 	}
 
-	start, end := visibleAgentRange(len(m.agents), m.selected, m.height-1)
+	start, end := VisibleRange(len(m.agents), m.selected, m.height-1)
 	for i := start; i < end; i++ {
 		a := m.agents[i]
 		cursor := "  "
@@ -318,7 +395,11 @@ func (m Model) View() string {
 	return result
 }
 
-func visibleAgentRange(total, selected, capacity int) (int, int) {
+// VisibleRange returns the [start, end) indices of the agent slice that
+// fit in a list of the given capacity, keeping the selected agent in
+// view. Exported so mouse click handlers can translate screen rows into
+// agent indices.
+func VisibleRange(total, selected, capacity int) (int, int) {
 	if total <= 0 {
 		return 0, 0
 	}

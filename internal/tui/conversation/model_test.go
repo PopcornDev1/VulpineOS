@@ -146,6 +146,99 @@ func TestSetAgentIDClearsDraftInput(t *testing.T) {
 	}
 }
 
+func TestInputBlockShowsModelLabel(t *testing.T) {
+	m := New()
+	m.SetSize(50, 12)
+	m.SetAgentID("agent-1")
+	m.SetAgentName("Research Fox")
+	m.SetModelLabel("GPT-5.5 OpenAI")
+	m.SetAgentStatus("paused")
+	m.SetAwake(true)
+	_ = m.Focus()
+
+	view := m.View()
+	if !strings.Contains(view, "Research Fox") || !strings.Contains(view, "GPT-5.5 OpenAI") {
+		t.Fatalf("input block should show agent name and model, got:\n%s", view)
+	}
+	if strings.Contains(view, "Paused") {
+		t.Fatalf("input block should show agent name instead of status, got:\n%s", view)
+	}
+	if strings.Contains(view, ">") {
+		t.Fatalf("input block should not render prompt marker, got:\n%s", view)
+	}
+	if !strings.Contains(view, "▌") {
+		t.Fatalf("input block rail missing, got:\n%s", view)
+	}
+	inputBlockLines := strings.Split(m.inputBlock(m.inputArea()), "\n")
+	if got := len(inputBlockLines); got != inputBlockHeight {
+		t.Fatalf("input block height = %d, want %d", got, inputBlockHeight)
+	}
+	if !strings.Contains(inputBlockLines[len(inputBlockLines)-2], "Research Fox") {
+		t.Fatalf("input block metadata row missing before bottom padding, got:\n%s", strings.Join(inputBlockLines, "\n"))
+	}
+	if strings.Contains(inputBlockLines[len(inputBlockLines)-1], "Research Fox") || strings.Contains(inputBlockLines[len(inputBlockLines)-1], "GPT-5.5") {
+		t.Fatalf("input block should end with half-height bottom padding, got:\n%s", strings.Join(inputBlockLines, "\n"))
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if got := ansiVisualWidth(line); got > m.width {
+			t.Fatalf("line %d width = %d, want <= %d:\n%s", i+1, got, m.width, view)
+		}
+	}
+}
+
+func TestInputPulseTickTogglesCaret(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	m := New()
+	m.SetSize(50, 12)
+	_ = m.Focus()
+	if m.inputPulseFrame != 0 {
+		t.Fatalf("initial pulse frame = %d, want 0", m.inputPulseFrame)
+	}
+	visibleCaret := m.inputTextView()
+
+	updated, cmd := m.Update(InputPulseTickMsg{})
+	if updated.inputPulseFrame != 1 {
+		t.Fatalf("pulse frame after tick = %d, want 1", updated.inputPulseFrame)
+	}
+	if cmd == nil {
+		t.Fatal("input pulse tick should re-arm itself")
+	}
+	hiddenCaret := updated.inputTextView()
+	if visibleCaret == hiddenCaret {
+		t.Fatal("input pulse tick should toggle caret rendering")
+	}
+	if ansiVisualWidth(visibleCaret) != ansiVisualWidth(hiddenCaret) {
+		t.Fatalf("caret pulse should preserve input width, got %d and %d", ansiVisualWidth(visibleCaret), ansiVisualWidth(hiddenCaret))
+	}
+}
+
+func TestInputBlockClipsLongModelLabel(t *testing.T) {
+	m := New()
+	m.SetSize(24, 10)
+	m.SetAgentID("agent-1")
+	m.SetModelLabel("Claude Sonnet 4 6 With A Very Long Provider Label")
+	m.SetAwake(true)
+
+	view := m.View()
+	if !strings.Contains(view, "...") {
+		t.Fatalf("long model label should be clipped, got:\n%s", view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if got := ansiVisualWidth(line); got > m.width {
+			t.Fatalf("line %d width = %d, want <= %d:\n%s", i+1, got, m.width, view)
+		}
+	}
+}
+
+func TestInputBlockLinePadsStyledContentToWidth(t *testing.T) {
+	line := inputBlockLine(inputMutedStyle.Render("Type a message..."), 40)
+	if got := ansiVisualWidth(line); got != 40 {
+		t.Fatalf("input block line width = %d, want 40: %q", got, line)
+	}
+}
+
 func TestInsertPastedContentUsesMarkerButKeepsPayload(t *testing.T) {
 	m := New()
 	m.SetAgentID("agent-1")

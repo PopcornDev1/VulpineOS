@@ -219,7 +219,6 @@ func (k *Kernel) Start(cfg Config) error {
 	if !cfg.Headless {
 		k.window = NewWindowController(cmd.Process.Pid)
 		go func() {
-			time.Sleep(2 * time.Second)
 			if k.window != nil {
 				k.window.HideWhenReady()
 			}

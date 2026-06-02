@@ -10,8 +10,8 @@ import (
 // StoredProxy represents a proxy entry in the vault database.
 type StoredProxy struct {
 	ID      string    `json:"id"`
-	Config  string    `json:"config"`  // JSON ProxyConfig
-	Geo     string    `json:"geo"`     // JSON GeoInfo
+	Config  string    `json:"config"` // JSON ProxyConfig
+	Geo     string    `json:"geo"`    // JSON GeoInfo
 	Label   string    `json:"label"`
 	AddedAt time.Time `json:"added_at"`
 }

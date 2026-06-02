@@ -35,15 +35,16 @@ func (db *DB) CreateAgentWithID(id, name, task, fingerprint string) (*Agent, err
 	}
 
 	return &Agent{
-		ID:          id,
-		Name:        name,
-		Task:        task,
-		Fingerprint: fingerprint,
-		Status:      "created",
-		TotalTokens: 0,
-		CreatedAt:   time.Unix(now, 0),
-		LastActive:  time.Unix(now, 0),
-		Metadata:    "{}",
+		ID:             id,
+		Name:           name,
+		Task:           task,
+		Fingerprint:    fingerprint,
+		Status:         "created",
+		TotalTokens:    0,
+		CreatedAt:      time.Unix(now, 0),
+		LastActive:     time.Unix(now, 0),
+		LastSelectedAt: time.Time{},
+		Metadata:       "{}",
 	}, nil
 }
 
@@ -51,20 +52,23 @@ func (db *DB) CreateAgentWithID(id, name, task, fingerprint string) (*Agent, err
 func (db *DB) GetAgent(id string) (*Agent, error) {
 	row := db.conn.QueryRow(
 		`SELECT id, name, task, fingerprint, proxy_config, locale, timezone,
-		        status, total_tokens, created_at, last_active, metadata
+		        status, total_tokens, created_at, last_active, last_selected_at, metadata
 		 FROM agents WHERE id = ?`, id,
 	)
 
 	var a Agent
-	var createdAt, lastActive int64
+	var createdAt, lastActive, lastSelectedAt int64
 	err := row.Scan(&a.ID, &a.Name, &a.Task, &a.Fingerprint, &a.ProxyConfig,
 		&a.Locale, &a.Timezone, &a.Status, &a.TotalTokens,
-		&createdAt, &lastActive, &a.Metadata)
+		&createdAt, &lastActive, &lastSelectedAt, &a.Metadata)
 	if err != nil {
 		return nil, fmt.Errorf("get agent: %w", err)
 	}
 	a.CreatedAt = time.Unix(createdAt, 0)
 	a.LastActive = time.Unix(lastActive, 0)
+	if lastSelectedAt > 0 {
+		a.LastSelectedAt = time.Unix(lastSelectedAt, 0)
+	}
 	return &a, nil
 }
 
@@ -72,7 +76,7 @@ func (db *DB) GetAgent(id string) (*Agent, error) {
 func (db *DB) ListAgents() ([]Agent, error) {
 	rows, err := db.conn.Query(
 		`SELECT id, name, task, fingerprint, proxy_config, locale, timezone,
-		        status, total_tokens, created_at, last_active, metadata
+		        status, total_tokens, created_at, last_active, last_selected_at, metadata
 		 FROM agents ORDER BY last_active DESC`,
 	)
 	if err != nil {
@@ -83,14 +87,17 @@ func (db *DB) ListAgents() ([]Agent, error) {
 	var agents []Agent
 	for rows.Next() {
 		var a Agent
-		var createdAt, lastActive int64
+		var createdAt, lastActive, lastSelectedAt int64
 		if err := rows.Scan(&a.ID, &a.Name, &a.Task, &a.Fingerprint, &a.ProxyConfig,
 			&a.Locale, &a.Timezone, &a.Status, &a.TotalTokens,
-			&createdAt, &lastActive, &a.Metadata); err != nil {
+			&createdAt, &lastActive, &lastSelectedAt, &a.Metadata); err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
 		a.CreatedAt = time.Unix(createdAt, 0)
 		a.LastActive = time.Unix(lastActive, 0)
+		if lastSelectedAt > 0 {
+			a.LastSelectedAt = time.Unix(lastSelectedAt, 0)
+		}
 		agents = append(agents, a)
 	}
 	return agents, nil
@@ -100,7 +107,7 @@ func (db *DB) ListAgents() ([]Agent, error) {
 func (db *DB) ListAgentsByStatus(status string) ([]Agent, error) {
 	rows, err := db.conn.Query(
 		`SELECT id, name, task, fingerprint, proxy_config, locale, timezone,
-		        status, total_tokens, created_at, last_active, metadata
+		        status, total_tokens, created_at, last_active, last_selected_at, metadata
 		 FROM agents WHERE status = ? ORDER BY last_active DESC`, status,
 	)
 	if err != nil {
@@ -111,17 +118,34 @@ func (db *DB) ListAgentsByStatus(status string) ([]Agent, error) {
 	var agents []Agent
 	for rows.Next() {
 		var a Agent
-		var createdAt, lastActive int64
+		var createdAt, lastActive, lastSelectedAt int64
 		if err := rows.Scan(&a.ID, &a.Name, &a.Task, &a.Fingerprint, &a.ProxyConfig,
 			&a.Locale, &a.Timezone, &a.Status, &a.TotalTokens,
-			&createdAt, &lastActive, &a.Metadata); err != nil {
+			&createdAt, &lastActive, &lastSelectedAt, &a.Metadata); err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
 		a.CreatedAt = time.Unix(createdAt, 0)
 		a.LastActive = time.Unix(lastActive, 0)
+		if lastSelectedAt > 0 {
+			a.LastSelectedAt = time.Unix(lastSelectedAt, 0)
+		}
 		agents = append(agents, a)
 	}
 	return agents, nil
+}
+
+// MarkAgentSelected records that the user just switched to this agent.
+// Pass time.Time{} to clear the timestamp.
+func (db *DB) MarkAgentSelected(id string, t time.Time) error {
+	var ts int64
+	if !t.IsZero() {
+		ts = t.Unix()
+	}
+	_, err := db.conn.Exec(
+		`UPDATE agents SET last_selected_at = ? WHERE id = ?`,
+		ts, id,
+	)
+	return err
 }
 
 // UpdateAgentStatus updates the status and last_active timestamp of an agent.

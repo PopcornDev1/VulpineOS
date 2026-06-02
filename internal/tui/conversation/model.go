@@ -42,16 +42,43 @@ var wakingPhrases = []string{
 	"Getting ready",
 }
 
+var (
+	inputBlockBg     = shared.ColorBg
+	inputRailStyle   = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(inputBlockBg)
+	inputBlockStyle  = lipgloss.NewStyle().Background(inputBlockBg)
+	inputStatusStyle = lipgloss.NewStyle().
+				Foreground(shared.ColorPrimary).
+				Background(inputBlockBg).
+				Bold(true)
+	inputModelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5E7EB")).Background(inputBlockBg)
+	inputMutedStyle  = lipgloss.NewStyle().Foreground(shared.ColorMuted).Background(inputBlockBg)
+	inputCursorStyle = lipgloss.NewStyle().
+				Foreground(inputBlockBg).
+				Background(lipgloss.Color("#E5E7EB"))
+)
+
+const inputBlockHeight = 5
+
 // Spinner frames for the animated icon
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // ThinkingTickMsg triggers animation updates for the thinking indicator.
 type ThinkingTickMsg struct{}
 
+// InputPulseTickMsg advances the chat input caret pulse.
+type InputPulseTickMsg struct{}
+
 // ThinkingTick returns a command that ticks every 120ms for animation.
 func ThinkingTick() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg {
 		return ThinkingTickMsg{}
+	})
+}
+
+// InputPulseTick keeps the input caret blinking while the TUI is open.
+func InputPulseTick() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+		return InputPulseTickMsg{}
 	})
 }
 
@@ -71,28 +98,38 @@ type pasteSnippet struct {
 
 // Model holds the conversation panel state.
 type Model struct {
-	entries       []Entry
-	agentID       string
-	agentName     string
-	agentStatus   string
-	traceOnly     bool
-	thinking      bool // true while waiting for agent response
-	awake         bool // true after agent has sent its first message
-	textInput     textinput.Model
-	width         int
-	height        int
-	scroll        int  // scroll offset in rendered lines (not entries)
-	autoScroll    bool // whether to auto-scroll to bottom on new messages
-	spinnerFrame  int  // current spinner animation frame
-	phraseIdx     int  // current thinking phrase index
-	shimmerOffset int  // shimmer position for the gradient effect
-	phraseTicks   int  // ticks since last phrase change
-	pasteSnippets []pasteSnippet
+	entries         []Entry
+	agentID         string
+	agentName       string
+	modelLabel      string
+	agentStatus     string
+	traceOnly       bool
+	thinking        bool // true while waiting for agent response
+	awake           bool // true after agent has sent its first message
+	notice          string
+	textInput       textinput.Model
+	width           int
+	height          int
+	scroll          int  // scroll offset in rendered lines (not entries)
+	autoScroll      bool // whether to auto-scroll to bottom on new messages
+	spinnerFrame    int  // current spinner animation frame
+	inputPulseFrame int  // current input caret pulse frame
+	phraseIdx       int  // current thinking phrase index
+	shimmerOffset   int  // shimmer position for the gradient effect
+	phraseTicks     int  // ticks since last phrase change
+	pasteSnippets   []pasteSnippet
 }
 
 // SetAgentName sets the display name for the agent.
 func (m *Model) SetAgentName(name string) {
 	m.agentName = name
+}
+
+func (m *Model) SetModelLabel(label string) {
+	m.modelLabel = label
+	if strings.TrimSpace(m.modelLabel) == "" {
+		m.modelLabel = "model"
+	}
 }
 
 func (m *Model) SetAgentStatus(status string) {
@@ -115,9 +152,16 @@ func (m *Model) SetAwake(awake bool) {
 	m.awake = awake
 }
 
-// IsAwake returns true if the agent has sent its first message.
+// IsAwake returns true after the agent has sent its first message.
 func (m Model) IsAwake() bool {
 	return m.awake
+}
+
+// SetNotice stores a transient confirmation or status message that is
+// rendered just under the chat input. The app is responsible for clearing
+// it via the TickMsg TTL.
+func (m *Model) SetNotice(text string) {
+	m.notice = text
 }
 
 // SetThinking sets the thinking indicator and resets animation state.
@@ -143,7 +187,10 @@ func (m Model) IsThinking() bool {
 // New creates a new conversation panel.
 func New() Model {
 	ti := textinput.New()
+	ti.Prompt = ""
 	ti.Placeholder = "Type a message..."
+	ti.PlaceholderStyle = inputMutedStyle
+	ti.TextStyle = inputModelStyle
 	ti.Width = 60
 	return Model{
 		textInput:  ti,
@@ -158,7 +205,7 @@ func (m *Model) SetSize(w, h int) {
 	oldContentWidth := m.contentWidth()
 	m.width = w
 	m.height = h
-	m.textInput.Width = w - 4
+	m.textInput.Width = w - 8
 	if m.textInput.Width < 1 {
 		m.textInput.Width = 1
 	}
@@ -195,6 +242,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, ThinkingTick()
 		}
+	case InputPulseTickMsg:
+		m.inputPulseFrame = (m.inputPulseFrame + 1) % 2
+		return m, InputPulseTick()
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up":
@@ -482,10 +532,10 @@ func (m Model) Focused() bool {
 
 // visibleLines returns how many rendered lines fit in the message area.
 func (m Model) visibleLines() int {
-	// Layout: title(1) + messages + thinking(0-1) + divider(1) + input(1) + divider(1)
-	reserved := 4 // title + divider above + input + divider below
+	// Layout: title(1) + messages + thinking(0-1) + input block
+	reserved := 1 + inputBlockHeight
 	if m.thinking {
-		reserved++ // thinking indicator between messages and top divider
+		reserved++ // thinking indicator between messages and input block
 	}
 	visible := m.height - reserved
 	if visible < 1 {
@@ -631,20 +681,33 @@ func (m *Model) clampScroll() {
 
 // View renders the conversation panel.
 // Messages are bottom-aligned: empty space at top, messages grow upward from the input box.
-// Input box is framed by dividers above and below.
+// Input box is rendered as a compact OpenCode-style block with model metadata.
 func (m Model) View() string {
-	var b strings.Builder
+	return m.view("")
+}
 
-	dividerWidth := m.width - 2
-	if dividerWidth < 1 {
-		dividerWidth = 1
+// ViewWithCommandPalette renders the conversation with an inline palette above the input.
+func (m Model) ViewWithCommandPalette(commandPalette string) string {
+	return m.view(commandPalette)
+}
+
+func (m Model) view(commandPalette string) string {
+	var b strings.Builder
+	var paletteLines []string
+	if commandPalette != "" {
+		paletteLines = strings.Split(commandPalette, "\n")
 	}
-	divider := shared.MutedStyle.Render(strings.Repeat("─", dividerWidth))
+	paletteHeight := len(paletteLines)
 
 	// No agent selected — show centered prompt
 	if m.agentID == "" {
-		for i := 0; i < m.height/2-2; i++ {
-			b.WriteString("\n")
+		if commandPalette != "" {
+			b.WriteString(commandPalette)
+			b.WriteString("\n\n")
+		} else {
+			for i := 0; i < m.height/2-2; i++ {
+				b.WriteString("\n")
+			}
 		}
 		b.WriteString(shared.MutedStyle.Render("  Press "))
 		b.WriteString(shared.KeyStyle.Render("n"))
@@ -655,22 +718,18 @@ func (m Model) View() string {
 		b.WriteString(shared.MutedStyle.Render("  with "))
 		b.WriteString(shared.KeyStyle.Render("j/k"))
 		b.WriteString(shared.MutedStyle.Render(" to view its conversation"))
+		if m.notice != "" {
+			b.WriteString("\n\n")
+			notice := m.notice
+			if w := m.contentWidth(); w > 2 {
+				notice = truncateToWidth(notice, w-2)
+			}
+			b.WriteString(shared.WarmingStyle.Render("  " + notice))
+		}
 		return b.String()
 	}
 
-	// Build the input line
-	var inputArea string
-	if m.agentStatus == "error" {
-		inputArea = shared.MutedStyle.Render("  > Agent failed — press Enter to retry or x to remove")
-	} else if !m.awake && m.thinking {
-		inputArea = shared.MutedStyle.Render("  Chat available after agent responds")
-	} else if m.textInput.Focused() {
-		inputArea = m.textInput.View()
-	} else if m.awake {
-		inputArea = shared.MutedStyle.Render("  > Press Enter to chat...")
-	} else {
-		inputArea = shared.MutedStyle.Render("  > Agent not active")
-	}
+	inputArea := m.inputArea()
 
 	// Build thinking indicator
 	var thinkingLine string
@@ -687,13 +746,19 @@ func (m Model) View() string {
 	}
 
 	// Calculate available lines for messages
-	// Layout (bottom to top): divider(1) + input(1) + divider(1) + thinking(0-1) + messages + title(1)
-	bottomLines := 3 // divider + input + divider
+	// Layout (bottom to top): notice(0-1) + input block + spacer(1) + palette + thinking(0-1) + messages + title(1)
+	bottomLines := 1 + inputBlockHeight + paletteHeight // 1 for spacer between messages and input
 	if m.thinking {
 		bottomLines++
 	}
+	if m.notice != "" {
+		bottomLines++ // transient notice rendered just under the chatbox
+	}
 	visibleMsgLines := m.height - 1 - bottomLines // 1 for title
-	if visibleMsgLines < 1 {
+	if visibleMsgLines < 0 {
+		visibleMsgLines = 0
+	}
+	if visibleMsgLines < 1 && paletteHeight == 0 {
 		visibleMsgLines = 1
 	}
 
@@ -746,24 +811,236 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// 4. Thinking indicator
+	// 4. Spacer between messages and chatbox
+	b.WriteString("\n")
+
+	// 5. Thinking indicator
 	if m.thinking {
 		b.WriteString(thinkingLine)
 		b.WriteString("\n")
 	}
 
-	// 5. Divider above input
-	b.WriteString(divider)
-	b.WriteString("\n")
+	// 6. Inline command palette
+	if commandPalette != "" {
+		b.WriteString(commandPalette)
+		b.WriteString("\n")
+	}
 
-	// 6. Input area
-	b.WriteString(inputArea)
-	b.WriteString("\n")
+	// 7. Input area
+	b.WriteString(m.inputBlock(inputArea))
 
-	// 7. Divider below input
-	b.WriteString(divider)
+	// 8. Transient notice (e.g. "Press Enter to confirm") rendered just
+	// under the chatbox so it doesn't span the whole workbench.
+	if m.notice != "" {
+		b.WriteString("\n")
+		notice := m.notice
+		if w := m.contentWidth(); w > 2 {
+			notice = truncateToWidth(notice, w-2)
+		}
+		b.WriteString(shared.WarmingStyle.Render("  " + notice))
+	}
 
 	return b.String()
+}
+
+// truncateToWidth shortens s to fit within maxWidth display columns by
+// trimming characters from the end and appending an ellipsis when it would
+// otherwise exceed the limit. ANSI escape sequences are not stripped; this
+// is intended for plain-text notices.
+func truncateToWidth(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= maxWidth {
+		return s
+	}
+	if maxWidth <= 1 {
+		return s[:1]
+	}
+	runes := []rune(s)
+	for len(runes) > 0 && lipgloss.Width(string(runes)) > maxWidth-1 {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes) + "…"
+}
+
+func (m Model) inputBlock(inputArea string) string {
+	blockWidth := m.width - 2
+	if blockWidth < 4 {
+		return inputArea
+	}
+
+	contentWidth := blockWidth - 1
+	return strings.Join([]string{
+		inputBlockLine("", blockWidth),
+		inputBlockLine(inputBlockStyle.Render("  ")+inputArea, blockWidth),
+		inputBlockLine("", blockWidth),
+		inputBlockLine(inputBlockStyle.Render("  ")+m.inputMetadata(contentWidth-2), blockWidth),
+		inputBlockHalfLine(blockWidth),
+	}, "\n")
+}
+
+func (m Model) inputArea() string {
+	if m.agentStatus == "error" {
+		return inputMutedStyle.Render("Agent failed - press Enter to retry or x to remove")
+	}
+	if !m.awake && m.thinking {
+		return inputMutedStyle.Render("Chat available after agent responds")
+	}
+	if m.textInput.Focused() {
+		return m.inputTextView()
+	}
+	if m.awake {
+		return inputMutedStyle.Render("Press Enter to chat...")
+	}
+	return inputMutedStyle.Render("Agent not active")
+}
+
+func (m Model) inputTextView() string {
+	value := m.textInput.Value()
+	if value == "" {
+		return m.inputCaret(" ") + inputMutedStyle.Render(m.textInput.Placeholder)
+	}
+
+	runes := []rune(value)
+	pos := m.textInput.Position()
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(runes) {
+		pos = len(runes)
+	}
+	before := inputModelStyle.Render(string(runes[:pos]))
+	if pos == len(runes) {
+		return before + m.inputCaret(" ")
+	}
+	cursor := m.inputCaret(string(runes[pos]))
+	after := inputModelStyle.Render(string(runes[pos+1:]))
+	return before + cursor + after
+}
+
+func (m Model) inputCaret(text string) string {
+	if m.inputPulseFrame%2 == 0 {
+		return inputCursorStyle.Render(text)
+	}
+	return inputModelStyle.Render(text)
+}
+
+func (m Model) inputMetadata(maxWidth int) string {
+	name := m.agentName
+	if name == "" {
+		name = "Agent"
+	}
+	model := strings.TrimSpace(m.modelLabel)
+	if model == "" {
+		model = "model"
+	}
+
+	fixedWidth := ansiVisualWidth(name) + ansiVisualWidth(" · ")
+	modelWidth := maxWidth - fixedWidth
+	if modelWidth < 1 {
+		modelWidth = 1
+	}
+	model = clipCellText(model, modelWidth)
+	return inputStatusStyle.Render(name) + inputMutedStyle.Render(" · ") + inputModelStyle.Render(model)
+}
+
+func (m Model) inputStatusLabel() string {
+	status := strings.ToLower(strings.TrimSpace(m.agentStatus))
+	if status == "" {
+		if m.thinking {
+			return "Working"
+		}
+		if m.awake {
+			return "Ready"
+		}
+		return "Idle"
+	}
+	switch status {
+	case "active", "running":
+		return "Working"
+	case "thinking":
+		return "Thinking"
+	case "completed", "ready", "created":
+		return "Ready"
+	case "failed", "error":
+		return "Error"
+	case "interrupted":
+		return "Interrupted"
+	case "paused":
+		return "Paused"
+	case "starting":
+		return "Starting"
+	default:
+		return clipCellText(strings.ToUpper(status[:1])+status[1:], 24)
+	}
+}
+
+func inputBlockLine(content string, blockWidth int) string {
+	contentWidth := blockWidth - 1
+	if contentWidth < 1 {
+		return inputRailStyle.Render("▌")
+	}
+	content = fitCellLine(content, contentWidth)
+	padding := ""
+	if contentWidth > ansiVisualWidth(content) {
+		padding = strings.Repeat(" ", contentWidth-ansiVisualWidth(content))
+	}
+	return inputRailStyle.Render("▌") + content + inputBlockStyle.Render(padding)
+}
+
+func inputBlockHalfLine(blockWidth int) string {
+	contentWidth := blockWidth - 1
+	halfLineStyle := lipgloss.NewStyle().Foreground(inputBlockBg).Background(inputBlockBg)
+	halfRailStyle := lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(inputBlockBg)
+	if contentWidth < 1 {
+		return halfRailStyle.Render("▌")
+	}
+	return halfRailStyle.Render("▌") + halfLineStyle.Render(strings.Repeat("▀", contentWidth))
+}
+
+func clipCellText(text string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	if ansiVisualWidth(text) <= maxWidth {
+		return text
+	}
+	tail := "..."
+	if maxWidth <= ansiVisualWidth(tail) {
+		tail = ""
+	}
+	limit := maxWidth - ansiVisualWidth(tail)
+	if limit <= 0 {
+		return tail
+	}
+
+	var b strings.Builder
+	width := 0
+	for _, r := range text {
+		runeWidth := runewidth.RuneWidth(r)
+		if width+runeWidth > limit {
+			break
+		}
+		b.WriteRune(r)
+		width += runeWidth
+	}
+	return b.String() + tail
+}
+
+func fitCellLine(line string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if ansiVisualWidth(line) <= width {
+		return line
+	}
+	fitted := lipgloss.NewStyle().MaxWidth(width).Render(line)
+	lines := strings.Split(fitted, "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	return lines[0]
 }
 
 // renderShimmer creates a purple shimmer effect across text.

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +29,8 @@ import (
 	"vulpineos/internal/runtimeaudit"
 	"vulpineos/internal/tui/agentdetail"
 	"vulpineos/internal/tui/agentlist"
-	"vulpineos/internal/tui/contextlist"
+	"vulpineos/internal/tui/agentpicker"
+	"vulpineos/internal/tui/commandpalette"
 	"vulpineos/internal/tui/conversation"
 	"vulpineos/internal/tui/settings"
 	"vulpineos/internal/tui/setup"
@@ -53,9 +55,7 @@ func openExternalTarget(target string) error {
 		if _, err := lookExternalCommand(candidate[0]); err != nil {
 			continue
 		}
-		if err := startExternalCommand(candidate[0], candidate[1:]...); err == nil {
-			return nil
-		}
+		return startExternalCommand(candidate[0], candidate[1:]...)
 	}
 	return fmt.Errorf("no opener available")
 }
@@ -65,9 +65,8 @@ const (
 	FocusAgentList    = 0
 	FocusConversation = 1
 	FocusAgentDetail  = 2
-	FocusContextList  = 3
-	FocusSettings     = 4
-	FocusNormalCount  = 4 // number of panels in normal Tab cycle (excludes settings)
+	FocusSettings     = 3
+	FocusNormalCount  = 3 // number of panels in normal Tab cycle (excludes settings)
 )
 
 // statusNotice is a transient message shown in the status bar.
@@ -180,32 +179,37 @@ type App struct {
 	leftWidth     int // adjustable left sidebar width
 	rightWidth    int // adjustable right sidebar width
 	leftSplit     int // height of system info in left (agent list gets remainder)
-	rightSplit    int // height of agent detail in right (contexts gets remainder)
-	focus         int // 0=agentlist, 1=conversation, 2=agentdetail, 3=contexts
+	focus         int // 0=agentlist, 1=conversation, 2=agentdetail, 3=settings
 
 	// Panels
-	systemInfo   systeminfo.Model
-	agentList    agentlist.Model
-	agentDetail  agentdetail.Model
-	conversation conversation.Model
-	contextList  contextlist.Model
-	settings     settings.Model
-	setupWizard  *setup.Model
-	setupActive  bool
+	systemInfo        systeminfo.Model
+	agentList         agentlist.Model
+	agentDetail       agentdetail.Model
+	conversation      conversation.Model
+	commandPalette    commandpalette.Model
+	settings          settings.Model
+	setupWizard       *setup.Model
+	setupActive       bool
+	setupReturnFocus  int // focus to restore when the embedded setup wizard closes
+	agentPicker       *agentpicker.Model
+	agentPickerActive bool
+	agentPickerReturn int // focus to restore when the agent picker closes
 
 	// State
 	selectedAgentID         string
 	inputMode               string // "" | "new-agent-name" | "new-agent-desc" | "chat" | "rename"
 	newAgentName            string // temp storage during agent creation
-	newAgentContext         string
 	renameAgentID           string // agent ID being renamed
 	notice                  string
 	noticeTTL               int  // number of ticks before notice is cleared
 	confirmDelete           bool // true when waiting for delete confirmation
 	confirmKillAll          bool // true when waiting for bulk kill confirmation
+	confirmPause            bool // true when waiting for Esc-to-pause confirmation
+	confirmWithEnter        bool // true when a command palette action should confirm with Enter
 	resizeMode              bool
 	pendingChatFocusAgentID string
 	liveAgentContexts       map[string]string
+	returnToChat            bool
 
 	// Text inputs
 	nameInput   textinput.Model
@@ -263,7 +267,6 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		leftWidth:         18,
 		rightWidth:        18,
 		leftSplit:         13, // system info height (includes pool stats now)
-		rightSplit:        10, // agent detail height in right column
 		nameInput:         nameIn,
 		taskInput:         taskIn,
 		renameInput:       renameIn,
@@ -271,7 +274,7 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		agentList:         agentlist.New(),
 		agentDetail:       agentdetail.New(),
 		conversation:      conversation.New(),
-		contextList:       contextlist.New(),
+		commandPalette:    commandpalette.New(),
 		settings:          settings.New(),
 		liveAgentContexts: make(map[string]string),
 		eventCh:           eventCh,
@@ -283,6 +286,7 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 	if control != nil {
 		app.agentDetail.SetRemote(true)
 	}
+	app.syncConversationModelLabel()
 	emitEvent := app.emitEvent
 	if audit != nil {
 		if events, err := audit.List(vault.RuntimeEventFilter{Limit: 3}); err == nil {
@@ -521,14 +525,14 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 					if !ok {
 						return
 					}
-				emitEvent(shared.ConversationEntryMsg{
-					AgentID:      msg.AgentID,
-					Role:         msg.Role,
-					Content:      msg.Content,
-					Tokens:       msg.Tokens,
-					Timestamp:    time.Now(),
-					StreamActive: msg.StreamActive,
-				})
+					emitEvent(shared.ConversationEntryMsg{
+						AgentID:      msg.AgentID,
+						Role:         msg.Role,
+						Content:      msg.Content,
+						Tokens:       msg.Tokens,
+						Timestamp:    time.Now(),
+						StreamActive: msg.StreamActive,
+					})
 				}
 			}
 		}()
@@ -550,13 +554,49 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		}
 	}()
 
+	// Always start in conversation/chat mode — never leave it
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	if app.selectedAgentID != "" {
+		app.conversation.Focus()
+	}
+	if control == nil {
+		app.maybeStartEmptyAgentPrompt()
+	}
+
 	return app
+}
+
+// agentListPanelRect returns the on-screen position of the agent list
+// panel in the full workbench layout. The panel sits directly below the
+// system info panel, both flush to the left edge. Computed on demand
+// from the current layout state so mouse click handling works without
+// relying on side effects from View() (which runs on a value copy).
+func (a App) agentListPanelRect() (x, y, w, h int) {
+	widths := resolveWorkbenchWidths(a.width, a.leftWidth, a.rightWidth)
+	bodyHeight := workbenchBodyHeight(a.height, false)
+	if a.width < 48 || bodyHeight < 10 {
+		return 0, 0, 0, 0 // compact workbench: no left-column agent list
+	}
+	leftTop := a.leftSplit
+	leftBottom := bodyHeight - leftTop - 4
+	if leftBottom < 3 {
+		leftBottom = 3
+		leftTop = bodyHeight - leftBottom - 4
+	}
+	// System info panel is rendered with Height(leftTop), which in lipgloss v1
+	// produces leftTop content + 2 border lines = leftTop+2 total. The agent
+	// list starts immediately below, so its border Y is leftTop+2 and its
+	// total height is leftBottom+2.
+	return 0, leftTop + 2, widths.left, leftBottom + 2
 }
 
 func (a App) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		a.waitForEvent(),
 		a.tick(),
+		conversation.InputPulseTick(),
+
 		a.replayBrowserTargets(),
 	}
 	if a.control != nil {
@@ -666,6 +706,120 @@ func configFromRemoteSummary(item remoteConfigSummary) *config.Config {
 		cfg.APIKey = remoteAPIKeyPlaceholder
 	}
 	return cfg
+}
+
+func (a *App) syncConversationModelLabel() {
+	a.conversation.SetModelLabel(conversationModelLabel(a.cfg))
+}
+
+func conversationModelLabel(cfg *config.Config) string {
+	if cfg == nil {
+		return "model"
+	}
+	providerID := strings.TrimSpace(cfg.Provider)
+	modelID := strings.TrimSpace(cfg.Model)
+	if modelID == "" {
+		return "model"
+	}
+
+	segments := strings.Split(modelID, "/")
+	if len(segments) > 1 {
+		if providerID == "" {
+			providerID = segments[0]
+		}
+		if strings.EqualFold(segments[0], providerID) {
+			segments = segments[1:]
+		}
+		modelID = segments[len(segments)-1]
+	}
+
+	label := friendlyModelName(modelID)
+	if providerID != "" {
+		provider := providerDisplayName(providerID)
+		if provider != "" && !strings.Contains(strings.ToLower(label), strings.ToLower(provider)) {
+			label += " " + provider
+		}
+	}
+	return strings.TrimSpace(label)
+}
+
+func providerDisplayName(providerID string) string {
+	for _, provider := range config.Providers {
+		if provider.ID != providerID {
+			continue
+		}
+		name := provider.Name
+		if idx := strings.Index(name, " ("); idx >= 0 {
+			name = name[:idx]
+		}
+		return strings.TrimSpace(name)
+	}
+	return friendlyModelName(providerID)
+}
+
+func friendlyModelName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "model"
+	}
+	if lower := strings.ToLower(value); strings.HasPrefix(lower, "gpt-") {
+		return "GPT-" + value[4:]
+	}
+	value = strings.ReplaceAll(value, "_", " ")
+	value = strings.ReplaceAll(value, "-", " ")
+	words := strings.Fields(value)
+	for i, word := range words {
+		words[i] = friendlyModelWord(word)
+	}
+	return strings.Join(words, " ")
+}
+
+func friendlyModelWord(word string) string {
+	lower := strings.ToLower(word)
+	switch lower {
+	case "ai", "api", "gpt", "glm", "vllm", "xai", "zai":
+		return strings.ToUpper(word)
+	case "claude":
+		return "Claude"
+	case "deepseek":
+		return "DeepSeek"
+	case "gemini":
+		return "Gemini"
+	case "grok":
+		return "Grok"
+	case "llama":
+		return "Llama"
+	case "mistral":
+		return "Mistral"
+	case "sonnet":
+		return "Sonnet"
+	case "opus":
+		return "Opus"
+	case "haiku":
+		return "Haiku"
+	}
+	if strings.HasPrefix(lower, "gpt") {
+		return "GPT" + word[3:]
+	}
+	if strings.HasPrefix(lower, "v") && len(word) > 1 && word[1] >= '0' && word[1] <= '9' {
+		return strings.ToUpper(word[:1]) + word[1:]
+	}
+	if hasUpperAfterFirst(word) {
+		return word
+	}
+	return strings.ToUpper(word[:1]) + word[1:]
+}
+
+func hasUpperAfterFirst(word string) bool {
+	for i, r := range word {
+		if i == 0 {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			return true
+		}
+	}
+	return false
 }
 
 func settingsProxiesFromRemote(items []remoteProxySummary) []settings.ProxyItem {
@@ -822,6 +976,13 @@ func (a *App) shutdown() tea.Cmd {
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// Command palette intercept: navigation goes to the palette, typing stays in chat input.
+	if a.commandPalette.Active() {
+		if key, ok := msg.(tea.KeyMsg); ok {
+			return a.updateCommandPaletteInput(key)
+		}
+	}
+
 	if a.setupActive {
 		switch msg.(type) {
 		case tea.KeyMsg, tea.WindowSizeMsg:
@@ -829,8 +990,26 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if a.agentPickerActive {
+		switch msg.(type) {
+		case tea.KeyMsg, tea.WindowSizeMsg:
+			return a.updateAgentPicker(msg)
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if msg.String() == "/" && a.focus == FocusSettings && a.settings.IsActive() && !a.settings.CapturingText() {
+			a.focus = FocusConversation
+			a.inputMode = "chat"
+			a.conversation.Focus()
+			a.conversation.TextInput().SetValue("/")
+			a.syncCommandPaletteAgents()
+			a.commandPalette.SetQuery(a.conversation.TextInput().Value())
+			a.commandPalette.Activate()
+			return a, textinput.Blink
+		}
+
 		// Handle input modes first
 		switch a.inputMode {
 		case "new-agent-name":
@@ -840,18 +1019,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "rename":
 			return a.updateRenameInput(msg)
 		case "chat":
-			if a.conversation.Focused() && a.conversationInputLocked() && isGlobalLifecycleKey(msg) {
+			if a.focus == FocusSettings && a.settings.IsActive() {
 				break
 			}
-			if a.conversation.Focused() && a.allowFocusedChatShortcut(msg) {
-				break
-			}
-			if a.conversation.Focused() || !a.allowFocusedChatShortcut(msg) {
-				if a.conversationInputLocked() && isGlobalLifecycleKey(msg) {
-					break
-				}
-				return a.updateChatInput(msg)
-			}
+			return a.updateChatInput(msg)
 		}
 
 		// Route to settings panel when active. Text capture owns printable keys
@@ -866,14 +1037,25 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 
-		// Cancel delete confirmation on any key except x
-		if a.confirmDelete && msg.String() != "x" {
+		if a.confirmDelete && a.confirmWithEnter && msg.String() == "enter" {
+			a.clearConfirmations()
+			return a, a.deleteAgent(a.selectedAgentID)
+		}
+		if a.confirmKillAll && a.confirmWithEnter && msg.String() == "enter" {
+			a.clearConfirmations()
+			return a, a.killAllAgents()
+		}
+
+		// Cancel delete confirmation on any key except its confirmation key.
+		if a.confirmDelete && ((!a.confirmWithEnter && msg.String() != "x") || (a.confirmWithEnter && msg.String() != "enter")) {
 			a.confirmDelete = false
+			a.confirmWithEnter = false
 			a.notice = ""
 		}
-		// Cancel bulk kill confirmation on any key except X
-		if a.confirmKillAll && msg.String() != "X" {
+		// Cancel bulk kill confirmation on any key except its confirmation key.
+		if a.confirmKillAll && ((!a.confirmWithEnter && msg.String() != "X") || (a.confirmWithEnter && msg.String() != "enter")) {
 			a.confirmKillAll = false
+			a.confirmWithEnter = false
 			a.notice = ""
 		}
 
@@ -901,11 +1083,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "R":
 			cmds = append(cmds, a.resumePausedAgents())
 		case "X":
-			if a.confirmKillAll {
-				a.confirmKillAll = false
+			if a.confirmKillAll && !a.confirmWithEnter {
+				a.clearConfirmations()
 				cmds = append(cmds, a.killAllAgents())
 			} else {
 				a.confirmKillAll = true
+				a.confirmWithEnter = false
 				a.notice = "Press X again to kill all live agents, or any other key to cancel"
 				a.noticeTTL = 5
 			}
@@ -923,33 +1106,34 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "t":
 			a.handleTraceToggle()
 		case "j":
-			switch a.focus {
-			case FocusAgentList:
+			if a.focus == FocusAgentList {
 				a.agentList.MoveDown()
 				cmds = append(cmds, a.selectCurrentAgent())
-			case FocusContextList:
-				a.contextList.MoveDown()
 			}
 		case "k":
-			switch a.focus {
-			case FocusAgentList:
+			if a.focus == FocusAgentList {
 				a.agentList.MoveUp()
 				cmds = append(cmds, a.selectCurrentAgent())
-			case FocusContextList:
-				a.contextList.MoveUp()
 			}
 		case "n":
 			if a.orch != nil || a.control != nil {
-				a.newAgentContext = ""
-				if a.focus == FocusContextList {
-					a.newAgentContext = a.contextList.SelectedContextID()
-				}
 				a.inputMode = "new-agent-name"
 				a.nameInput.Focus()
 				return a, textinput.Blink
 			}
 			a.notice = "No orchestrator available"
 			a.noticeTTL = 3
+		case "/":
+			if a.focus != FocusSettings && !a.settings.IsActive() && a.inputMode != "chat" && a.inputMode != "new-agent-name" && a.inputMode != "new-agent-desc" && a.inputMode != "rename" {
+				a.focus = FocusConversation
+				a.inputMode = "chat"
+				a.conversation.Focus()
+				a.conversation.TextInput().SetValue("/")
+				a.syncCommandPaletteAgents()
+				a.commandPalette.SetQuery(a.conversation.TextInput().Value())
+				a.commandPalette.Activate()
+				return a, textinput.Blink
+			}
 		case "rn":
 			if a.selectedAgentID != "" {
 				agent, err := a.vault.GetAgent(a.selectedAgentID)
@@ -970,17 +1154,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Delete selected agent — ask for confirmation
 			if a.selectedAgentID != "" {
 				if a.control != nil && !isLiveAgentStatus(a.selectedAgentStatus()) {
-					a.confirmDelete = false
+					a.clearConfirmations()
 					a.notice = "Remote kill is only available for live agents"
 					a.noticeTTL = 3
 					return a, nil
 				}
-				if a.confirmDelete {
+				if a.confirmDelete && !a.confirmWithEnter {
 					// Second press = confirmed
-					a.confirmDelete = false
+					a.clearConfirmations()
 					cmds = append(cmds, a.deleteAgent(a.selectedAgentID))
 				} else {
 					a.confirmDelete = true
+					a.confirmWithEnter = false
 					if a.control != nil {
 						a.notice = "Press x again to kill remote agent, or any other key to cancel"
 					} else {
@@ -1018,35 +1203,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.inputMode = ""
 			a.focus = FocusAgentList
 		case "left":
-			if a.resizeModeEnabled() {
-				switch a.focus {
-				case FocusAgentList:
-					if a.leftWidth > 12 {
-						a.leftWidth -= 2
-						a.updatePanelSizes()
-					}
-				case FocusContextList:
-					// Left arrow on right panel = expand (pull edge left)
-					if a.rightWidth < 30 {
-						a.rightWidth += 2
-						a.updatePanelSizes()
-					}
+			if a.resizeModeEnabled() && a.focus == FocusAgentList {
+				if a.leftWidth > 12 {
+					a.leftWidth -= 2
+					a.updatePanelSizes()
 				}
 			}
 		case "right":
-			if a.resizeModeEnabled() {
-				switch a.focus {
-				case FocusAgentList:
-					if a.leftWidth < 30 {
-						a.leftWidth += 2
-						a.updatePanelSizes()
-					}
-				case FocusContextList:
-					// Right arrow on right panel = shrink (push edge right)
-					if a.rightWidth > 12 {
-						a.rightWidth -= 2
-						a.updatePanelSizes()
-					}
+			if a.resizeModeEnabled() && a.focus == FocusAgentList {
+				if a.leftWidth < 30 {
+					a.leftWidth += 2
+					a.updatePanelSizes()
 				}
 			}
 		case "up":
@@ -1065,20 +1232,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.agentList.MoveUp()
 					cmds = append(cmds, a.selectCurrentAgent())
 				}
-			case FocusAgentDetail:
-				if a.resizeModeEnabled() && a.rightSplit > minSplit {
-					a.rightSplit--
-					a.updatePanelSizes()
-				}
-			case FocusContextList:
-				if a.resizeModeEnabled() {
-					if a.rightSplit > minSplit {
-						a.rightSplit--
-						a.updatePanelSizes()
-					}
-				} else {
-					a.contextList.MoveUp()
-				}
 			}
 		case "down":
 			maxH := a.height - 2
@@ -1096,20 +1249,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					a.agentList.MoveDown()
 					cmds = append(cmds, a.selectCurrentAgent())
-				}
-			case FocusAgentDetail:
-				if a.resizeModeEnabled() && a.rightSplit < maxH*maxSplitRatio/100 {
-					a.rightSplit++
-					a.updatePanelSizes()
-				}
-			case FocusContextList:
-				if a.resizeModeEnabled() {
-					if a.rightSplit < maxH*maxSplitRatio/100 {
-						a.rightSplit++
-						a.updatePanelSizes()
-					}
-				} else {
-					a.contextList.MoveDown()
 				}
 			}
 		case "S":
@@ -1171,6 +1310,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.noticeTTL--
 			if a.noticeTTL == 0 {
 				a.notice = ""
+				a.conversation.SetNotice("")
+				// Notice was the only thing reminding the user to confirm;
+				// once it expires, disarm so a stray Enter doesn't fire it.
+				a.clearConfirmations()
 			}
 		}
 		if a.kernel != nil {
@@ -1195,21 +1338,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Juggler events
 	case shared.TargetAttachedMsg:
-		a.contextList, _ = a.contextList.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.TargetDetachedMsg:
-		a.contextList, _ = a.contextList.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.NavigationMsg:
-		a.contextList, _ = a.contextList.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.FrameAttachedMsg:
-		a.contextList, _ = a.contextList.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.ExecContextCreatedMsg:
 		cmds = append(cmds, a.waitForEvent())
 	case shared.PageLoadMsg:
-		a.contextList, _ = a.contextList.Update(msg)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.TelemetryMsg:
 		a.systemInfo, _ = a.systemInfo.Update(msg)
@@ -1340,6 +1478,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.selectedAgentID = ""
 			a.conversation.SetAgentID("")
 			a.agentDetail.Clear()
+			if msg.Notice != "" {
+				a.notice = msg.Notice
+				a.noticeTTL = 3
+			}
+			if cmd := a.maybeStartEmptyAgentPrompt(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 			break
 		}
 		selectedID := msg.SelectedAgentID
@@ -1409,6 +1554,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		a.cfg = configFromRemoteSummary(msg.Config)
+		a.syncConversationModelLabel()
 		a.focus = FocusSettings
 		a.settings.SetActive(true)
 		a.settings.SetConfig(a.cfg)
@@ -1521,6 +1667,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.notice = "Agent deleted"
 		a.noticeTTL = 3
+		if cmd := a.maybeStartEmptyAgentPrompt(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 
 	case shared.BulkAgentStatusMsg:
 		for _, agentID := range msg.AgentIDs {
@@ -1550,8 +1699,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shared.SettingsNoticeMsg:
 		a.notice = msg.Message
 		a.noticeTTL = 3
+	case commandpalette.ExecuteCommandMsg:
+		cmd := a.dispatchCommand(msg.Name, msg.RawInput)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
 	case shared.ReconfigureRequestedMsg:
 		return a, a.startEmbeddedReconfigure()
+
+	case shared.AgentPickerPickedMsg:
+		if a.agentPickerActive {
+			a.completeAgentPicker(msg.AgentID, msg.AgentName)
+		}
+
+	case shared.AgentPickerCancelledMsg:
+		if a.agentPickerActive {
+			a.cancelAgentPicker()
+		}
 
 	case shared.ProxyAddMsg:
 		if a.control != nil {
@@ -1623,6 +1788,22 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.settings, _ = a.settings.Update(msg)
 
 	case tea.MouseMsg:
+		// Left-click on an agent row selects that agent.
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			rx, ry, rw, rh := a.agentListPanelRect()
+			if rw > 0 && rh > 0 &&
+				msg.X >= rx && msg.X < rx+rw &&
+				msg.Y >= ry && msg.Y < ry+rh {
+				if item, ok := a.agentList.ClickNearest(msg.Y, ry); ok {
+					if a.vault != nil {
+						_ = a.vault.MarkAgentSelected(item.ID, time.Now())
+					}
+					a.switchToAgent(item)
+					a.syncCommandPaletteAgents()
+				}
+				return a, tea.Batch(cmds...)
+			}
+		}
 		// Forward mouse events to conversation for scroll
 		if a.focus == FocusConversation || a.inputMode == "chat" {
 			var cmd tea.Cmd
@@ -1633,6 +1814,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case conversation.ThinkingTickMsg:
+		var cmd tea.Cmd
+		a.conversation, cmd = a.conversation.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
+	case conversation.InputPulseTickMsg:
 		var cmd tea.Cmd
 		a.conversation, cmd = a.conversation.Update(msg)
 		if cmd != nil {
@@ -1666,7 +1854,6 @@ func (a App) updateNameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		a.inputMode = ""
 		a.newAgentName = ""
-		a.newAgentContext = ""
 		a.nameInput.Blur()
 		a.nameInput.Reset()
 		return a, nil
@@ -1712,13 +1899,36 @@ func (a *App) applyConversationStatus(status string) {
 	}
 }
 
+func (a *App) maybeStartEmptyAgentPrompt() tea.Cmd {
+	if (a.orch == nil && a.control == nil) || len(a.agentList.Agents()) > 0 {
+		return nil
+	}
+	if a.commandPalette.Active() || (a.focus == FocusSettings && a.settings.IsActive()) {
+		return nil
+	}
+	switch a.inputMode {
+	case "", "chat":
+	default:
+		return nil
+	}
+
+	a.focus = FocusConversation
+	a.inputMode = "new-agent-name"
+	a.newAgentName = ""
+	a.nameInput.Reset()
+	a.nameInput.Focus()
+	a.taskInput.Blur()
+	a.taskInput.Reset()
+	return textinput.Blink
+}
+
 func (a App) conversationInputLocked() bool {
 	return a.conversation.IsThinking()
 }
 
 func isGlobalLifecycleKey(msg tea.KeyMsg) bool {
 	switch msg.String() {
-	case "q", "ctrl+c", "p", "r", "P", "R", "X":
+	case "q", "ctrl+c", "p", "r", "P", "R", "n", "x", "X", "y", "/":
 		return true
 	default:
 		return false
@@ -1735,17 +1945,15 @@ func (a App) updateDescInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if desc == "" {
 			desc = a.newAgentName // use name as description if empty
 		}
-		cmd := a.createAgent(a.newAgentName, desc, a.newAgentContext)
+		cmd := a.createAgent(a.newAgentName, desc, "")
 		a.inputMode = ""
 		a.newAgentName = ""
-		a.newAgentContext = ""
 		a.taskInput.Blur()
 		a.taskInput.Reset()
 		return a, cmd
 	case "esc":
 		a.inputMode = ""
 		a.newAgentName = ""
-		a.newAgentContext = ""
 		a.taskInput.Blur()
 		a.taskInput.Reset()
 		return a, nil
@@ -1763,10 +1971,16 @@ func (a App) updateRenameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		newName := strings.TrimSpace(a.renameInput.Value())
 		if newName != "" && a.renameAgentID != "" {
-			if err := a.vault.UpdateAgentName(a.renameAgentID, newName); err != nil {
+			agentID := a.renameAgentID
+			if err := a.vault.UpdateAgentName(agentID, newName); err != nil {
 				a.notice = "Failed to rename agent: " + err.Error()
 				a.noticeTTL = 3
 			} else {
+				a.agentList.RenameAgent(agentID, newName)
+				if agentID == a.selectedAgentID {
+					a.conversation.SetAgentName(newName)
+					a.refreshAgentDetail(agentID)
+				}
 				a.notice = "Agent renamed to \"" + newName + "\""
 				a.noticeTTL = 3
 			}
@@ -1789,31 +2003,74 @@ func (a App) updateRenameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (a App) updateCommandPaletteInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		var cmd tea.Cmd
+		a.commandPalette, cmd = a.commandPalette.Update(msg)
+		a.conversation.TextInput().Reset()
+		return a, cmd
+	case "enter":
+		var cmd tea.Cmd
+		a.commandPalette, cmd = a.commandPalette.Update(msg)
+		a.conversation.TextInput().Reset()
+		return a, cmd
+	case "up", "down":
+		var cmd tea.Cmd
+		a.commandPalette, cmd = a.commandPalette.Update(msg)
+		return a, cmd
+	}
+
+	ti := a.conversation.TextInput()
+	if !a.conversation.Focused() {
+		a.conversation.Focus()
+	}
+	var cmd tea.Cmd
+	*ti, cmd = ti.Update(msg)
+	if ti.Value() == "" {
+		a.commandPalette.Deactivate()
+		a.returnToChat = false
+		return a, cmd
+	}
+	a.commandPalette.SetQuery(ti.Value())
+	return a, cmd
+}
+
+func (a *App) clearConfirmations() {
+	a.confirmDelete = false
+	a.confirmKillAll = false
+	a.confirmPause = false
+	a.confirmWithEnter = false
+}
+
 // updateChatInput handles keystrokes in "chat" mode.
 func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if a.conversationInputLocked() {
-		switch msg.String() {
-		case "ctrl+c":
-			return a, a.shutdown()
-		case "tab":
-			a.cycleFocus()
-		case "ctrl+v":
-			return a, a.handleBrowserToggle()
-		case "ctrl+o":
-			return a, a.handleOpenSessionLog()
-		case "ctrl+t":
-			a.handleTraceToggle()
-		case "ctrl+y":
-			return a, a.handleYankResponse()
-		case "enter":
-			a.notice = "Agent is still working — wait for the current response"
-			a.noticeTTL = 3
-		case "esc":
-			a.conversation.Blur()
-			a.inputMode = ""
-			a.focus = FocusAgentList
-		}
-		return a, nil
+	// Handle confirmations from chat mode
+	if a.confirmDelete && ((a.confirmWithEnter && msg.String() == "enter") || (!a.confirmWithEnter && msg.String() == "x")) {
+		a.clearConfirmations()
+		cmd := a.deleteAgent(a.selectedAgentID)
+		return a, cmd
+	}
+	if a.confirmKillAll && ((a.confirmWithEnter && msg.String() == "enter") || (!a.confirmWithEnter && msg.String() == "X")) {
+		a.clearConfirmations()
+		cmd := a.killAllAgents()
+		return a, cmd
+	}
+	if a.confirmPause && msg.String() != "esc" {
+		a.confirmPause = false
+		a.notice = ""
+	}
+
+	// Opening / at start of empty chat input activates the command palette,
+	// even while the agent is busy, so slash commands remain available.
+	ti := a.conversation.TextInput()
+	if msg.String() == "/" && ti.Value() == "" {
+		a.returnToChat = true
+		ti.SetValue("/")
+		a.syncCommandPaletteAgents()
+		a.commandPalette.SetQuery(ti.Value())
+		a.commandPalette.Activate()
+		return a, textinput.Blink
 	}
 
 	if msg.Type == tea.KeyRunes && msg.Paste {
@@ -1827,9 +2084,6 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return a, a.shutdown()
-	case "tab":
-		a.cycleFocus()
-		return a, nil
 	case "ctrl+v":
 		return a, a.handleBrowserToggle()
 	case "ctrl+o":
@@ -1840,26 +2094,45 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+y":
 		return a, a.handleYankResponse()
 	case "enter":
-		text, displayText := a.conversation.InputPayloadAndDisplay()
-		if text != "" && a.selectedAgentID != "" {
-			displayContent := operatorDisplayContent(text, displayText)
-			// Add to conversation view + show thinking with animation
-			a.conversation.AddEntryWithDisplay("user", text, displayContent)
-			a.conversation.ForceScrollToBottom()
-			a.conversation.SetThinking(true)
-			// Save to vault
-			if a.vault != nil {
-				a.vault.AppendMessageWithDisplay(a.selectedAgentID, "user", text, displayContent, 0)
-			}
-			// Run one agent turn
-			cmd := a.sendMessageToAgent(a.selectedAgentID, text, displayContent)
-			return a, tea.Batch(cmd, conversation.ThinkingTick())
+		if a.conversationInputLocked() {
+			a.notice = "Agent is still working — wait for the current response"
+			a.noticeTTL = 3
+			return a, nil
 		}
-		return a, nil
+		text, displayText := a.conversation.InputPayloadAndDisplay()
+		if text == "" {
+			return a, nil
+		}
+		if a.selectedAgentID == "" {
+			a.notice = "No agent selected — create one with /new"
+			a.noticeTTL = 3
+			return a, nil
+		}
+		displayContent := operatorDisplayContent(text, displayText)
+		// Add to conversation view + show thinking with animation
+		a.conversation.AddEntryWithDisplay("user", text, displayContent)
+		a.conversation.ForceScrollToBottom()
+		a.conversation.SetThinking(true)
+		// Save to vault
+		if a.vault != nil {
+			a.vault.AppendMessageWithDisplay(a.selectedAgentID, "user", text, displayContent, 0)
+		}
+		// Run one agent turn
+		cmd := a.sendMessageToAgent(a.selectedAgentID, text, displayContent)
+		return a, tea.Batch(cmd, conversation.ThinkingTick())
 	case "esc":
-		a.conversation.Blur()
-		a.inputMode = ""
-		a.focus = FocusAgentList
+		if a.conversationInputLocked() {
+			if a.confirmPause {
+				a.clearConfirmations()
+				return a, a.pauseSelectedAgent()
+			}
+			a.confirmPause = true
+			a.notice = "Press Esc again to pause agent, or any other key to cancel"
+			a.noticeTTL = 5
+			return a, nil
+		}
+		ti := a.conversation.TextInput()
+		ti.SetValue("")
 		return a, nil
 	case "pgup", "pgdown", "up", "down":
 		// Forward scroll keys to conversation
@@ -1878,26 +2151,11 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) cycleFocus() {
-	if a.focus == FocusConversation {
-		a.conversation.Blur()
-		a.inputMode = ""
+	// Never leave conversation mode
+	if a.focus == FocusConversation || a.inputMode == "chat" {
+		return
 	}
-	// Cycle: AgentList -> Conversation -> AgentDetail -> ContextList -> AgentList
 	a.focus = (a.focus + 1) % FocusNormalCount
-}
-
-func (a App) allowFocusedChatShortcut(msg tea.KeyMsg) bool {
-	switch msg.String() {
-	case "v", "t", "o", "m", "S", "c":
-		if strings.TrimSpace(a.conversation.TextInput().Value()) == "" || !a.conversation.IsInputFocused() {
-			return true
-		}
-		return false
-	case "ctrl+y":
-		return true
-	default:
-		return false
-	}
 }
 
 func operatorDisplayContent(content, displayContent string) string {
@@ -1928,16 +2186,6 @@ func (a *App) handleBrowserToggle() tea.Cmd {
 }
 
 func (a App) browserToggleContextID() (string, string) {
-	if a.focus == FocusContextList {
-		if contextID := strings.TrimSpace(a.contextList.SelectedContextID()); contextID != "" {
-			return contextID, ""
-		}
-		if contextID := a.selectedAgentBrowserContextID(); contextID != "" {
-			return contextID, ""
-		}
-		return "", "Select a context first"
-	}
-
 	if a.selectedAgentID == "" && a.agentList.SelectedAgentID() == "" {
 		return "", "Select an agent first"
 	}
@@ -2180,8 +2428,8 @@ func compactPanelWidth(terminalWidth int) int {
 	return width
 }
 
-func compactContentHeight(terminalHeight int) int {
-	bodyHeight := workbenchBodyHeight(terminalHeight)
+func compactContentHeight(terminalHeight int, reserveFooter bool) int {
+	bodyHeight := workbenchBodyHeight(terminalHeight, reserveFooter)
 	contentHeight := bodyHeight - 2
 	if contentHeight < 1 {
 		return 1
@@ -2189,8 +2437,11 @@ func compactContentHeight(terminalHeight int) int {
 	return contentHeight
 }
 
-func workbenchBodyHeight(terminalHeight int) int {
-	bodyHeight := terminalHeight - 1
+func workbenchBodyHeight(terminalHeight int, reserveFooter bool) int {
+	bodyHeight := terminalHeight
+	if reserveFooter {
+		bodyHeight--
+	}
 	if bodyHeight < 1 {
 		return 1
 	}
@@ -2217,13 +2468,23 @@ func (a App) View() string {
 			wizard = updated
 		}
 		a.setupWizard = wizard
-		return fitTerminalBlock(wizard.View(), a.width, a.height)
+		view := fitTerminalBlock(wizard.View(), a.width, a.height)
+		return view
+	}
+	if a.agentPickerActive && a.agentPicker != nil {
+		picker := a.agentPicker
+		model, _ := picker.Update(tea.WindowSizeMsg{Width: a.width, Height: a.height})
+		if updated, ok := model.(*agentpicker.Model); ok {
+			picker = updated
+		}
+		a.agentPicker = picker
+		return fitTerminalBlock(picker.View(), a.width, a.height)
 	}
 	if a.height < 4 {
 		if a.notice != "" {
 			return fitTerminalLine(shared.WarmingStyle.Render("  "+a.notice), a.width)
 		}
-		return fitTerminalLine(a.renderStatusBar(), a.width)
+		return ""
 	}
 
 	widths := resolveWorkbenchWidths(a.width, a.leftWidth, a.rightWidth)
@@ -2231,7 +2492,9 @@ func (a App) View() string {
 	centerWidth := widths.center
 	rightWidth := widths.right
 
-	bodyHeight := workbenchBodyHeight(a.height)
+	a.conversation.SetNotice(a.notice)
+
+	bodyHeight := workbenchBodyHeight(a.height, false)
 	if a.useCompactWorkbench(widths, bodyHeight) {
 		return a.renderCompactWorkbench()
 	}
@@ -2265,10 +2528,14 @@ func (a App) View() string {
 		// Check if we need to show agent creation inputs overlaid on conversation
 		var convView string
 		switch a.inputMode {
-		case "new-agent-name", "new-agent-desc":
-			convView = a.newAgentInputView()
+		case "new-agent-name", "new-agent-desc", "rename":
+			convView = a.agentInputView()
 		default:
-			convView = a.conversation.View()
+			commandPalette := ""
+			if a.commandPalette.Active() {
+				commandPalette = a.commandPalette.InlineView(panelContentWidth(centerWidth), max(0, bodyHeight-8))
+			}
+			convView = a.conversation.ViewWithCommandPalette(commandPalette)
 		}
 
 		// Full-height conversation panel
@@ -2289,19 +2556,9 @@ func (a App) View() string {
 	}
 	centerView := centerContent
 
-	// Right column: agent detail on top, contexts below
-	rightTop := a.rightSplit
-	rightBottom := bodyHeight - rightTop - 4 // subtract borders
-	if rightBottom < 3 {
-		rightBottom = 3
-		rightTop = bodyHeight - rightBottom - 4
-	}
-	if rightTop < 3 {
-		rightTop = 3
-	}
-	detailView := a.renderFocusPanel(FocusAgentDetail, a.agentDetail.View(), rightWidth, rightTop)
-	ctxView := a.renderFocusPanel(FocusContextList, a.contextList.View(), rightWidth, rightBottom)
-	rightColumn := lipgloss.JoinVertical(lipgloss.Left, detailView, ctxView)
+	// Right column: full-height agent detail
+	detailView := a.renderFocusPanel(FocusAgentDetail, a.agentDetail.View(), rightWidth, bodyHeight-2)
+	rightColumn := detailView
 
 	// Hard-truncate each column to bodyHeight lines
 	leftLines := strings.Split(leftColumn, "\n")
@@ -2315,26 +2572,16 @@ func (a App) View() string {
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, centerView, rightColumn)
 
-	// Status bar (notice replaces status bar content when present)
-	var statusBar string
-	if a.notice != "" {
-		statusBar = fitTerminalLine(shared.WarmingStyle.Render("  "+a.notice), a.width)
-	} else {
-		statusBar = fitTerminalLine(a.renderStatusBar(), a.width)
-	}
-
-	output := lipgloss.JoinVertical(lipgloss.Left, body, statusBar)
+	output := body
 
 	// Final safety: hard-truncate to terminal height.
-	// Keep the last line (status bar) and trim overflow from the top of the body
-	// so the status bar is never cut off.
 	outputLines := strings.Split(output, "\n")
 	if len(outputLines) > a.height {
-		excess := len(outputLines) - a.height
-		outputLines = append(outputLines[excess:len(outputLines)-1], outputLines[len(outputLines)-1])
+		outputLines = outputLines[:a.height]
 		output = strings.Join(outputLines, "\n")
 	}
-	return fitTerminalBlock(output, a.width, a.height)
+	view := fitTerminalBlock(output, a.width, a.height)
+	return view
 }
 
 func (a App) useCompactWorkbench(widths workbenchWidths, bodyHeight int) bool {
@@ -2345,26 +2592,31 @@ func (a App) useCompactWorkbench(widths workbenchWidths, bodyHeight int) bool {
 }
 
 func (a App) renderCompactWorkbench() string {
-	bodyHeight := workbenchBodyHeight(a.height)
+	bodyHeight := workbenchBodyHeight(a.height, false)
 	if bodyHeight < 1 {
-		return fitTerminalLine(a.renderStatusBar(), a.width)
+		if a.notice != "" {
+			return fitTerminalLine(shared.WarmingStyle.Render("  "+a.notice), a.width)
+		}
+		return ""
 	}
 	panelWidth := compactPanelWidth(a.width)
 	contentWidth := panelContentWidth(panelWidth)
-	contentHeight := compactContentHeight(a.height)
+	contentHeight := compactContentHeight(a.height, false)
+	a.conversation.SetNotice(a.notice)
 
 	var content string
 	panel := a.focus
 	switch {
-	case a.inputMode == "new-agent-name" || a.inputMode == "new-agent-desc":
-		content = a.newAgentInputView()
+	case a.inputMode == "new-agent-name" || a.inputMode == "new-agent-desc" || a.inputMode == "rename":
+		content = a.agentInputView()
+	case a.commandPalette.Active():
+		panel = FocusConversation
+		a.conversation.SetSize(contentWidth, contentHeight)
+		commandPalette := a.commandPalette.InlineView(contentWidth, max(0, contentHeight-6))
+		content = a.conversation.ViewWithCommandPalette(commandPalette)
 	case a.focus == FocusSettings && a.settings.IsActive():
 		a.settings.SetSize(contentWidth, contentHeight)
 		content = a.settings.View()
-	case a.focus == FocusContextList:
-		a.contextList.SetWidth(contentWidth)
-		a.contextList.SetHeight(contentHeight)
-		content = a.contextList.View()
 	case a.focus == FocusAgentDetail:
 		a.agentDetail.SetSize(contentWidth, contentHeight)
 		content = a.agentDetail.View()
@@ -2383,25 +2635,23 @@ func (a App) renderCompactWorkbench() string {
 		content = strings.Join(contentLines[:contentHeight], "\n")
 	}
 	body := a.renderFocusPanel(panel, content, panelWidth, contentHeight)
-	statusBar := fitTerminalLine(a.renderStatusBar(), a.width)
-	if a.notice != "" {
-		statusBar = fitTerminalLine(shared.WarmingStyle.Render("  "+a.notice), a.width)
-	}
-	return fitTerminalBlock(lipgloss.JoinVertical(lipgloss.Left, body, statusBar), a.width, a.height)
+	return fitTerminalBlock(body, a.width, a.height)
 }
 
-func (a App) newAgentInputView() string {
+func (a App) agentInputView() string {
 	switch a.inputMode {
 	case "new-agent-name":
 		return shared.TitleStyle.Render("NEW AGENT — NAME") + "\n\n" +
 			a.nameInput.View() + "\n\n" +
-			a.newAgentContextNotice() +
 			shared.MutedStyle.Render("[Enter] confirm  [Esc] cancel")
 	case "new-agent-desc":
 		return shared.TitleStyle.Render("NEW AGENT — DESCRIPTION for "+a.newAgentName) + "\n\n" +
 			a.taskInput.View() + "\n\n" +
-			a.newAgentContextNotice() +
 			shared.MutedStyle.Render("[Enter] create  [Esc] cancel")
+	case "rename":
+		return shared.TitleStyle.Render("RENAME AGENT") + "\n\n" +
+			a.renameInput.View() + "\n\n" +
+			shared.MutedStyle.Render("[Enter] save  [Esc] cancel")
 	default:
 		return ""
 	}
@@ -2454,59 +2704,22 @@ func (a App) renderFocusPanel(panel int, content string, width, height int) stri
 		Render(content)
 }
 
-// renderStatusBar renders the bottom status bar.
-func (a App) renderStatusBar() string {
-	mode := "local"
-	if a.client != nil && a.kernel == nil {
-		mode = "remote"
-	}
-
-	ctxHint := ""
-	if contextID := a.contextList.SelectedContextID(); contextID != "" && a.focus == FocusContextList {
-		ctxHint = shared.MutedStyle.Render("  n:new-in-ctx " + shortContextID(contextID))
-	}
-	controls := "  n:new  p/r:agent  P/R:all  X:kill-all  x:del  v:view  o:log  m:resize  S:settings  Enter:chat  Tab:focus  t:trace  "
-	if a.control != nil {
-		controls = "  n:new  p/r:agent  P/R:all  X:kill-all  x:kill  v:view  o:log  m:resize  S:settings  Enter:chat  Tab:focus  t:trace  "
-	}
-	prefix := shared.TitleStyle.Render("VULPINE") +
-		shared.MutedStyle.Render(" | ") +
-		shared.RunningStyle.Render("* "+mode)
-	right := shared.MutedStyle.Render("  q:quit") + ctxHint
-	statusWidth := a.width
-	if statusWidth <= 0 {
-		statusWidth = lipgloss.Width(prefix) + lipgloss.Width(shared.MutedStyle.Render(controls)) + lipgloss.Width(right)
-	}
-	controlsWidth := statusWidth - lipgloss.Width(prefix) - lipgloss.Width(right)
-	if controlsWidth < 0 {
-		controlsWidth = 0
-	}
-	bar := prefix +
-		fitTerminalLine(shared.MutedStyle.Render(controls), controlsWidth) +
-		shared.MutedStyle.Render("  q:quit") +
-		ctxHint
-
-	return fitTerminalLine(bar, statusWidth)
-}
-
 // updatePanelSizes recalculates panel dimensions after a resize.
 func (a *App) updatePanelSizes() {
 	widths := resolveWorkbenchWidths(a.width, a.leftWidth, a.rightWidth)
 	leftWidth := widths.left
 	centerWidth := widths.center
 	rightWidth := widths.right
-	bodyHeight := workbenchBodyHeight(a.height)
+	bodyHeight := workbenchBodyHeight(a.height, false)
 
 	if a.useCompactWorkbench(widths, bodyHeight) {
 		contentWidth := panelContentWidth(compactPanelWidth(a.width))
-		contentHeight := compactContentHeight(a.height)
+		contentHeight := compactContentHeight(a.height, false)
 		a.agentList.SetWidth(contentWidth)
 		a.agentList.SetHeight(contentHeight)
 		a.agentDetail.SetSize(contentWidth, contentHeight)
 		a.conversation.SetSize(contentWidth, contentHeight)
 		a.settings.SetSize(contentWidth, contentHeight)
-		a.contextList.SetWidth(contentWidth)
-		a.contextList.SetHeight(contentHeight)
 		a.nameInput.Width = max(10, contentWidth-4)
 		a.taskInput.Width = max(10, contentWidth-4)
 		return
@@ -2530,18 +2743,6 @@ func (a *App) updatePanelSizes() {
 		leftTop = 3
 	}
 
-	// Right column splits
-	a.rightSplit = clampVerticalSplit(a.rightSplit, bodyHeight)
-	rightTop := a.rightSplit
-	rightBottom := bodyHeight - rightTop - 4
-	if rightBottom < 3 {
-		rightBottom = 3
-		rightTop = bodyHeight - rightBottom - 4
-	}
-	if rightTop < 3 {
-		rightTop = 3
-	}
-
 	leftContentWidth := panelContentWidth(leftWidth)
 	centerContentWidth := panelContentWidth(centerWidth)
 	rightContentWidth := panelContentWidth(rightWidth)
@@ -2550,11 +2751,9 @@ func (a *App) updatePanelSizes() {
 	a.systemInfo.SetHeight(leftTop)
 	a.agentList.SetWidth(leftContentWidth)
 	a.agentList.SetHeight(leftBottom)
-	a.agentDetail.SetSize(rightContentWidth, rightTop)
+	a.agentDetail.SetSize(rightContentWidth, convHeight)
 	a.conversation.SetSize(centerContentWidth, convHeight)
 	a.settings.SetSize(centerContentWidth, max(1, bodyHeight-2))
-	a.contextList.SetWidth(rightContentWidth)
-	a.contextList.SetHeight(rightBottom)
 
 	// Update text input widths to fit center panel
 	inputWidth := centerContentWidth - 6
@@ -2626,6 +2825,7 @@ func (a *App) startEmbeddedReconfigure() tea.Cmd {
 	}
 	a.setupWizard = setup.NewWithConfig(cfg)
 	a.setupActive = true
+	a.setupReturnFocus = a.focus
 	a.focus = FocusSettings
 	if a.width > 0 && a.height > 0 {
 		model, _ := a.setupWizard.Update(tea.WindowSizeMsg{Width: a.width, Height: a.height})
@@ -2644,7 +2844,7 @@ func (a App) updateEmbeddedSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.updatePanelSizes()
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "q", "ctrl+c", "esc":
 			a.cancelEmbeddedReconfigure()
 			return a, nil
 		}
@@ -2663,9 +2863,10 @@ func (a App) updateEmbeddedSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *App) cancelEmbeddedReconfigure() {
 	a.setupActive = false
-	a.focus = FocusSettings
-	a.settings.SetActive(true)
-	if a.cfg != nil {
+	a.setupWizard = nil
+	a.focus = a.setupReturnFocus
+	a.settings.SetActive(a.focus == FocusSettings)
+	if a.focus == FocusSettings && a.cfg != nil {
 		a.settings.SetConfig(a.cfg)
 	}
 	a.notice = "Reconfigure cancelled"
@@ -2677,15 +2878,19 @@ func (a *App) completeEmbeddedReconfigure() {
 		a.notice = "Failed to save configuration: " + err.Error()
 		a.noticeTTL = 4
 		a.setupActive = false
-		a.focus = FocusSettings
-		a.settings.SetActive(true)
+		a.setupWizard = nil
+		a.focus = a.setupReturnFocus
+		a.settings.SetActive(a.focus == FocusSettings)
 		return
 	}
 	_ = config.ClearReconfigureRequest()
 	a.setupActive = false
-	a.focus = FocusSettings
-	a.settings.SetActive(true)
-	a.settings.SetConfig(a.cfg)
+	a.setupWizard = nil
+	a.focus = a.setupReturnFocus
+	a.settings.SetActive(a.focus == FocusSettings)
+	if a.focus == FocusSettings {
+		a.settings.SetConfig(a.cfg)
+	}
 	if a.control == nil && a.cfg != nil && a.cfg.SetupComplete {
 		exe, _ := os.Executable()
 		if err := a.cfg.GenerateNanoClawConfig(exe, a.cfg.BinaryPath); err != nil {
@@ -2703,6 +2908,65 @@ func (a *App) completeEmbeddedReconfigure() {
 	}
 	a.notice = "Configuration updated"
 	a.noticeTTL = 3
+}
+
+// startAgentPicker opens the agent picker modal over the current screen.
+func (a *App) startAgentPicker() tea.Cmd {
+	agents := make([]commandpalette.Agent, 0, len(a.agentList.Agents()))
+	for _, item := range a.agentList.Agents() {
+		agents = append(agents, commandpalette.Agent{
+			ID:     item.ID,
+			Name:   item.Name,
+			Status: item.Status,
+		})
+	}
+	a.agentPicker = agentpicker.New(agents)
+	a.agentPickerActive = true
+	a.agentPickerReturn = a.focus
+	a.agentPicker.SetSize(a.width, a.height)
+	return nil
+}
+
+// updateAgentPicker forwards messages to the picker and dispatches on the
+// picker's "picked" or "cancelled" messages.
+func (a App) updateAgentPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if a.agentPicker == nil {
+		return a, nil
+	}
+	if wsm, ok := msg.(tea.WindowSizeMsg); ok {
+		a.width = wsm.Width
+		a.height = wsm.Height
+		a.agentPicker.SetSize(wsm.Width, wsm.Height)
+		a.updatePanelSizes()
+	}
+	_, cmd := a.agentPicker.Update(msg)
+	return a, cmd
+}
+
+func (a *App) cancelAgentPicker() {
+	a.agentPickerActive = false
+	a.agentPicker = nil
+	a.focus = a.agentPickerReturn
+	a.settings.SetActive(a.focus == FocusSettings)
+	a.notice = "Picker cancelled"
+	a.noticeTTL = 2
+}
+
+func (a *App) completeAgentPicker(agentID, agentName string) {
+	if a.vault != nil {
+		_ = a.vault.MarkAgentSelected(agentID, time.Now())
+	}
+	for _, item := range a.agentList.Agents() {
+		if item.ID == agentID {
+			a.switchToAgent(item)
+			break
+		}
+	}
+	a.syncCommandPaletteAgents()
+	a.agentPickerActive = false
+	a.agentPicker = nil
+	a.focus = a.agentPickerReturn
+	a.settings.SetActive(a.focus == FocusSettings)
 }
 
 func (a *App) applySetupConfig(updated *config.Config) error {
@@ -2730,11 +2994,16 @@ func (a *App) applySetupConfig(updated *config.Config) error {
 			return err
 		}
 		a.cfg = configFromRemoteSummary(result)
+		a.syncConversationModelLabel()
 		return nil
 	}
 	if a.cfg == nil {
 		a.cfg = updated
-		return a.cfg.Save()
+		if err := a.cfg.Save(); err != nil {
+			return err
+		}
+		a.syncConversationModelLabel()
+		return nil
 	}
 	a.cfg.Provider = updated.Provider
 	a.cfg.APIKey = updated.APIKey
@@ -2751,7 +3020,11 @@ func (a *App) applySetupConfig(updated *config.Config) error {
 	} else {
 		a.cfg.AgentSkills = nil
 	}
-	return a.cfg.Save()
+	if err := a.cfg.Save(); err != nil {
+		return err
+	}
+	a.syncConversationModelLabel()
+	return nil
 }
 
 func (a *App) browserRouteLabel() string {
@@ -3189,13 +3462,6 @@ func (a App) sendRemoteMessageToAgent(agentID, text, displayText string) tea.Cmd
 	}
 }
 
-func (a App) newAgentContextNotice() string {
-	if a.newAgentContext == "" {
-		return ""
-	}
-	return shared.MutedStyle.Render("Pinned browser context: "+shortContextID(a.newAgentContext)) + "\n\n"
-}
-
 func (a *App) agentRuntimeConfig(agent *vault.Agent) (string, func(), error) {
 	if agent == nil {
 		return "", nil, fmt.Errorf("agent not found")
@@ -3280,6 +3546,73 @@ func (a App) resumeSelectedAgent() tea.Cmd {
 		return statusNoticeCmd("Completed agents cannot be resumed")
 	}
 	return a.resumeAgent(a.selectedAgentID)
+}
+
+func (a *App) selectAgentListItem(item agentlist.AgentListItem) {
+	a.switchToAgent(item)
+}
+
+// switchToAgent wires a new selected agent into the agent list, conversation,
+// detail panel, and message history. Used by both the legacy list click path
+// and the new agent picker.
+func (a *App) switchToAgent(item agentlist.AgentListItem) {
+	a.agentList.SelectAgentID(item.ID)
+	a.selectedAgentID = item.ID
+	a.conversation.SetAgentID(item.ID)
+	a.conversation.SetAgentName(item.Name)
+	if a.vault != nil {
+		msgs, err := a.vault.GetMessages(item.ID)
+		if err == nil {
+			a.conversation.LoadMessages(msgs)
+		}
+	}
+	agent := agentListItemToAgent(item)
+	a.updateAgentDetail(&agent)
+	a.notice = "Switched to " + item.Name
+	a.noticeTTL = 3
+}
+
+// topRecentAgents returns up to limit agents, sorted by
+// last_selected_at desc (zero values last), then by created_at desc.
+func topRecentAgents(items []agentlist.AgentListItem, limit int) []commandpalette.Agent {
+	sorted := append([]agentlist.AgentListItem(nil), items...)
+	slices.SortStableFunc(sorted, func(a, b agentlist.AgentListItem) int {
+		if !a.LastSelectedAt.Equal(b.LastSelectedAt) {
+			if a.LastSelectedAt.IsZero() {
+				return 1
+			}
+			if b.LastSelectedAt.IsZero() {
+				return -1
+			}
+			if a.LastSelectedAt.After(b.LastSelectedAt) {
+				return -1
+			}
+			return 1
+		}
+		if a.CreatedAt.After(b.CreatedAt) {
+			return -1
+		}
+		if a.CreatedAt.Before(b.CreatedAt) {
+			return 1
+		}
+		return 0
+	})
+	if limit > 0 && len(sorted) > limit {
+		sorted = sorted[:limit]
+	}
+	agents := make([]commandpalette.Agent, 0, len(sorted))
+	for _, item := range sorted {
+		agents = append(agents, commandpalette.Agent{
+			ID:     item.ID,
+			Name:   item.Name,
+			Status: item.Status,
+		})
+	}
+	return agents
+}
+
+func (a *App) syncCommandPaletteAgents() {
+	a.commandPalette.SetAgents(topRecentAgents(a.agentList.Agents(), 3))
 }
 
 func (a App) pauseAllAgents() tea.Cmd {
@@ -3626,6 +3959,186 @@ func shouldPauseOnShutdown(status string) bool {
 	default:
 		return false
 	}
+}
+
+func (a *App) dispatchCommand(name, rawInput string) tea.Cmd {
+	switch name {
+	case "help":
+		a.syncCommandPaletteAgents()
+		a.commandPalette.Activate()
+	case "quit":
+		return a.shutdown()
+	case "new":
+		if a.orch != nil || a.control != nil {
+			a.inputMode = "new-agent-name"
+			a.nameInput.Focus()
+			return textinput.Blink
+		}
+		a.notice = "No orchestrator available"
+		a.noticeTTL = 3
+	case "rename":
+		if a.selectedAgentID != "" {
+			if a.vault == nil {
+				a.notice = "Rename unavailable without local vault access"
+				a.noticeTTL = 3
+				break
+			}
+			agent, err := a.vault.GetAgent(a.selectedAgentID)
+			if err != nil {
+				a.notice = "Failed to get agent: " + err.Error()
+				a.noticeTTL = 3
+				break
+			}
+			a.renameAgentID = a.selectedAgentID
+			a.renameInput.SetValue(agent.Name)
+			a.inputMode = "rename"
+			a.renameInput.Focus()
+			return textinput.Blink
+		}
+		a.notice = "No agent selected"
+		a.noticeTTL = 3
+	case "delete":
+		if a.selectedAgentID != "" {
+			if a.control != nil && !isLiveAgentStatus(a.selectedAgentStatus()) {
+				a.clearConfirmations()
+				a.notice = "Remote kill is only available for live agents"
+				a.noticeTTL = 3
+				break
+			}
+			if a.confirmDelete {
+				a.clearConfirmations()
+				return a.deleteAgent(a.selectedAgentID)
+			}
+			a.confirmDelete = true
+			a.confirmWithEnter = true
+			if a.control != nil {
+				a.notice = "Press Enter to kill remote agent, or any other key to cancel"
+			} else {
+				a.notice = "Press Enter to delete agent, or any other key to cancel"
+			}
+			a.noticeTTL = 5
+		}
+	case "pause":
+		if a.selectedAgentID == "" {
+			a.notice = "No agent selected"
+			a.noticeTTL = 3
+			break
+		}
+		return a.pauseSelectedAgent()
+	case "resume":
+		if a.selectedAgentID == "" {
+			a.notice = "No agent selected"
+			a.noticeTTL = 3
+			break
+		}
+		return a.resumeSelectedAgent()
+	case "pauseall":
+		return a.pauseAllAgents()
+	case "resumeall":
+		return a.resumePausedAgents()
+	case "killall":
+		if a.confirmKillAll {
+			a.clearConfirmations()
+			return a.killAllAgents()
+		}
+		a.confirmKillAll = true
+		a.confirmWithEnter = true
+		a.notice = "Press Enter to kill all live agents, or any other key to cancel"
+		a.noticeTTL = 5
+	case "view":
+		return a.handleBrowserToggle()
+	case "hide":
+		return a.handleHideAll()
+	case "log":
+		return a.handleOpenSessionLog()
+	case "trace":
+		a.handleTraceToggle()
+	case "resize":
+		enabled := !a.resizeModeEnabled()
+		a.resizeMode = enabled
+		if enabled {
+			a.notice = "Resize mode enabled — arrow keys resize panels"
+		} else {
+			a.notice = "Resize mode disabled — arrow keys navigate and scroll"
+		}
+		a.noticeTTL = 3
+	case "settings":
+		if a.control != nil {
+			a.notice = "Loading remote settings..."
+			a.noticeTTL = 3
+			return a.loadRemoteSettings()
+		}
+		a.focus = FocusSettings
+		a.settings.SetActive(true)
+		a.settings.SetConfig(a.cfg)
+		if a.vault != nil {
+			storedProxies, err := a.vault.ListProxies()
+			if err == nil {
+				items := make([]settings.ProxyItem, len(storedProxies))
+				for i, sp := range storedProxies {
+					items[i] = settings.ProxyItem{
+						ID:      sp.ID,
+						Label:   safeProxyLabel(sp.Label),
+						Config:  sp.Config,
+						Latency: "untested",
+					}
+					var pc struct {
+						Type string `json:"type"`
+						Host string `json:"host"`
+						Port int    `json:"port"`
+					}
+					if json.Unmarshal([]byte(sp.Config), &pc) == nil {
+						items[i].Type = pc.Type
+						items[i].Host = pc.Host
+						items[i].Port = pc.Port
+					}
+					var geo struct {
+						Country string `json:"country"`
+					}
+					if json.Unmarshal([]byte(sp.Geo), &geo) == nil {
+						items[i].Country = geo.Country
+					}
+				}
+				a.settings.SetProxies(items)
+			}
+		}
+	case "config":
+		return a.startEmbeddedReconfigure()
+	case "model":
+		return a.startEmbeddedReconfigure()
+	case "agents":
+		return a.startAgentPicker()
+	case "switch":
+		target := strings.TrimSpace(rawInput)
+		if target == "" {
+			a.notice = "No agent to switch to"
+			a.noticeTTL = 3
+			break
+		}
+		for _, item := range a.agentList.Agents() {
+			if item.ID == target || strings.EqualFold(item.Name, target) {
+				a.switchToAgent(item)
+				break
+			}
+		}
+	case "copy":
+		return a.handleYankResponse()
+	}
+
+	// Return to chat when the palette was opened from chat mode, unless the
+	// command is one that navigates away or requires secondary confirmation.
+	if a.returnToChat {
+		a.returnToChat = false
+		switch name {
+		case "settings", "config", "log", "new", "rename", "quit":
+		default:
+			a.inputMode = "chat"
+			if a.selectedAgentID != "" {
+				a.conversation.Focus()
+			}
+		}
+	}
+	return nil
 }
 
 // Header renders the VulpineOS header.

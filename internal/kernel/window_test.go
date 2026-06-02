@@ -190,12 +190,22 @@ func TestCachedStatusDoesNotRunWindowCommands(t *testing.T) {
 }
 
 func TestContextWindowActionsUpdateCachedStatus(t *testing.T) {
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
 		original := runWindowCommand
 		defer func() { runWindowCommand = original }()
 		runWindowCommand = func(name string, args ...string) (string, error) {
+			call := name + " " + strings.Join(args, " ")
 			if name == "ps" {
 				return "123 1 camoufox\n", nil
+			}
+			if runtime.GOOS == "linux" {
+				switch call {
+				case "xdotool search --pid 123", "xdotool windowmap 1001", "xdotool windowactivate 1001", "xdotool windowminimize 1001":
+					if call == "xdotool search --pid 123" {
+						return "1001\n", nil
+					}
+					return "", nil
+				}
 			}
 			return "", nil
 		}
@@ -291,6 +301,118 @@ func TestShowReturnsUnderlyingAppleScriptError(t *testing.T) {
 	}
 }
 
+func TestLinuxHideMinimizesBrowserWindow(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-specific window minimization test")
+	}
+
+	original := runWindowCommand
+	defer func() { runWindowCommand = original }()
+
+	var calls []string
+	runWindowCommand = func(name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		calls = append(calls, call)
+		switch call {
+		case "ps -axo pid=,ppid=,comm=":
+			return "123 1 camoufox\n", nil
+		case "xdotool search --pid 123":
+			return "1001\n", nil
+		case "xdotool windowminimize 1001":
+			return "", nil
+		default:
+			return "", assertiveError("unexpected call: " + call)
+		}
+	}
+
+	w := NewWindowController(123)
+	if err := w.Hide(); err != nil {
+		t.Fatalf("Hide() error = %v", err)
+	}
+	visible, found := w.CachedStatus()
+	if !found || visible {
+		t.Fatalf("CachedStatus after Hide = (%v, %v), want hidden and found", visible, found)
+	}
+	if !containsCall(calls, "xdotool windowminimize 1001") {
+		t.Fatalf("Hide() calls = %#v, want xdotool windowminimize", calls)
+	}
+}
+
+func TestLinuxHideFallsBackToWMCTRL(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-specific window minimization test")
+	}
+
+	original := runWindowCommand
+	defer func() { runWindowCommand = original }()
+
+	var calls []string
+	runWindowCommand = func(name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		calls = append(calls, call)
+		switch call {
+		case "ps -axo pid=,ppid=,comm=":
+			return "123 1 camoufox\n", nil
+		case "xdotool search --pid 123":
+			return "", assertiveError("xdotool unavailable")
+		case "wmctrl -lp":
+			return "0x03200007  0 123 host VulpineOS\n", nil
+		case "xdotool windowminimize 0x03200007":
+			return "", assertiveError("xdotool unavailable")
+		case "wmctrl -ir 0x03200007 -b add,hidden":
+			return "", nil
+		default:
+			return "", assertiveError("unexpected call: " + call)
+		}
+	}
+
+	w := NewWindowController(123)
+	if err := w.Hide(); err != nil {
+		t.Fatalf("Hide() error = %v", err)
+	}
+	if !containsCall(calls, "wmctrl -ir 0x03200007 -b add,hidden") {
+		t.Fatalf("Hide() calls = %#v, want wmctrl hidden fallback", calls)
+	}
+}
+
+func TestLinuxStatusDetectsHiddenWindow(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-specific window visibility test")
+	}
+
+	original := runWindowCommand
+	defer func() { runWindowCommand = original }()
+
+	runWindowCommand = func(name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		switch call {
+		case "ps -axo pid=,ppid=,comm=":
+			return "123 1 camoufox\n", nil
+		case "xdotool search --pid 123":
+			return "1001\n", nil
+		case "xprop -id 1001 _NET_WM_STATE":
+			return "_NET_WM_STATE(ATOM) = _NET_WM_STATE_HIDDEN\n", nil
+		default:
+			return "", assertiveError("unexpected call: " + call)
+		}
+	}
+
+	w := NewWindowController(123)
+	visible, found := w.Status()
+	if !found || visible {
+		t.Fatalf("Status() = (%v, %v), want hidden and found", visible, found)
+	}
+}
+
 type assertiveError string
 
 func (e assertiveError) Error() string { return string(e) }
+
+func containsCall(calls []string, want string) bool {
+	for _, call := range calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
+}
