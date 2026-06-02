@@ -42,6 +42,10 @@ type Manager struct {
 	closed bool
 	audit  *runtimeaudit.Manager
 	store  agentStore
+	// toolsets holds one persistent browser toolset (one reused page/tab + its
+	// MCP execution-context tracker) per agent id, so successive chat turns reuse
+	// the same tab instead of opening a new one each time. Closed on Kill.
+	toolsets map[string]*BrowserToolset
 
 	statusSource       chan agentmsg.AgentStatus
 	conversationSource chan agentmsg.ConversationMsg
@@ -66,6 +70,7 @@ func NewManager(client *juggler.Client, cfg Config) *Manager {
 		client:             client,
 		cfg:                cfg,
 		agents:             make(map[string]*nativeAgent),
+		toolsets:           make(map[string]*BrowserToolset),
 		statusSource:       make(chan agentmsg.AgentStatus, 64),
 		conversationSource: make(chan agentmsg.ConversationMsg, 64),
 		statusSubs:         make(map[chan agentmsg.AgentStatus]struct{}),
@@ -145,7 +150,7 @@ func (m *Manager) ConversationChan() <-chan agentmsg.ConversationMsg {
 func (m *Manager) SpawnIsolated(contextID string, sopFile string, configPath string, cleanup func(), extraArgs ...string) (string, error) {
 	id := uuid.New().String()[:8]
 	task := readTask(sopFile, extraArgs)
-	return m.spawn(id, contextID, task, cleanup)
+	return m.spawn(id, contextID, task, false, cleanup)
 }
 
 // SpawnWithSessionIsolated starts/continues a native agent turn. agentID/session
@@ -154,17 +159,19 @@ func (m *Manager) SpawnIsolated(contextID string, sopFile string, configPath str
 // agent's pooled, identity-applied context when one is known, so cookies,
 // storage, and identity persist across turns — matching the prior runtime.
 func (m *Manager) SpawnWithSessionIsolated(agentID, task, sessionName, configPath string, cleanup func()) (string, error) {
-	return m.spawn(agentID, m.resolveContextID(agentID), task, cleanup)
+	return m.spawn(agentID, m.resolveContextID(agentID), task, true, cleanup)
 }
 
 // ResumeWithSessionIsolated re-activates an agent by running a fresh turn seeded
 // with a continue instruction, on the agent's pooled context.
 func (m *Manager) ResumeWithSessionIsolated(agentID, sessionName, configPath string, cleanup func()) (string, error) {
-	return m.spawn(agentID, m.resolveContextID(agentID), "Continue from the saved session and resume the current task.", cleanup)
+	return m.spawn(agentID, m.resolveContextID(agentID), "Continue from the saved session and resume the current task.", true, cleanup)
 }
 
 // spawn runs one agent turn in a goroutine, streaming events to subscribers.
-func (m *Manager) spawn(agentID, contextID, task string, cleanup func()) (string, error) {
+// reusePage keeps a persistent per-agent tab (and MCP tracker) so successive
+// turns reuse the same page instead of opening a new tab each time.
+func (m *Manager) spawn(agentID, contextID, task string, reusePage bool, cleanup func()) (string, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ag := &nativeAgent{id: agentID, contextID: contextID, cancel: cancel, cleanup: cleanup, status: "running", objective: task}
 
@@ -188,9 +195,18 @@ func (m *Manager) spawn(agentID, contextID, task string, cleanup func()) (string
 
 	go func() {
 		var err error
-		if contextID != "" {
+		switch {
+		case contextID != "" && reusePage:
+			// Reuse the agent's single tab + tracker across turns; the agent
+			// navigates that tab wherever the task needs.
+			var toolset *BrowserToolset
+			toolset, err = m.acquireToolset(ctx, agentID, contextID)
+			if err == nil {
+				_, err = RunBrowserAgentWithToolset(ctx, toolset, m.cfg, task, ev)
+			}
+		case contextID != "":
 			_, err = RunBrowserAgentInContext(ctx, m.client, contextID, m.cfg, task, ev)
-		} else {
+		default:
 			_, err = RunBrowserAgent(ctx, m.client, m.cfg, task, ev)
 		}
 		final := "completed"
@@ -206,17 +222,57 @@ func (m *Manager) spawn(agentID, contextID, task string, cleanup func()) (string
 	return agentID, nil
 }
 
-// Kill cancels a running agent's loop.
+// acquireToolset returns the agent's persistent browser toolset (one reused
+// tab + MCP tracker), creating it on first use by opening a page in the agent's
+// context. Kept alive across turns so the page and its execution contexts are
+// reused rather than recreated each task.
+func (m *Manager) acquireToolset(ctx context.Context, agentID, contextID string) (*BrowserToolset, error) {
+	m.mu.RLock()
+	existing := m.toolsets[agentID]
+	m.mu.RUnlock()
+	if existing != nil {
+		return existing, nil
+	}
+	sid, err := openPageSession(ctx, m.client, contextID)
+	if err != nil {
+		return nil, fmt.Errorf("open page in context: %w", err)
+	}
+	ts := NewBrowserToolset(m.client, sid)
+	m.mu.Lock()
+	if raced := m.toolsets[agentID]; raced != nil {
+		m.mu.Unlock()
+		ts.Close()
+		return raced, nil
+	}
+	m.toolsets[agentID] = ts
+	m.mu.Unlock()
+	return ts, nil
+}
+
+// closeToolset closes and forgets an agent's persistent toolset (e.g. on kill,
+// when the orchestrator releases the underlying context).
+func (m *Manager) closeToolset(agentID string) {
+	m.mu.Lock()
+	ts := m.toolsets[agentID]
+	delete(m.toolsets, agentID)
+	m.mu.Unlock()
+	if ts != nil {
+		ts.Close()
+	}
+}
+
+// Kill cancels a running agent's loop and releases its reused tab. Idempotent:
+// safe to call when the agent is idle between turns.
 func (m *Manager) Kill(agentID string) error {
 	m.mu.RLock()
 	ag, ok := m.agents[agentID]
 	m.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("agent %s not found", agentID)
+	if ok {
+		ag.cancel()
+		m.emitStatus(agentID, ag.contextID, "interrupted", ag.objective)
+		m.finish(agentID, ag)
 	}
-	ag.cancel()
-	m.emitStatus(agentID, ag.contextID, "interrupted", ag.objective)
-	m.finish(agentID, ag)
+	m.closeToolset(agentID)
 	return nil
 }
 
@@ -253,17 +309,25 @@ func (m *Manager) List() []agentmsg.AgentStatus {
 	return out
 }
 
-// KillAll cancels all running agents.
+// KillAll cancels all running agents and closes their reused tabs.
 func (m *Manager) KillAll() {
 	m.mu.Lock()
 	agents := make([]*nativeAgent, 0, len(m.agents))
 	for _, ag := range m.agents {
 		agents = append(agents, ag)
 	}
+	toolsets := make([]*BrowserToolset, 0, len(m.toolsets))
+	for id, ts := range m.toolsets {
+		toolsets = append(toolsets, ts)
+		delete(m.toolsets, id)
+	}
 	m.mu.Unlock()
 	for _, ag := range agents {
 		ag.cancel()
 		m.finish(ag.id, ag)
+	}
+	for _, ts := range toolsets {
+		ts.Close()
 	}
 }
 

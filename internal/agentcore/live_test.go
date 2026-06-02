@@ -123,3 +123,46 @@ func TestLive_NativeAgent_BrowserAction(t *testing.T) {
 		t.Fatalf("reply %q did not contain the expected heading 'Example Domain'", final)
 	}
 }
+
+// TestLive_NativeAgent_ReusesPageAcrossTurns proves the per-agent toolset/page
+// is reusable: turn 2 reads the page that turn 1 navigated to, WITHOUT navigating
+// again. If the page (or its MCP execution-context tracker) weren't reused, turn
+// 2 would see a blank page and fail.
+func TestLive_NativeAgent_ReusesPageAcrossTurns(t *testing.T) {
+	if os.Getenv("VULPINE_AGENTCORE_BROWSER") == "" {
+		t.Skip("set VULPINE_AGENTCORE_BROWSER=1 (needs a tool-calling model)")
+	}
+	k, client := startLiveKernel(t)
+	defer k.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	defer cancel()
+
+	contextID, sessionID, err := openPage(ctx, client)
+	if err != nil {
+		t.Fatalf("openPage: %v", err)
+	}
+	defer cleanupContext(client, contextID)
+
+	// One persistent toolset reused across both turns (as the manager does).
+	toolset := NewBrowserToolset(client, sessionID)
+	defer toolset.Close()
+	cfg := liveConfig(t)
+
+	r1, err := RunBrowserAgentWithToolset(ctx, toolset, cfg, "Use the browser to open https://example.com, then reply with the exact text of the page's <h1> and nothing else.", liveLogEvents{t})
+	if err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(r1), "example domain") {
+		t.Fatalf("turn 1 reply %q did not contain 'Example Domain'", r1)
+	}
+
+	r2, err := RunBrowserAgentWithToolset(ctx, toolset, cfg, "Do NOT navigate anywhere. Read the page that is currently open and reply with the exact text of its <h1> and nothing else.", liveLogEvents{t})
+	if err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(r2), "example domain") {
+		t.Fatalf("turn 2 reply %q — page was NOT reused across turns", r2)
+	}
+	t.Logf("page reused across turns OK")
+}

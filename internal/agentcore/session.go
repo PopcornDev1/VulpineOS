@@ -94,16 +94,41 @@ func RunBrowserAgentInContext(ctx context.Context, client *juggler.Client, conte
 	if client == nil {
 		return "", fmt.Errorf("juggler client is required")
 	}
-	models := cfg.modelChain()
-	if len(models) == 0 {
-		return "", fmt.Errorf("no model configured")
-	}
 	sessionID, err := openPageInContext(ctx, client, contextID)
 	if err != nil {
 		return "", fmt.Errorf("open page in context: %w", err)
 	}
+	return RunBrowserAgentOnSession(ctx, client, sessionID, cfg, task, events)
+}
+
+// RunBrowserAgentOnSession runs a one-off native agent turn against an already-
+// open page session (tab), creating and closing a toolset for the turn. It does
+// not create or close the page.
+func RunBrowserAgentOnSession(ctx context.Context, client *juggler.Client, sessionID string, cfg Config, task string, events Events) (string, error) {
+	if client == nil {
+		return "", fmt.Errorf("juggler client is required")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return "", fmt.Errorf("page session is required")
+	}
 	toolset := NewBrowserToolset(client, sessionID)
 	defer toolset.Close()
+	return RunBrowserAgentWithToolset(ctx, toolset, cfg, task, events)
+}
+
+// RunBrowserAgentWithToolset runs a native agent turn using a caller-owned
+// toolset (and thus a caller-owned page + MCP execution-context tracker). The
+// caller keeps the toolset alive across turns so the same tab is reused and its
+// execution contexts stay resolvable — the agent simply navigates that tab to
+// wherever each task needs. The toolset is NOT closed here.
+func RunBrowserAgentWithToolset(ctx context.Context, toolset *BrowserToolset, cfg Config, task string, events Events) (string, error) {
+	if toolset == nil {
+		return "", fmt.Errorf("browser toolset is required")
+	}
+	models := cfg.modelChain()
+	if len(models) == 0 {
+		return "", fmt.Errorf("no model configured")
+	}
 	loop := NewLoop(newCompleter(cfg), toolset, events, LoopConfig{
 		Models:        models,
 		SystemPrompt:  browserSystemPrompt,
@@ -111,6 +136,12 @@ func RunBrowserAgentInContext(ctx context.Context, client *juggler.Client, conte
 		MaxIterations: cfg.MaxIterations,
 	})
 	return loop.Run(ctx, task, nil)
+}
+
+// openPageSession opens a fresh page (tab) inside the given context and returns
+// its juggler session id. Exposed for the manager's per-agent page reuse.
+func openPageSession(ctx context.Context, client *juggler.Client, contextID string) (string, error) {
+	return openPageInContext(ctx, client, contextID)
 }
 
 // openPage creates a fresh browser context with one page and returns the
