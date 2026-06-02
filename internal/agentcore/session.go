@@ -78,6 +78,7 @@ func RunBrowserAgent(ctx context.Context, client *juggler.Client, cfg Config, ta
 	}
 	model := NewModelClient(baseURL, cfg.APIKey)
 	toolset := NewBrowserToolset(client, sessionID)
+	defer toolset.Close()
 	loop := NewLoop(model, toolset, events, LoopConfig{
 		Models:        models,
 		SystemPrompt:  browserSystemPrompt,
@@ -107,7 +108,9 @@ func RunBrowserAgentInContext(ctx context.Context, client *juggler.Client, conte
 	if baseURL == "" {
 		baseURL = BaseURLForProvider(cfg.Provider)
 	}
-	loop := NewLoop(NewModelClient(baseURL, cfg.APIKey), NewBrowserToolset(client, sessionID), events, LoopConfig{
+	toolset := NewBrowserToolset(client, sessionID)
+	defer toolset.Close()
+	loop := NewLoop(NewModelClient(baseURL, cfg.APIKey), toolset, events, LoopConfig{
 		Models:        models,
 		SystemPrompt:  browserSystemPrompt,
 		Tools:         BrowserTools(),

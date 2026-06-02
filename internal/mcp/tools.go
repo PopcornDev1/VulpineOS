@@ -377,6 +377,41 @@ func humanTools() []ToolDefinition {
 	}
 }
 
+// ToolExecutor dispatches browser tool calls against a persistent
+// ContextTracker (and screenshot tracker) for the lifetime of an agent session.
+// A long-lived tracker is required so that page execution contexts and frames —
+// discovered from Juggler events as the page navigates — resolve across
+// successive calls. The per-call HandleToolCallDirect* helpers create a
+// throwaway tracker and therefore cannot resolve execution contexts for a
+// multi-step agent; native agents must use a ToolExecutor instead.
+type ToolExecutor struct {
+	client      *juggler.Client
+	tracker     *ContextTracker
+	screenshots *ScreenshotTracker
+}
+
+// NewToolExecutor creates a session-scoped executor. Call Close when the agent
+// session ends to drop the tracker's event subscriptions.
+func NewToolExecutor(client *juggler.Client) *ToolExecutor {
+	return &ToolExecutor{
+		client:      client,
+		tracker:     NewContextTracker(client),
+		screenshots: NewScreenshotTracker(),
+	}
+}
+
+// Call dispatches a tool against the persistent trackers.
+func (e *ToolExecutor) Call(ctx context.Context, name string, args json.RawMessage) (*ToolCallResult, error) {
+	return handleToolCallFull(ctx, e.client, e.tracker, e.screenshots, name, args)
+}
+
+// Close releases the executor's tracker subscriptions.
+func (e *ToolExecutor) Close() {
+	if e.tracker != nil {
+		e.tracker.Close()
+	}
+}
+
 // HandleToolCallDirect dispatches a tool call directly (for testing).
 func HandleToolCallDirect(client *juggler.Client, name string, args json.RawMessage) (*ToolCallResult, error) {
 	return HandleToolCallDirectCtx(context.Background(), client, name, args)

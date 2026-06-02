@@ -96,16 +96,25 @@ func BrowserTools() []ToolDef {
 }
 
 // BrowserToolset dispatches model tool calls to the live browser via the MCP
-// handlers, against a single fixed page session.
+// handlers, against a single fixed page session. It holds a persistent
+// mcp.ToolExecutor so page execution contexts resolve across the agent's
+// successive tool calls.
 type BrowserToolset struct {
-	client    *juggler.Client
+	executor  *mcp.ToolExecutor
 	sessionID string
 }
 
 // NewBrowserToolset binds a toolset to a juggler client and the page session
-// the agent operates on.
+// the agent operates on. Call Close when the agent session ends.
 func NewBrowserToolset(client *juggler.Client, sessionID string) *BrowserToolset {
-	return &BrowserToolset{client: client, sessionID: sessionID}
+	return &BrowserToolset{executor: mcp.NewToolExecutor(client), sessionID: sessionID}
+}
+
+// Close releases the toolset's persistent tracker subscriptions.
+func (t *BrowserToolset) Close() {
+	if t.executor != nil {
+		t.executor.Close()
+	}
 }
 
 // IsBrowserTool reports whether name is a browser tool this toolset handles.
@@ -138,7 +147,7 @@ func (t *BrowserToolset) Dispatch(ctx context.Context, name string, rawArgs stri
 		return "", false, fmt.Errorf("encode arguments for %s: %w", name, err)
 	}
 
-	res, err := mcp.HandleToolCallDirectCtx(ctx, t.client, name, encoded)
+	res, err := t.executor.Call(ctx, name, encoded)
 	if err != nil {
 		return "", false, err
 	}
