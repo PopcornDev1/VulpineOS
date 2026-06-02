@@ -22,6 +22,9 @@ scripts/test*
 /tests/*.disabled
 k8s/
 
+# Planning
+docs/superpowers
+
 # Old data
 _old/
 _old_*/
