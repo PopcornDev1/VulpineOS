@@ -110,13 +110,16 @@ func (w *WindowController) Hide() error {
 
 // HideWhenReady waits for the browser window to appear, then hides it.
 func (w *WindowController) HideWhenReady() {
-	if runtime.GOOS != "darwin" {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return
 	}
 
 	// Poll until the process has a window, then hide it
 	for i := 0; i < 30; i++ { // up to 15 seconds
 		time.Sleep(500 * time.Millisecond)
+		if runtime.GOOS == "linux" && len(w.linuxWindowIDs(false)) == 0 {
+			continue // window not mapped yet
+		}
 		if err := w.Hide(); err == nil {
 			return
 		}
@@ -223,12 +226,19 @@ func (w *WindowController) HideAll() error {
 	return lastErr
 }
 
-// IsContextVisible checks if any window for a context is visible.
+// IsContextVisible checks if any window for a context is visible. When no
+// per-context window PIDs are registered (the common case — contexts are tabs in
+// one window), it falls back to the main browser window's actual state so the
+// toggle alternates correctly.
 func (w *WindowController) IsContextVisible(contextID string) bool {
 	w.mu.Lock()
 	pids := w.contextWindows[contextID]
 	w.mu.Unlock()
 
+	if len(pids) == 0 {
+		visible, _ := w.Status()
+		return visible
+	}
 	for _, pid := range pids {
 		wc := NewWindowController(pid)
 		if visible, _ := wc.Status(); visible {
@@ -239,6 +249,9 @@ func (w *WindowController) IsContextVisible(contextID string) bool {
 }
 
 func (w *WindowController) show() error {
+	if runtime.GOOS == "linux" {
+		return w.linuxSetVisible(true)
+	}
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
@@ -266,6 +279,9 @@ func (w *WindowController) show() error {
 }
 
 func (w *WindowController) hide() error {
+	if runtime.GOOS == "linux" {
+		return w.linuxSetVisible(false)
+	}
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
@@ -356,6 +372,11 @@ func (w *WindowController) candidatePIDs() []int {
 }
 
 func (w *WindowController) refreshVisibleLocked() bool {
+	if runtime.GOOS == "linux" {
+		w.visible = len(w.linuxWindowIDs(true)) > 0
+		w.found = true
+		return true
+	}
 	if runtime.GOOS != "darwin" {
 		w.found = true
 		return true
@@ -401,4 +422,55 @@ func parseAppleScriptBool(out string) (bool, bool) {
 	default:
 		return false, false
 	}
+}
+
+// --- Linux (X11 / WSLg) window control via xdotool ---
+
+// linuxWindowIDs returns the X11 window ids owned by the browser process tree.
+// onlyVisible restricts to currently-mapped (shown) windows.
+func (w *WindowController) linuxWindowIDs(onlyVisible bool) []string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, pid := range w.candidatePIDs() {
+		args := []string{"search", "--pid", strconv.Itoa(pid)}
+		if onlyVisible {
+			args = append(args, "--onlyvisible")
+		}
+		out, err := runWindowCommand("xdotool", args...)
+		if err != nil {
+			continue
+		}
+		for _, id := range strings.Fields(out) {
+			if id != "" && !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
+// linuxSetVisible maps (shows) or unmaps (hides) the browser's X11 windows.
+func (w *WindowController) linuxSetVisible(visible bool) error {
+	if _, err := runWindowCommand("xdotool", "version"); err != nil {
+		return fmt.Errorf("xdotool not available (install it: sudo apt install -y xdotool): %w", err)
+	}
+	ids := w.linuxWindowIDs(false)
+	if len(ids) == 0 {
+		return fmt.Errorf("no browser window found yet")
+	}
+	verb := "windowunmap"
+	if visible {
+		verb = "windowmap"
+	}
+	var lastErr error
+	for _, id := range ids {
+		if _, err := runWindowCommand("xdotool", verb, id); err != nil {
+			lastErr = err
+		}
+	}
+	if visible && len(ids) > 0 {
+		_, _ = runWindowCommand("xdotool", "windowactivate", ids[0])
+	}
+	return lastErr
 }

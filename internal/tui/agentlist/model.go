@@ -290,13 +290,21 @@ func (m Model) View() string {
 			unread = lipgloss.NewStyle().Foreground(shared.ColorWarning).Render(unreadText)
 		}
 
-		maxName := m.width - lipgloss.Width(cursor) - 1 - lipgloss.Width(icon) - lipgloss.Width(unreadText)
+		// Context indicator: a small browser-window glyph when this agent owns an
+		// open browser context (so `v` can show/hide that agent's window).
+		ctxText, ctxMark := "", ""
+		if hasOpenContext(a.Metadata) {
+			ctxText = " ◗"
+			ctxMark = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C3AED")).Render(ctxText)
+		}
+
+		maxName := m.width - lipgloss.Width(cursor) - 1 - lipgloss.Width(icon) - lipgloss.Width(unreadText) - lipgloss.Width(ctxText)
 		if maxName < 1 {
 			maxName = 1
 		}
 		name := padVisible(fitVisible(a.Name, maxName), maxName)
 
-		line := fitAgentRow(fmt.Sprintf("%s%s %s%s", cursor, name, icon, unread), m.width)
+		line := fitAgentRow(fmt.Sprintf("%s%s%s %s%s", cursor, name, ctxMark, icon, unread), m.width)
 		if i == m.selected {
 			line = shared.SelectedStyle.Render(line)
 		}
@@ -316,6 +324,16 @@ func (m Model) View() string {
 		}
 	}
 	return result
+}
+
+// hasOpenContext reports whether the agent's metadata records an open browser
+// context (and thus a window that `v` can show/hide).
+func hasOpenContext(metadata string) bool {
+	meta, err := vault.ParseAgentMetadata(metadata)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(meta.ContextID) != ""
 }
 
 func visibleAgentRange(total, selected, capacity int) (int, int) {

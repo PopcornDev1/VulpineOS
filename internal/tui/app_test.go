@@ -627,8 +627,8 @@ func TestFocusedChatAllowsTabFocusCycle(t *testing.T) {
 
 	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})
 	app = model.(App)
-	if app.focus != FocusAgentDetail {
-		t.Fatalf("focus = %d, want agent detail after tab from focused chat", app.focus)
+	if app.focus != FocusAgentList {
+		t.Fatalf("focus = %d, want agent list after tab from focused chat (2-panel cycle)", app.focus)
 	}
 	if app.inputMode != "" {
 		t.Fatalf("inputMode = %q, want empty after tab focus cycle", app.inputMode)
@@ -1402,11 +1402,12 @@ func TestSettingsWorkbenchViewRendersFullContainerFrame(t *testing.T) {
 	border := lipgloss.RoundedBorder()
 	topLine := lines[0]
 	bodyBottomLine := lines[len(lines)-2]
-	if got := strings.Count(topLine, border.TopLeft) + strings.Count(topLine, border.TopRight); got < 6 {
-		t.Fatalf("top workbench row has %d panel corners, want at least 6:\n%s", got, view)
+	// Two-column workbench (left sidebar + center): each row shows 2 panels = 4 corners.
+	if got := strings.Count(topLine, border.TopLeft) + strings.Count(topLine, border.TopRight); got < 4 {
+		t.Fatalf("top workbench row has %d panel corners, want at least 4:\n%s", got, view)
 	}
-	if got := strings.Count(bodyBottomLine, border.BottomLeft) + strings.Count(bodyBottomLine, border.BottomRight); got < 6 {
-		t.Fatalf("bottom workbench row has %d panel corners, want at least 6:\n%s", got, view)
+	if got := strings.Count(bodyBottomLine, border.BottomLeft) + strings.Count(bodyBottomLine, border.BottomRight); got < 4 {
+		t.Fatalf("bottom workbench row has %d panel corners, want at least 4:\n%s", got, view)
 	}
 }
 

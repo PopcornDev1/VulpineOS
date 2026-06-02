@@ -63,10 +63,10 @@ func openExternalTarget(target string) error {
 const (
 	FocusAgentList    = 0
 	FocusConversation = 1
-	FocusAgentDetail  = 2
-	FocusContextList  = 3
+	FocusAgentDetail  = 2 // deprecated: agent-detail panel removed from the UI
+	FocusContextList  = 3 // deprecated: contexts panel removed from the UI
 	FocusSettings     = 4
-	FocusNormalCount  = 4 // number of panels in normal Tab cycle (excludes settings)
+	FocusNormalCount  = 2 // Tab cycles AgentList <-> Conversation only
 )
 
 // statusNotice is a transient message shown in the status bar.
@@ -259,8 +259,8 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		cfg:               cfg,
 		monitor:           mon,
 		control:           control,
-		leftWidth:         18,
-		rightWidth:        18,
+		leftWidth:         24,
+		rightWidth:        0,
 		leftSplit:         13, // system info height (includes pool stats now)
 		rightSplit:        10, // agent detail height in right column
 		nameInput:         nameIn,
@@ -2137,7 +2137,7 @@ const (
 
 	minCenterWidth        = 20
 	panelHorizontalChrome = 2 // Lipgloss Width includes horizontal padding; the border adds 2 columns.
-	workbenchPanelCount   = 3
+	workbenchPanelCount   = 2 // left + center (contexts/agent-detail right column removed)
 )
 
 func clampVerticalSplit(split, bodyHeight int) int {
@@ -2220,7 +2220,6 @@ func (a App) View() string {
 	widths := resolveWorkbenchWidths(a.width, a.leftWidth, a.rightWidth)
 	leftWidth := widths.left
 	centerWidth := widths.center
-	rightWidth := widths.right
 
 	bodyHeight := workbenchBodyHeight(a.height)
 	if a.useCompactWorkbench(widths, bodyHeight) {
@@ -2280,31 +2279,13 @@ func (a App) View() string {
 	}
 	centerView := centerContent
 
-	// Right column: agent detail on top, contexts below
-	rightTop := a.rightSplit
-	rightBottom := bodyHeight - rightTop - 4 // subtract borders
-	if rightBottom < 3 {
-		rightBottom = 3
-		rightTop = bodyHeight - rightBottom - 4
-	}
-	if rightTop < 3 {
-		rightTop = 3
-	}
-	detailView := a.renderFocusPanel(FocusAgentDetail, a.agentDetail.View(), rightWidth, rightTop)
-	ctxView := a.renderFocusPanel(FocusContextList, a.contextList.View(), rightWidth, rightBottom)
-	rightColumn := lipgloss.JoinVertical(lipgloss.Left, detailView, ctxView)
-
-	// Hard-truncate each column to bodyHeight lines
+	// Hard-truncate the left column to bodyHeight lines
 	leftLines := strings.Split(leftColumn, "\n")
 	if len(leftLines) > bodyHeight {
 		leftColumn = strings.Join(leftLines[:bodyHeight], "\n")
 	}
-	rightLines := strings.Split(rightColumn, "\n")
-	if len(rightLines) > bodyHeight {
-		rightColumn = strings.Join(rightLines[:bodyHeight], "\n")
-	}
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, centerView, rightColumn)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, centerView)
 
 	// Status bar (notice replaces status bar content when present)
 	var statusBar string
@@ -2332,7 +2313,7 @@ func (a App) useCompactWorkbench(widths workbenchWidths, bodyHeight int) bool {
 	if a.width < 48 || bodyHeight < 10 {
 		return true
 	}
-	return widths.left < 6 || widths.right < 6 || widths.center < minCenterWidth
+	return widths.left < 6 || widths.center < minCenterWidth
 }
 
 func (a App) renderCompactWorkbench() string {
@@ -2557,30 +2538,22 @@ func (a *App) updatePanelSizes() {
 }
 
 func resolveWorkbenchWidths(totalWidth, preferredLeft, preferredRight int) workbenchWidths {
+	// Two-column workbench: left sidebar + center conversation. The right column
+	// (agent detail + contexts) was removed; preferredRight is ignored and the
+	// center absorbs the freed space.
+	_ = preferredRight
 	available := totalWidth - workbenchPanelCount*panelHorizontalChrome
 	if available <= 0 {
 		return workbenchWidths{}
 	}
-
 	left := max(0, preferredLeft)
-	right := max(0, preferredRight)
-	if left+right+minCenterWidth <= available {
-		return workbenchWidths{
-			left:   left,
-			center: available - left - right,
-			right:  right,
-		}
+	if left+minCenterWidth > available {
+		left = max(0, available-minCenterWidth)
 	}
-
-	sideBudget := available - minCenterWidth
-	if sideBudget < 0 {
-		sideBudget = 0
-	}
-	left, right = shrinkSideWidths(left, right, sideBudget)
 	return workbenchWidths{
 		left:   left,
-		center: max(0, available-left-right),
-		right:  right,
+		center: max(0, available-left),
+		right:  0,
 	}
 }
 
