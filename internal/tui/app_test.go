@@ -658,10 +658,10 @@ func TestSettingsProxyImportAcceptsLifecycleKeyCharacters(t *testing.T) {
 	app.settings.SetActive(true)
 
 	var cmd tea.Cmd
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyDown})
 	app = model.(App)
 	if cmd != nil {
-		t.Fatalf("unexpected command after tab: %#v", cmd())
+		t.Fatalf("unexpected command after section switch: %#v", cmd())
 	}
 	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
 	app = model.(App)
