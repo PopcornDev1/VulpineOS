@@ -47,6 +47,7 @@ type nativeAgent struct {
 	cleanup   func()
 	status    string
 	objective string
+	tokens    int // cumulative tokens consumed this run
 }
 
 // NewManager creates a native runtime bound to a juggler client and model
@@ -263,16 +264,37 @@ func (m *Manager) finish(agentID string, ag *nativeAgent) {
 
 func (m *Manager) emitStatus(agentID, contextID, status, objective string) {
 	m.mu.Lock()
+	tokens := 0
 	if ag, ok := m.agents[agentID]; ok {
 		ag.status = status
 		ag.objective = objective
+		tokens = ag.tokens
 	}
 	m.mu.Unlock()
-	m.safeSendStatus(nanoclaw.AgentStatus{AgentID: agentID, ContextID: contextID, Status: status, Objective: objective})
+	m.safeSendStatus(nanoclaw.AgentStatus{AgentID: agentID, ContextID: contextID, Status: status, Objective: objective, Tokens: tokens})
 }
 
 func (m *Manager) emitConversation(agentID, role, content string) {
 	m.safeSendConversation(nanoclaw.ConversationMsg{AgentID: agentID, Role: role, Content: content})
+}
+
+// addTokens accumulates a turn's token usage onto the agent's running total.
+func (m *Manager) addTokens(agentID string, turn Usage) {
+	m.mu.Lock()
+	if ag, ok := m.agents[agentID]; ok {
+		ag.tokens += turn.TotalTokens
+	}
+	m.mu.Unlock()
+}
+
+// agentTokens returns the agent's cumulative token count.
+func (m *Manager) agentTokens(agentID string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if ag, ok := m.agents[agentID]; ok {
+		return ag.tokens
+	}
+	return 0
 }
 
 func (m *Manager) safeSendStatus(s nanoclaw.AgentStatus) {
@@ -352,7 +374,7 @@ func (e *managerEvents) OnTextDelta(delta string) {
 }
 func (e *managerEvents) OnAssistant(text string) {
 	if strings.TrimSpace(text) != "" {
-		e.m.emitConversation(e.agentID, "assistant", text)
+		e.m.safeSendConversation(nanoclaw.ConversationMsg{AgentID: e.agentID, Role: "assistant", Content: text, Tokens: e.m.agentTokens(e.agentID)})
 	}
 }
 func (e *managerEvents) OnToolCall(name, args string) {
@@ -360,3 +382,4 @@ func (e *managerEvents) OnToolCall(name, args string) {
 }
 func (e *managerEvents) OnToolResult(name, result string, isErr bool) {}
 func (e *managerEvents) OnStatus(status string)                       {}
+func (e *managerEvents) OnUsage(turn Usage)                           { e.m.addTokens(e.agentID, turn) }

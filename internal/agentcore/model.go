@@ -56,10 +56,20 @@ type FunctionDef struct {
 	Parameters  map[string]interface{} `json:"parameters"`
 }
 
+// Usage carries token accounting for one model turn. Providers report it
+// differently (OpenAI usage object, Anthropic message_delta usage, Codex
+// response.completed usage); each client normalizes into this shape.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
 // Completion is the result of one model turn.
 type Completion struct {
 	Message      ChatMessage // assistant message (content and/or tool_calls)
 	FinishReason string      // "stop" | "tool_calls" | "length" | ...
+	Usage        Usage       // token usage for this turn (zero if the provider omitted it)
 }
 
 // HasToolCalls reports whether the model asked to invoke tools.
@@ -107,20 +117,46 @@ func NewModelClient(baseURL, apiKey string) *ModelClient {
 // OpenRouterBaseURL is the default provider endpoint.
 const OpenRouterBaseURL = "https://openrouter.ai/api/v1"
 
-// providerBaseURLs maps a VulpineOS provider ID to its OpenAI-compatible base
-// URL. Providers not listed fall back to OpenRouter (the common multiplexer).
+// providerBaseURLs maps a VulpineOS provider ID to its OpenAI-compatible
+// chat-completions base URL (the segment before "/chat/completions"). These are
+// the providers that expose a real OpenAI-compatible endpoint we can call
+// directly. Anthropic and Codex are NOT here — they use bespoke clients
+// (anthropic.go / codex.go) selected by providerKind. Providers without a known
+// direct endpoint fall back to OpenRouter (the multiplexer), matching the prior
+// NanoClaw behavior of routing everything through OpenRouter.
 var providerBaseURLs = map[string]string{
-	"openrouter": OpenRouterBaseURL,
-	"openai":     "https://api.openai.com/v1",
-	"groq":       "https://api.groq.com/openai/v1",
-	"together":   "https://api.together.xyz/v1",
-	"cerebras":   "https://api.cerebras.ai/v1",
-	"mistral":    "https://api.mistral.ai/v1",
-	"xai":        "https://api.x.ai/v1",
+	// Routing/gateway
+	"openrouter":            OpenRouterBaseURL,
+	"opencode":              "https://opencode.ai/zen/v1",
+	"opencode-go":           "https://opencode.ai/zen/v1",
+	"vercel-ai-gateway":     "https://ai-gateway.vercel.sh/v1",
+	"cloudflare-ai-gateway": "https://gateway.ai.cloudflare.com/v1",
+	"synthetic":             "https://api.synthetic.new/openai/v1",
+	"kilocode":              "https://api.kilocode.ai/v1",
+	// Major clouds with OpenAI-compatible endpoints
+	"openai":   "https://api.openai.com/v1",
+	"google":   "https://generativelanguage.googleapis.com/v1beta/openai",
+	"xai":      "https://api.x.ai/v1",
+	"zai":      "https://api.z.ai/api/paas/v4",
+	"groq":     "https://api.groq.com/openai/v1",
+	"mistral":  "https://api.mistral.ai/v1",
+	"together": "https://api.together.xyz/v1",
+	"cerebras": "https://api.cerebras.ai/v1",
+	// Specialized
+	"moonshot":    "https://api.moonshot.ai/v1",
+	"kimi-coding": "https://api.moonshot.ai/v1",
+	"minimax":     "https://api.minimax.io/v1",
+	"nvidia":      "https://integrate.api.nvidia.com/v1",
+	"huggingface": "https://router.huggingface.co/v1",
+	"venice":      "https://api.venice.ai/api/v1",
+	// Local (no key)
+	"ollama": "http://localhost:11434/v1",
+	"vllm":   "http://localhost:8000/v1",
+	"sglang": "http://localhost:30000/v1",
 }
 
 // BaseURLForProvider returns the chat-completions base URL for a provider ID,
-// defaulting to OpenRouter.
+// defaulting to OpenRouter for providers without a known direct endpoint.
 func BaseURLForProvider(providerID string) string {
 	if u, ok := providerBaseURLs[strings.ToLower(strings.TrimSpace(providerID))]; ok {
 		return u
@@ -129,11 +165,17 @@ func BaseURLForProvider(providerID string) string {
 }
 
 type chatRequest struct {
-	Model      string        `json:"model"`
-	Messages   []ChatMessage `json:"messages"`
-	Tools      []ToolDef     `json:"tools,omitempty"`
-	ToolChoice string        `json:"tool_choice,omitempty"`
-	Stream     bool          `json:"stream"`
+	Model         string         `json:"model"`
+	Messages      []ChatMessage  `json:"messages"`
+	Tools         []ToolDef      `json:"tools,omitempty"`
+	ToolChoice    string         `json:"tool_choice,omitempty"`
+	Stream        bool           `json:"stream"`
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+}
+
+// streamOptions asks the provider to emit a final usage chunk on the stream.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // Stream sends one chat-completions request with streaming enabled. Text deltas
@@ -141,7 +183,7 @@ type chatRequest struct {
 // assembled assistant message (content + any reconstructed tool calls) and the
 // finish reason. Context cancellation aborts the request.
 func (c *ModelClient) Stream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDef, onTextDelta func(string)) (Completion, error) {
-	reqBody := chatRequest{Model: model, Messages: messages, Tools: tools, Stream: true}
+	reqBody := chatRequest{Model: model, Messages: messages, Tools: tools, Stream: true, StreamOptions: &streamOptions{IncludeUsage: true}}
 	if len(tools) > 0 {
 		reqBody.ToolChoice = "auto"
 	}
@@ -196,6 +238,7 @@ func parseSSEStream(body io.Reader, onTextDelta func(string)) (Completion, error
 	toolAccum := map[int]*toolCallAccumulator{}
 	var toolOrder []int
 	finishReason := ""
+	var usage Usage
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -222,12 +265,25 @@ func parseSSEStream(body io.Reader, onTextDelta func(string)) (Completion, error
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			// Skip malformed/keepalive lines rather than aborting the turn.
 			continue
 		}
+		if chunk.Usage != nil {
+			usage = Usage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.TotalTokens,
+			}
+		}
 		if len(chunk.Choices) == 0 {
+			// Usage-only chunk (the final include_usage frame) has no choices.
 			continue
 		}
 		choice := chunk.Choices[0]
@@ -285,7 +341,10 @@ func parseSSEStream(body io.Reader, onTextDelta func(string)) (Completion, error
 			finishReason = "stop"
 		}
 	}
-	return Completion{Message: msg, FinishReason: finishReason}, nil
+	if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	return Completion{Message: msg, FinishReason: finishReason, Usage: usage}, nil
 }
 
 func truncate(s string, n int) string {

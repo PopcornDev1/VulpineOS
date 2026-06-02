@@ -21,13 +21,15 @@ type Config struct {
 	MaxIterations  int      // optional loop bound
 }
 
-// modelChain returns the ordered model list (primary first), with the
-// "openrouter/" prefix stripped since the OpenRouter API expects the bare slug.
+// modelChain returns the ordered model list (primary first), with the provider
+// prefix stripped so each provider API receives the bare model slug it expects
+// (e.g. "openai/gpt-5.4" -> "gpt-5.4"; "openrouter/anthropic/claude-..." ->
+// "anthropic/claude-...").
 func (c Config) modelChain() []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, m := range append([]string{c.Model}, c.FallbackModels...) {
-		m = strings.TrimPrefix(strings.TrimSpace(m), "openrouter/")
+		m = stripProviderPrefix(m, c.Provider)
 		if m == "" || seen[m] {
 			continue
 		}
@@ -72,11 +74,7 @@ func RunBrowserAgent(ctx context.Context, client *juggler.Client, cfg Config, ta
 	}
 	defer cleanupContext(client, contextID)
 
-	baseURL := cfg.BaseURL
-	if baseURL == "" {
-		baseURL = BaseURLForProvider(cfg.Provider)
-	}
-	model := NewModelClient(baseURL, cfg.APIKey)
+	model := newCompleter(cfg)
 	toolset := NewBrowserToolset(client, sessionID)
 	defer toolset.Close()
 	loop := NewLoop(model, toolset, events, LoopConfig{
@@ -104,13 +102,9 @@ func RunBrowserAgentInContext(ctx context.Context, client *juggler.Client, conte
 	if err != nil {
 		return "", fmt.Errorf("open page in context: %w", err)
 	}
-	baseURL := cfg.BaseURL
-	if baseURL == "" {
-		baseURL = BaseURLForProvider(cfg.Provider)
-	}
 	toolset := NewBrowserToolset(client, sessionID)
 	defer toolset.Close()
-	loop := NewLoop(NewModelClient(baseURL, cfg.APIKey), toolset, events, LoopConfig{
+	loop := NewLoop(newCompleter(cfg), toolset, events, LoopConfig{
 		Models:        models,
 		SystemPrompt:  browserSystemPrompt,
 		Tools:         BrowserTools(),

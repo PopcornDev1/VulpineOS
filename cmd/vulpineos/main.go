@@ -116,12 +116,33 @@ func nativeAgentRuntime(cfg *config.Config, client *juggler.Client) orchestrator
 		return nil
 	}
 	mgr := agentcore.NewManager(client, agentcore.Config{
-		Provider: cfg.Provider,
-		Model:    cfg.Model,
-		APIKey:   cfg.APIKey,
+		Provider:       cfg.Provider,
+		Model:          cfg.Model,
+		APIKey:         cfg.APIKey,
+		FallbackModels: nativeFallbackModels(cfg.Provider),
 	})
 	log.Printf("agent runtime: native in-process (provider=%s model=%s)", cfg.Provider, cfg.Model)
 	return mgr
+}
+
+// nativeFallbackModels returns the rate-limit fallback chain for a provider. The
+// chain is only meaningful for OpenRouter (shared free-model ids); other
+// providers don't share these slugs, so they get no fallback unless overridden
+// via OPENCODE_FALLBACK_MODELS (comma-separated).
+func nativeFallbackModels(provider string) []string {
+	if override := strings.TrimSpace(os.Getenv("OPENCODE_FALLBACK_MODELS")); override != "" {
+		var out []string
+		for _, m := range strings.Split(override, ",") {
+			if m = strings.TrimSpace(m); m != "" {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	if strings.EqualFold(strings.TrimSpace(provider), "openrouter") {
+		return agentcore.DefaultFallbackModels()
+	}
+	return nil
 }
 
 func logSentinelRuntimeStatus(audit *runtimeaudit.Manager) {

@@ -15,11 +15,14 @@ import (
 // liveLogEvents prints the agent's activity during a live run.
 type liveLogEvents struct{ t *testing.T }
 
-func (e liveLogEvents) OnTextDelta(string)                {}
-func (e liveLogEvents) OnAssistant(s string)              { e.t.Logf("[assistant] %s", truncate(s, 200)) }
-func (e liveLogEvents) OnToolCall(n, a string)            { e.t.Logf("[tool-call] %s %s", n, truncate(a, 120)) }
-func (e liveLogEvents) OnToolResult(n, r string, er bool) { e.t.Logf("[tool-result] %s err=%v %s", n, er, truncate(r, 120)) }
-func (e liveLogEvents) OnStatus(s string)                 { e.t.Logf("[status] %s", s) }
+func (e liveLogEvents) OnTextDelta(string)     {}
+func (e liveLogEvents) OnAssistant(s string)   { e.t.Logf("[assistant] %s", truncate(s, 200)) }
+func (e liveLogEvents) OnToolCall(n, a string) { e.t.Logf("[tool-call] %s %s", n, truncate(a, 120)) }
+func (e liveLogEvents) OnToolResult(n, r string, er bool) {
+	e.t.Logf("[tool-result] %s err=%v %s", n, er, truncate(r, 120))
+}
+func (e liveLogEvents) OnStatus(s string) { e.t.Logf("[status] %s", s) }
+func (e liveLogEvents) OnUsage(u Usage)   { e.t.Logf("[usage] total=%d", u.TotalTokens) }
 
 // startLiveKernel boots headless Camoufox and enables the browser, mirroring the
 // integration harness. Gated by VULPINEOS_RUN_LIVE + VULPINE_AGENTCORE_LIVE.

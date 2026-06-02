@@ -23,21 +23,23 @@ type ToolDispatcher interface {
 // these to the TUI/panel conversation+status streams and vault persistence; the
 // loop itself stays free of those dependencies.
 type Events interface {
-	OnTextDelta(delta string)               // streamed partial assistant text
-	OnAssistant(text string)                // a completed assistant message (may be intermediate)
-	OnToolCall(name, args string)           // about to run a tool
+	OnTextDelta(delta string)                     // streamed partial assistant text
+	OnAssistant(text string)                      // a completed assistant message (may be intermediate)
+	OnToolCall(name, args string)                 // about to run a tool
 	OnToolResult(name, result string, isErr bool) // tool finished
-	OnStatus(status string)                 // "running" | "completed" | "error"
+	OnStatus(status string)                       // "running" | "completed" | "error"
+	OnUsage(turn Usage)                           // token usage for one completed model turn
 }
 
 // NopEvents is an Events that ignores everything (useful as a default/base).
 type NopEvents struct{}
 
-func (NopEvents) OnTextDelta(string)            {}
-func (NopEvents) OnAssistant(string)            {}
-func (NopEvents) OnToolCall(string, string)     {}
+func (NopEvents) OnTextDelta(string)                {}
+func (NopEvents) OnAssistant(string)                {}
+func (NopEvents) OnToolCall(string, string)         {}
 func (NopEvents) OnToolResult(string, string, bool) {}
-func (NopEvents) OnStatus(string)               {}
+func (NopEvents) OnStatus(string)                   {}
+func (NopEvents) OnUsage(Usage)                     {}
 
 // LoopConfig configures a single agent run.
 type LoopConfig struct {
@@ -59,10 +61,10 @@ type LoopConfig struct {
 
 // Loop runs the model<->tool conversation for one agent.
 type Loop struct {
-	model      Completer
-	tools      ToolDispatcher
-	events     Events
-	cfg        LoopConfig
+	model  Completer
+	tools  ToolDispatcher
+	events Events
+	cfg    LoopConfig
 }
 
 // NewLoop builds a loop. events may be nil (NopEvents is used). tools may be nil
@@ -107,6 +109,9 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 		if err != nil {
 			l.events.OnStatus("error")
 			return "", err
+		}
+		if comp.Usage.TotalTokens > 0 || comp.Usage.PromptTokens > 0 || comp.Usage.CompletionTokens > 0 {
+			l.events.OnUsage(comp.Usage)
 		}
 
 		if !comp.HasToolCalls() {

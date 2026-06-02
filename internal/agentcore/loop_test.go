@@ -57,11 +57,12 @@ type recordEvents struct {
 	statuses  []string
 }
 
-func (r *recordEvents) OnTextDelta(d string)            { r.deltas = append(r.deltas, d) }
-func (r *recordEvents) OnAssistant(t string)            { r.assistant = append(r.assistant, t) }
-func (r *recordEvents) OnToolCall(n, a string)          { r.toolCalls = append(r.toolCalls, n) }
+func (r *recordEvents) OnTextDelta(d string)               { r.deltas = append(r.deltas, d) }
+func (r *recordEvents) OnAssistant(t string)               { r.assistant = append(r.assistant, t) }
+func (r *recordEvents) OnToolCall(n, a string)             { r.toolCalls = append(r.toolCalls, n) }
 func (r *recordEvents) OnToolResult(n, res string, e bool) { r.toolRes = append(r.toolRes, n) }
-func (r *recordEvents) OnStatus(s string)               { r.statuses = append(r.statuses, s) }
+func (r *recordEvents) OnStatus(s string)                  { r.statuses = append(r.statuses, s) }
+func (r *recordEvents) OnUsage(Usage)                      {}
 
 func toolCallTurn(id, name, args string) Completion {
 	return Completion{
