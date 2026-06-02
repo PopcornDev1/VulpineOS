@@ -672,13 +672,13 @@ index xxxxxxxxxx..yyyyyyyyyy 100644
 
 +// Per-context WebGL vendor spoofing
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::WebGLParamsManager::IsVendorFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setWebGLVendor(DOMString vendor);
 +};
 +
 +// Per-context WebGL renderer spoofing
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::WebGLParamsManager::IsRendererFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setWebGLRenderer(DOMString renderer);
 +};
 +

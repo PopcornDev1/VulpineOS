@@ -110,6 +110,17 @@ export class BrowserHandler {
     };
   }
 
+  async ['Browser.setContextFingerprint']({prefs}) {
+    // Privileged-side per-context fingerprint delivery: set the
+    // roverfox.s.<key>_<userContextId> prefs the C++ managers read per-context.
+    // Constrained to the roverfox namespace so this cannot set arbitrary prefs.
+    for (const { name, value } of (prefs || [])) {
+      if (typeof name !== 'string' || !name.startsWith('roverfox.s.'))
+        continue;
+      Services.prefs.setStringPref(name, String(value));
+    }
+  }
+
   async ['Browser.removeBrowserContext']({browserContextId}) {
     if (!this._enabled)
       throw new Error('Browser domain is not enabled');

@@ -295,6 +295,15 @@ const Browser = {
         userContextId: t.Number,
       },
     },
+    'setContextFingerprint': {
+      params: {
+        // Per-context fingerprint values delivered from the privileged parent
+        // process as roverfox.s.<key>_<userContextId> prefs (read per-context by
+        // the C++ managers). Replaces content-world window.set* calls so those
+        // setters can stay invisible to web content (ChromeOnly).
+        prefs: t.Array(browserTypes.UserPreference),
+      },
+    },
     'removeBrowserContext': {
       params: {
         browserContextId: t.String,

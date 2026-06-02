@@ -1,70 +1,79 @@
 package orchestrator
 
 import (
-	"strings"
 	"testing"
 
 	"vulpineos/internal/vault"
 )
 
-func TestBuildFingerprintInitScriptEmptyWhenNoPerContextFields(t *testing.T) {
-	// Only stock-override fields present (UA/platform/screen) -> no init script.
-	fp := vault.FingerprintData{
-		UserAgent:    "Mozilla/5.0",
-		Platform:     "MacIntel",
-		ScreenWidth:  1920,
-		ScreenHeight: 1080,
-	}
-	if got := buildFingerprintInitScript(fp); got != "" {
-		t.Fatalf("expected empty script, got: %q", got)
-	}
-}
-
-func TestBuildFingerprintInitScriptDrivesPerContextSetters(t *testing.T) {
-	fp := vault.FingerprintData{
-		WebGLVendor:         "Google Inc. (Apple)",
-		WebGLRenderer:       "ANGLE (Apple, Apple M1)",
-		AudioSeed:           123456,
-		FontSpacingSeed:     7891011,
-		Fonts:               []string{"Arial", "Helvetica Neue"},
-		OsCPU:               "Intel Mac OS X 10.15",
-		HardwareConcurrency: 8,
-	}
-	script := buildFingerprintInitScript(fp)
-	if script == "" {
-		t.Fatal("expected a non-empty init script")
-	}
-
-	wantContains := []string{
-		`f("setWebGLVendor","Google Inc. (Apple)")`,
-		`f("setWebGLRenderer","ANGLE (Apple, Apple M1)")`,
-		`f("setAudioFingerprintSeed",123456)`,
-		`f("setFontSpacingSeed",7891011)`,
-		`f("setFontList","Arial,Helvetica Neue")`,
-		`f("setNavigatorOscpu","Intel Mac OS X 10.15")`,
-		`f("setNavigatorHardwareConcurrency",8)`,
-	}
-	for _, w := range wantContains {
-		if !strings.Contains(script, w) {
-			t.Errorf("init script missing %q\nscript:\n%s", w, script)
+func prefValue(prefs []map[string]interface{}, name string) (string, bool) {
+	for _, p := range prefs {
+		if p["name"] == name {
+			v, _ := p["value"].(string)
+			return v, true
 		}
 	}
-	// Must be a self-invoking guarded IIFE so unavailable/self-destructed
-	// setters never throw into the page.
-	if !strings.HasPrefix(script, "(function(){") || !strings.HasSuffix(script, "})();") {
-		t.Errorf("script is not a wrapped IIFE: %s", script)
-	}
-	if !strings.Contains(script, "typeof w[n]==='function'") {
-		t.Error("script does not guard setter presence")
+	return "", false
+}
+
+func TestBuildContextFingerprintPrefsEmptyWhenNoPerContextFields(t *testing.T) {
+	// Only stock-override fields present (UA/platform/screen) -> no roverfox prefs.
+	fp := vault.FingerprintData{UserAgent: "Mozilla/5.0", Platform: "MacIntel", ScreenWidth: 1920, ScreenHeight: 1080}
+	if got := buildContextFingerprintPrefs(fp, 7); got != nil {
+		t.Fatalf("expected nil, got: %v", got)
 	}
 }
 
-func TestBuildFingerprintInitScriptEscapesValues(t *testing.T) {
-	// A renderer string containing quotes/backslashes must be safely encoded.
-	fp := vault.FingerprintData{WebGLRenderer: `ANGLE ("quoted" \back)`}
-	script := buildFingerprintInitScript(fp)
-	// json.Marshal-based encoding must escape the embedded quotes/backslashes.
-	if !strings.Contains(script, `\"quoted\"`) || !strings.Contains(script, `\\back`) {
-		t.Fatalf("value not safely escaped: %s", script)
+func TestBuildContextFingerprintPrefsKeysAndUcid(t *testing.T) {
+	fp := vault.FingerprintData{
+		WebGLVendor:         "Apple",
+		WebGLRenderer:       "Apple M1",
+		AudioSeed:           123456,
+		FontSpacingSeed:     7891011,
+		OsCPU:               "Intel Mac OS X 10.15",
+		HardwareConcurrency: 8,
+		WebRTCIPv4:          "203.0.113.45",
+	}
+	prefs := buildContextFingerprintPrefs(fp, 6)
+	if len(prefs) == 0 {
+		t.Fatal("expected prefs")
+	}
+	// Exact roverfox key contract, keyed by userContextId, values as strings.
+	want := map[string]string{
+		"roverfox.s.webgl_vendor_6":          "Apple",
+		"roverfox.s.webgl_renderer_6":        "Apple M1",
+		"roverfox.s.audioFingerprintSeed_6":  "123456",
+		"roverfox.s.seed_6":                  "7891011",
+		"roverfox.s.nav_oscpu_6":             "Intel Mac OS X 10.15",
+		"roverfox.s.nav_hwc_6":               "8",
+		"roverfox.s.webrtc_ipv4_6":           "203.0.113.45",
+	}
+	for name, val := range want {
+		got, ok := prefValue(prefs, name)
+		if !ok {
+			t.Errorf("missing pref %q", name)
+			continue
+		}
+		if got != val {
+			t.Errorf("pref %q = %q, want %q", name, got, val)
+		}
+	}
+	// All pref names must stay in the roverfox namespace (the handler rejects others).
+	for _, p := range prefs {
+		n, _ := p["name"].(string)
+		if len(n) < len("roverfox.s.") || n[:len("roverfox.s.")] != "roverfox.s." {
+			t.Errorf("pref name escapes roverfox namespace: %q", n)
+		}
+	}
+}
+
+func TestBuildContextFingerprintPrefsDistinctPerUcid(t *testing.T) {
+	fp := vault.FingerprintData{AudioSeed: 42}
+	a := buildContextFingerprintPrefs(fp, 6)
+	b := buildContextFingerprintPrefs(fp, 7)
+	an, _ := a[0]["name"].(string)
+	bn, _ := b[0]["name"].(string)
+	if an == bn {
+		t.Fatalf("pref names not keyed per userContextId: %q == %q", an, bn)
 	}
 }

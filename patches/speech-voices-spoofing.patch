@@ -193,7 +193,7 @@ index xxxxxxxxxx..yyyyyyyyyy 100644
 
 +// Per-context speech voices
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::SpeechVoicesManager::IsFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setSpeechVoices(DOMString voices);
 +};
 +

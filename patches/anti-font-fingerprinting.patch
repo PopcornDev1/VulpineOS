@@ -565,7 +565,7 @@ index 7c509eb87e..7a076768d0 100644
  
 +// Font spacing seed interface for privacy-preserving font fingerprinting
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::FontSpacingSeedManager::IsFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setFontSpacingSeed(unsigned long seed);
 +};
 +

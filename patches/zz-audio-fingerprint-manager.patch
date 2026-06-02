@@ -231,7 +231,7 @@ diff --git a/dom/webidl/Window.webidl b/dom/webidl/Window.webidl
 +
 +// Audio fingerprint seed for per-context audio fingerprinting
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::AudioFingerprintManager::IsFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setAudioFingerprintSeed(unsigned long seed);
  };
  

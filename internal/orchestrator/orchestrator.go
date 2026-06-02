@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -440,7 +441,7 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, userContextID uin
 	}
 
 	if citizen.Fingerprint != "" {
-		if err := o.applyFingerprintToContext(contextID, citizen.Fingerprint, citizen.Locale, citizen.Timezone); err != nil {
+		if err := o.applyFingerprintToContext(contextID, userContextID, citizen.Fingerprint, citizen.Locale, citizen.Timezone); err != nil {
 			return err
 		}
 	}
@@ -461,7 +462,7 @@ func (o *Orchestrator) applyAgentToContext(contextID string, userContextID uint3
 		return fmt.Errorf("agent not found")
 	}
 	if agent.Fingerprint != "" {
-		if err := o.applyFingerprintToContext(contextID, agent.Fingerprint, agent.Locale, agent.Timezone); err != nil {
+		if err := o.applyFingerprintToContext(contextID, userContextID, agent.Fingerprint, agent.Locale, agent.Timezone); err != nil {
 			return err
 		}
 	}
@@ -479,64 +480,51 @@ func (o *Orchestrator) applyAgentToContext(contextID string, userContextID uint3
 	return nil
 }
 
-// buildFingerprintInitScript builds a per-context init script that drives the
-// Func-gated, self-destructing window.set* fingerprint setters for the
+// buildContextFingerprintPrefs builds the privileged-side per-context
+// fingerprint delivery: roverfox.s.<key>_<userContextId> prefs for the
 // high-entropy surfaces NOT covered by the stock per-context Browser.*Override
-// calls (webgl vendor/renderer, audio seed, font spacing seed, font list,
-// oscpu, hardware concurrency). Registered on the browser context, it runs at
-// document-start on every page in that context (including pages opened by
-// OpenClaw), so each fresh window re-applies the identity before its own
-// scripts read these surfaces. Returns "" when there is nothing to set.
-func buildFingerprintInitScript(fp vault.FingerprintData) string {
-	type setter struct {
-		method string
-		arg    interface{}
+// calls (webgl vendor/renderer, audio seed, font-spacing seed, oscpu, hardware
+// concurrency, WebRTC IP). The C++ managers read these prefs per-context on
+// every page load, so no content-world window.set* call is needed and those
+// setters stay invisible to web content (ChromeOnly). Returns nil when there
+// is nothing to set. (Font list and the WebGL 147-param set are not pref-backed
+// — see FINGERPRINT_SECURE_PLAN.md Phase 2.1.)
+func buildContextFingerprintPrefs(fp vault.FingerprintData, userContextID uint32) []map[string]interface{} {
+	type kv struct{ key, val string }
+	var items []kv
+	addStr := func(key, val string) {
+		if val != "" {
+			items = append(items, kv{key, val})
+		}
 	}
-	var setters []setter
-	if fp.WebGLVendor != "" {
-		setters = append(setters, setter{"setWebGLVendor", fp.WebGLVendor})
-	}
-	if fp.WebGLRenderer != "" {
-		setters = append(setters, setter{"setWebGLRenderer", fp.WebGLRenderer})
-	}
+	addStr("webgl_vendor", fp.WebGLVendor)
+	addStr("webgl_renderer", fp.WebGLRenderer)
 	if fp.AudioSeed != 0 {
-		setters = append(setters, setter{"setAudioFingerprintSeed", fp.AudioSeed})
+		items = append(items, kv{"audioFingerprintSeed", strconv.FormatUint(uint64(fp.AudioSeed), 10)})
 	}
 	if fp.FontSpacingSeed != 0 {
-		setters = append(setters, setter{"setFontSpacingSeed", fp.FontSpacingSeed})
+		items = append(items, kv{"seed", strconv.FormatUint(uint64(fp.FontSpacingSeed), 10)})
 	}
-	if len(fp.Fonts) > 0 {
-		setters = append(setters, setter{"setFontList", strings.Join(fp.Fonts, ",")})
-	}
-	if fp.OsCPU != "" {
-		setters = append(setters, setter{"setNavigatorOscpu", fp.OsCPU})
-	}
+	addStr("nav_oscpu", fp.OsCPU)
 	if fp.HardwareConcurrency > 0 {
-		setters = append(setters, setter{"setNavigatorHardwareConcurrency", fp.HardwareConcurrency})
+		items = append(items, kv{"nav_hwc", strconv.Itoa(fp.HardwareConcurrency)})
 	}
-	if fp.WebRTCIPv4 != "" {
-		setters = append(setters, setter{"setWebRTCIPv4", fp.WebRTCIPv4})
+	addStr("webrtc_ipv4", fp.WebRTCIPv4)
+	addStr("webrtc_ipv6", fp.WebRTCIPv6)
+	if len(items) == 0 {
+		return nil
 	}
-	if fp.WebRTCIPv6 != "" {
-		setters = append(setters, setter{"setWebRTCIPv6", fp.WebRTCIPv6})
+	prefs := make([]map[string]interface{}, 0, len(items))
+	for _, it := range items {
+		prefs = append(prefs, map[string]interface{}{
+			"name":  fmt.Sprintf("roverfox.s.%s_%d", it.key, userContextID),
+			"value": it.val,
+		})
 	}
-	if len(setters) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("(function(){var w=window;function f(n,v){try{if(typeof w[n]==='function')w[n](v);}catch(e){}}\n")
-	for _, s := range setters {
-		arg, err := json.Marshal(s.arg)
-		if err != nil {
-			continue
-		}
-		fmt.Fprintf(&b, "f(%q,%s);\n", s.method, string(arg))
-	}
-	b.WriteString("})();")
-	return b.String()
+	return prefs
 }
 
-func (o *Orchestrator) applyFingerprintToContext(contextID, fpJSON, explicitLocale, explicitTimezone string) error {
+func (o *Orchestrator) applyFingerprintToContext(contextID string, userContextID uint32, fpJSON, explicitLocale, explicitTimezone string) error {
 	raw := map[string]interface{}{}
 	if err := json.Unmarshal([]byte(fpJSON), &raw); err != nil {
 		return fmt.Errorf("parse fingerprint: %w", err)
@@ -650,18 +638,16 @@ func (o *Orchestrator) applyFingerprintToContext(contextID, fpJSON, explicitLoca
 		}
 	}
 
-	// Per-context high-entropy surfaces (webgl/audio/fonts/oscpu/hwconc) that the
-	// stock overrides above do not cover: drive the window.set* setters via a
-	// context init script so every page in this context re-applies them at
-	// document-start.
-	if script := buildFingerprintInitScript(fp); script != "" {
-		if _, err := o.Client.Call("", "Browser.setInitScripts", map[string]interface{}{
-			"browserContextId": contextID,
-			"scripts": []map[string]interface{}{
-				{"script": script},
-			},
+	// Per-context high-entropy surfaces (webgl/audio/font-spacing/oscpu/hwconc/
+	// webrtc) that the stock overrides above do not cover: deliver them from the
+	// privileged side as roverfox.s.<key>_<userContextId> prefs, which the C++
+	// managers read per-context on every page load. No content-world setter is
+	// involved, so the window.set* methods stay invisible to web content.
+	if prefs := buildContextFingerprintPrefs(fp, userContextID); len(prefs) > 0 {
+		if _, err := o.Client.Call("", "Browser.setContextFingerprint", map[string]interface{}{
+			"prefs": prefs,
 		}); err != nil {
-			return fmt.Errorf("set fingerprint init script: %w", err)
+			return fmt.Errorf("set context fingerprint: %w", err)
 		}
 	}
 
