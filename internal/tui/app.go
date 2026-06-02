@@ -1582,8 +1582,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.cfg.RemoveGlobalSkill(msg.Name)
 			}
 			a.cfg.Save()
-			exe, _ := os.Executable()
-			a.cfg.GenerateNanoClawConfig(exe, a.cfg.BinaryPath)
 			state := "disabled"
 			if msg.Enabled {
 				state = "enabled"

@@ -288,12 +288,6 @@ func (api *ControlAPI) skillsSet(params json.RawMessage) (json.RawMessage, error
 	if err := api.Config.Save(); err != nil {
 		return nil, err
 	}
-	if api.Config.SetupComplete {
-		exe, _ := os.Executable()
-		if err := api.Config.GenerateNanoClawConfig(exe, api.Config.BinaryPath); err != nil {
-			return nil, err
-		}
-	}
 	return json.Marshal(map[string]any{"skills": summarizeSkills(api.Config)})
 }
 

@@ -5,8 +5,6 @@ VULPINEOS_REPO="${VULPINEOS_REPO:-VulpineOS/VulpineOS}"
 VULPINEOS_HOME="${HOME}/.vulpineos"
 VULPINEOS_BIN_DIR="${VULPINEOS_BIN_DIR:-}"
 VULPINEOS_BROWSER_DIR="${VULPINEOS_BROWSER_DIR:-${VULPINEOS_HOME}/browser}"
-NANOCLAW_SRC="${VULPINE_NANOCLAW_SRC:-${VULPINEOS_HOME}/nanoclaw-src}"
-NANOCLAW_PROFILE="${VULPINE_NANOCLAW_HOME:-${VULPINEOS_HOME}/nanoclaw}"
 
 log() {
     printf '%s\n' "$*"
@@ -276,93 +274,6 @@ install_browser() {
     log "Installed Camoufox: ${browser_bin}"
 }
 
-require_node_22() {
-    have node || fatal "Node.js 22.16+ is required for NanoClaw agents. Install Node.js 22.16+ and rerun this installer."
-    local node_version
-    node_version="$(node -p 'process.versions.node')"
-    python3 - "${node_version}" <<'PY' || fatal "Node.js 22.16+ is required for NanoClaw agents. Found ${node_version}."
-import sys
-parts = tuple(int(part) for part in sys.argv[1].split('.')[:3])
-sys.exit(0 if parts >= (22, 16, 0) else 1)
-PY
-}
-
-check_nanoclaw_prereqs() {
-    have git || fatal "git is required to install NanoClaw."
-    require_node_22
-    if ! have pnpm; then
-        have corepack || fatal "pnpm or corepack is required to install NanoClaw."
-        corepack enable >/dev/null 2>&1 || fatal "failed to enable corepack for pnpm."
-        corepack prepare pnpm@latest --activate >/dev/null 2>&1 || true
-    fi
-    have pnpm || fatal "pnpm is required to install NanoClaw."
-    have docker || fatal "Docker is required for NanoClaw agents. Install Docker, start it, and rerun this installer."
-    docker info >/dev/null 2>&1 || fatal "Docker is installed but not running. Start Docker and rerun this installer."
-}
-
-install_nanoclaw() {
-    log "Installing NanoClaw..."
-    check_nanoclaw_prereqs
-
-    mkdir -p "$(dirname "${NANOCLAW_SRC}")"
-    local tmp_src="${NANOCLAW_SRC}.tmp.$$"
-    rm -rf "${tmp_src}"
-    git clone --depth=1 https://github.com/qwibitai/nanoclaw.git "${tmp_src}"
-    if ! (cd "${tmp_src}" && pnpm install --frozen-lockfile && pnpm build); then
-        rm -rf "${tmp_src}"
-        fatal "NanoClaw build failed."
-    fi
-
-    rm -rf "${NANOCLAW_SRC}"
-    mv "${tmp_src}" "${NANOCLAW_SRC}"
-    mkdir -p "${NANOCLAW_PROFILE}"
-    cat > "${NANOCLAW_PROFILE}/nanoclaw" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-SRC="${VULPINE_NANOCLAW_SRC:-${HOME}/.vulpineos/nanoclaw-src}"
-PROFILE="${VULPINE_NANOCLAW_HOME:-${HOME}/.vulpineos/nanoclaw}"
-NODE_BIN="${VULPINE_NODE_BIN:-node}"
-if [ "$NODE_BIN" = "node" ]; then
-  for _nc in \
-    "$HOME/.nvm/versions/node"/v22*/bin/node \
-    "$HOME/.asdf/installs/nodejs"/22*/bin/node \
-    "$HOME/.fnm/node-versions"/v22*/installation/bin/node \
-    "/opt/homebrew/opt/node@22/bin/node" \
-    "/home/linuxbrew/.linuxbrew/opt/node@22/bin/node"; do
-    if [ -x "$_nc" ]; then NODE_BIN="$_nc"; break; fi
-  done
-  unset _nc
-fi
-NODE_DIR="$(dirname "$NODE_BIN")"
-PATH="$NODE_DIR:$PATH"
-mkdir -p "$PROFILE"
-cd "$PROFILE"
-
-run_tsx() {
-    local tsx_bin="${SRC}/node_modules/.bin/tsx"
-    if [ -x "$tsx_bin" ]; then
-        exec "$NODE_BIN" "$tsx_bin" "$@"
-    fi
-    exec pnpm --dir "$SRC" exec tsx "$@"
-}
-
-if [ "${1:-}" = "run" ]; then
-    shift
-    if [ -f "${SRC}/dist/index.js" ]; then
-        exec "$NODE_BIN" "${SRC}/dist/index.js" "$@"
-    fi
-    run_tsx "${SRC}/src/index.ts" "$@"
-fi
-
-if [ -f "${SRC}/dist/cli/client.js" ]; then
-    exec "$NODE_BIN" "${SRC}/dist/cli/client.js" "$@"
-fi
-run_tsx "${SRC}/src/cli/client.ts" "$@"
-EOF
-    chmod 0700 "${NANOCLAW_PROFILE}/nanoclaw"
-}
-
 main() {
     log "Installing VulpineOS..."
     have python3 || fatal "python3 is required to resolve release assets and update local config."
@@ -377,7 +288,6 @@ main() {
     bin_dir="$(select_bin_dir)"
 
     mkdir -p "${VULPINEOS_HOME}" "${bin_dir}"
-    check_nanoclaw_prereqs
     asset_env="$(resolve_release_assets "${goos}" "${goarch}" "${browser_os}" "${browser_arch}")"
     eval "${asset_env}"
 
@@ -390,7 +300,6 @@ main() {
     log "Installed CLI: ${bin_dir}/vulpineos"
 
     install_browser "${bin_dir}"
-    install_nanoclaw
     ensure_bin_dir_on_path "${bin_dir}"
 
     log ""
