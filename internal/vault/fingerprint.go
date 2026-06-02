@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -9,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"vulpineos/internal/extensions"
 )
 
 const fallbackFirefoxVersion = "146.0"
@@ -81,10 +84,35 @@ func DefaultPlatformForHostOS() string {
 	}
 }
 
-// GenerateFingerprint returns a deterministic public profile config for the host OS.
-// Private builds can replace this path with a richer provider.
+// GenerateFingerprint returns a per-identity fingerprint config (camoufox
+// dotted-key JSON) for the host OS, seeded by the supplied stable id.
+//
+// It generates through three tiers, in priority order:
+//
+//  1. A registered private FingerprintProvider, when one is available AND it
+//     can produce a real value for this identity. A provider that returns
+//     ErrUnavailable is skipped — we never substitute a guessed provider value.
+//  2. BrowserForge — the public default generator (pythonlib/genfp.py). Used
+//     whenever the Python pipeline is installed.
+//  3. The deterministic offline fallback — used when neither of the above is
+//     available, so generation always succeeds even with no Python present.
 func GenerateFingerprint(seed string) (string, error) {
-	return generateFallback(seed, HostOS())
+	hostOS := HostOS()
+
+	// Tier 1: private provider (never guess — fall through on unavailable/error).
+	if p := extensions.Registry.Fingerprint(); p != nil && p.Available() {
+		if fp, err := p.Generate(context.Background(), seed, hostOS); err == nil && strings.TrimSpace(fp) != "" {
+			return fp, nil
+		}
+	}
+
+	// Tier 2: BrowserForge public default (when the Python pipeline is present).
+	if fp, err := generateBrowserForge(seed, hostOS); err == nil && strings.TrimSpace(fp) != "" {
+		return fp, nil
+	}
+
+	// Tier 3: deterministic offline fallback (always available).
+	return generateFallback(seed, hostOS)
 }
 
 // DefaultUserAgentForHost returns a Firefox-compatible user agent for the
