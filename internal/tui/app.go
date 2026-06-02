@@ -22,7 +22,6 @@ import (
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
 	"vulpineos/internal/monitor"
-	"vulpineos/internal/nanoclaw"
 	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/proxy"
 	"vulpineos/internal/runtimeaudit"
@@ -2667,21 +2666,6 @@ func (a *App) completeEmbeddedReconfigure() {
 	a.focus = FocusSettings
 	a.settings.SetActive(true)
 	a.settings.SetConfig(a.cfg)
-	if a.control == nil && a.cfg != nil && a.cfg.SetupComplete {
-		exe, _ := os.Executable()
-		if err := a.cfg.GenerateNanoClawConfig(exe, a.cfg.BinaryPath); err != nil {
-			a.notice = "Configuration saved; NanoClaw update failed: " + err.Error()
-			a.noticeTTL = 4
-			return
-		}
-		if _, err := os.Stat(filepath.Join(config.NanoClawProfileDir(), "data", "v2.db")); err == nil {
-			if err := nanoclaw.RepairVulpineProfileDatabase(config.NanoClawProfileDir(), a.cfg.Provider, a.cfg.Model, a.cfg.FoxbridgeCDPURL); err != nil {
-				a.notice = "Configuration saved; NanoClaw database update failed: " + err.Error()
-				a.noticeTTL = 4
-				return
-			}
-		}
-	}
 	a.notice = "Configuration updated"
 	a.noticeTTL = 3
 }
@@ -3120,11 +3104,6 @@ func (a *App) agentRuntimeConfig(agent *vault.Agent) (string, func(), error) {
 	if agent == nil {
 		return "", nil, fmt.Errorf("agent not found")
 	}
-	if a.cfg != nil {
-		if err := config.RepairNanoClawProfile(a.activeFoxbridgeCDPURL()); err != nil {
-			return "", nil, fmt.Errorf("repair nanoclaw profile: %w", err)
-		}
-	}
 	if a.orch == nil {
 		return "", nil, fmt.Errorf("orchestrator not available")
 	}
@@ -3132,7 +3111,11 @@ func (a *App) agentRuntimeConfig(agent *vault.Agent) (string, func(), error) {
 	if err != nil {
 		return "", nil, err
 	}
-	return a.orch.PrepareScopedNanoClawConfig(contextID)
+	cleanup, err := a.orch.AgentRuntimeConfig(contextID)
+	if err != nil {
+		return "", nil, err
+	}
+	return "", cleanup, nil
 }
 
 func shortContextID(contextID string) string {

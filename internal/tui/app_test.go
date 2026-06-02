@@ -1,14 +1,11 @@
 package tui
 
 import (
-	"bufio"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"go/parser"
 	"go/token"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,10 +15,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"vulpineos/internal/agentmsg"
 	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/pool"
+	"vulpineos/internal/runtimeaudit"
 	"vulpineos/internal/testutil"
 	"vulpineos/internal/tui/settings"
 	"vulpineos/internal/tui/shared"
@@ -72,59 +71,6 @@ func openTestVault(t *testing.T) *vault.DB {
 		_ = db.Close()
 	})
 	return db
-}
-
-func startFakeNanoClawSocket(t *testing.T) func() {
-	t.Helper()
-	home, err := os.MkdirTemp("/tmp", "vot-*")
-	if err != nil {
-		t.Fatalf("create short temp home: %v", err)
-	}
-	t.Setenv("HOME", home)
-	dataDir := filepath.Join(home, ".vulpineos", "nanoclaw", "data")
-	if err := os.MkdirAll(dataDir, 0700); err != nil {
-		t.Fatalf("mkdir nanoclaw data dir: %v", err)
-	}
-	db, err := sql.Open("sqlite", filepath.Join(dataDir, "v2.db"))
-	if err != nil {
-		t.Fatalf("open fake nanoclaw db: %v", err)
-	}
-	_, err = db.Exec(`
-CREATE TABLE agent_groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, folder TEXT NOT NULL UNIQUE, agent_provider TEXT, created_at TEXT NOT NULL);
-CREATE TABLE messaging_groups (id TEXT PRIMARY KEY, channel_type TEXT NOT NULL, platform_id TEXT NOT NULL, name TEXT, is_group INTEGER DEFAULT 0, unknown_sender_policy TEXT NOT NULL DEFAULT 'strict', created_at TEXT NOT NULL, denied_at TEXT, UNIQUE(channel_type, platform_id));
-CREATE TABLE messaging_group_agents (id TEXT PRIMARY KEY, messaging_group_id TEXT NOT NULL REFERENCES messaging_groups(id), agent_group_id TEXT NOT NULL REFERENCES agent_groups(id), session_mode TEXT DEFAULT 'shared', priority INTEGER DEFAULT 0, created_at TEXT NOT NULL, engage_mode TEXT, engage_pattern TEXT, sender_scope TEXT, ignored_message_policy TEXT, UNIQUE(messaging_group_id, agent_group_id));
-INSERT INTO agent_groups (id, name, folder, created_at) VALUES ('ag-1', 'vulpine-test', 'vulpine-test', '2026-01-01T00:00:00Z');
-`)
-	if err != nil {
-		_ = db.Close()
-		t.Fatalf("create fake nanoclaw schema: %v", err)
-	}
-	_ = db.Close()
-
-	socketPath := filepath.Join(dataDir, "cli.sock")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("listen fake nanoclaw socket: %v", err)
-	}
-	done := make(chan struct{})
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				_, _ = bufio.NewReader(c).ReadString('\n')
-				<-done
-			}(conn)
-		}
-	}()
-	return func() {
-		close(done)
-		_ = listener.Close()
-		_ = os.RemoveAll(home)
-	}
 }
 
 func TestNewAppReconcilesNonTerminalAgentsToPaused(t *testing.T) {
@@ -243,7 +189,7 @@ func TestAgentRuntimeConfigCreatesScopedAgentContext(t *testing.T) {
 		t.Fatalf("CreateAgent: %v", err)
 	}
 
-	orch := orchestrator.New(nil, client, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, "")
+	orch := orchestrator.New(nil, client, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1})
 	if err := orch.Pool.Start(); err != nil {
 		t.Fatalf("pool start: %v", err)
 	}
@@ -257,16 +203,9 @@ func TestAgentRuntimeConfigCreatesScopedAgentContext(t *testing.T) {
 	}
 	defer cleanup()
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read runtime config: %v", err)
-	}
-	if strings.Contains(string(data), "cdpUrl") {
-		if strings.Contains(string(data), "ws://127.0.0.1:9222") {
-			t.Fatalf("runtime config kept stale cdpUrl: %s", data)
-		}
-	} else {
-		t.Fatalf("runtime config missing scoped cdpUrl: %s", data)
+	// The native runtime drives the pooled context directly and needs no config file.
+	if path != "" {
+		t.Fatalf("native runtime needs no config file, got path %q", path)
 	}
 
 	persisted, err := db.GetAgent(agent.ID)
@@ -3083,29 +3022,59 @@ func TestRemoteGracefulShutdownPausesActiveAgents(t *testing.T) {
 	}
 }
 
+// shutdownFakeRuntime is a controllable AgentRuntime for testing gracefulShutdown
+// without a live browser/runtime. It reports a fixed live-agent list and records
+// PauseAgent calls.
+type shutdownFakeRuntime struct {
+	statuses []agentmsg.AgentStatus
+	paused   map[string]bool
+}
+
+func (f *shutdownFakeRuntime) SetRuntimeAudit(*runtimeaudit.Manager)             {}
+func (f *shutdownFakeRuntime) StatusChan() <-chan agentmsg.AgentStatus           { return nil }
+func (f *shutdownFakeRuntime) ConversationChan() <-chan agentmsg.ConversationMsg { return nil }
+func (f *shutdownFakeRuntime) SpawnIsolated(string, string, string, func(), ...string) (string, error) {
+	return "", nil
+}
+func (f *shutdownFakeRuntime) SpawnWithSessionIsolated(string, string, string, string, func()) (string, error) {
+	return "", nil
+}
+func (f *shutdownFakeRuntime) ResumeWithSessionIsolated(string, string, string, func()) (string, error) {
+	return "", nil
+}
+func (f *shutdownFakeRuntime) Kill(string) error { return nil }
+func (f *shutdownFakeRuntime) PauseAgent(id string) error {
+	if f.paused == nil {
+		f.paused = map[string]bool{}
+	}
+	f.paused[id] = true
+	for i := range f.statuses {
+		if f.statuses[i].AgentID == id {
+			f.statuses = append(f.statuses[:i], f.statuses[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+func (f *shutdownFakeRuntime) KillAll()                     {}
+func (f *shutdownFakeRuntime) Dispose()                     {}
+func (f *shutdownFakeRuntime) Count() int                   { return len(f.statuses) }
+func (f *shutdownFakeRuntime) List() []agentmsg.AgentStatus { return f.statuses }
+
 func TestGracefulShutdownPausesActiveAgents(t *testing.T) {
 	db := openTestVault(t)
-	stopNanoClaw := startFakeNanoClawSocket(t)
-	defer stopNanoClaw()
 
 	agent, err := db.CreateAgent("active-agent", "task", "{}")
 	if err != nil {
 		t.Fatalf("create active agent: %v", err)
 	}
 
-	nanoclawPath := filepath.Join(t.TempDir(), "fake-nanoclaw")
-	if err := os.WriteFile(nanoclawPath, []byte("#!/bin/sh\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
-		t.Fatalf("write fake nanoclaw: %v", err)
-	}
-
-	orch := orchestrator.New(nil, nil, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, nanoclawPath)
+	rt := &shutdownFakeRuntime{statuses: []agentmsg.AgentStatus{{AgentID: agent.ID, Status: "active"}}}
+	orch := orchestrator.New(nil, nil, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, orchestrator.Opts{AgentRuntime: rt})
 	defer orch.Agents.Dispose()
 	defer orch.Pool.Close()
 
 	app := NewApp(nil, nil, orch, db, nil, nil)
-	if _, err := orch.Agents.SpawnWithSessionIsolated(agent.ID, "hold", "shutdown-"+agent.ID, "", nil); err != nil {
-		t.Fatalf("spawn fake agent: %v", err)
-	}
 	if err := db.UpdateAgentStatus(agent.ID, "active"); err != nil {
 		t.Fatalf("set active status: %v", err)
 	}
@@ -3119,10 +3088,11 @@ func TestGracefulShutdownPausesActiveAgents(t *testing.T) {
 	if stored.Status != "paused" {
 		t.Fatalf("agent status = %q, want paused", stored.Status)
 	}
-
-	statuses := orch.Agents.List()
-	if len(statuses) != 0 {
-		t.Fatalf("manager statuses = %d, want 0 live agents after pause", len(statuses))
+	if !rt.paused[agent.ID] {
+		t.Fatalf("PauseAgent was not called for the active agent")
+	}
+	if len(orch.Agents.List()) != 0 {
+		t.Fatalf("runtime List = %d, want 0 live agents after pause", len(orch.Agents.List()))
 	}
 }
 

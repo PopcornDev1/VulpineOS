@@ -9,7 +9,6 @@ import (
 
 	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
-	"vulpineos/internal/nanoclaw"
 	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/pool"
 	"vulpineos/internal/testutil"
@@ -110,7 +109,7 @@ func TestControlAPISettingsGetReturnsConfigAndProxies(t *testing.T) {
 	}
 }
 
-func TestControlAPIConfigSetPreservesBlankAPIKeyAndRegeneratesNanoClawConfig(t *testing.T) {
+func TestControlAPIConfigSetPreservesBlankAPIKey(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	cfg := &config.Config{
@@ -142,18 +141,11 @@ func TestControlAPIConfigSetPreservesBlankAPIKeyAndRegeneratesNanoClawConfig(t *
 	if loaded.APIKey != "sk-existing" || loaded.Model != "anthropic/claude-opus-4-6" {
 		t.Fatalf("saved config = %#v", loaded)
 	}
-	data, err := os.ReadFile(config.NanoClawConfigPath())
-	if err != nil {
-		t.Fatalf("read nanoclaw config: %v", err)
-	}
-	if !strings.Contains(string(data), "sk-existing") || !strings.Contains(string(data), "anthropic/claude-opus-4-6") {
-		t.Fatalf("nanoclaw config was not regenerated with preserved key/model: %s", data)
-	}
 }
 
-func TestControlAPIStatusGetHandlesTypedNilDaemon(t *testing.T) {
+func TestControlAPIStatusGetHandlesNilDaemon(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	api := &ControlAPI{Daemon: (*nanoclaw.Daemon)(nil)}
+	api := &ControlAPI{}
 
 	out := callControl[struct {
 		NanoClawDaemonRunning bool   `json:"nanoclaw_daemon_running"`
@@ -161,7 +153,7 @@ func TestControlAPIStatusGetHandlesTypedNilDaemon(t *testing.T) {
 	}](t, api, "status.get", map[string]any{})
 
 	if out.NanoClawDaemonRunning {
-		t.Fatal("nanoclaw daemon should report stopped for typed nil daemon")
+		t.Fatal("daemon should report stopped when no daemon is set")
 	}
 	if out.BrowserRoute != "disabled" {
 		t.Fatalf("browser route = %q, want disabled", out.BrowserRoute)
@@ -231,7 +223,7 @@ func TestControlAPIAgentRuntimeConfigCreatesScopedAgentContext(t *testing.T) {
 		t.Fatalf("CreateAgent: %v", err)
 	}
 
-	orch := orchestrator.New(nil, client, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, "")
+	orch := orchestrator.New(nil, client, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1})
 	if err := orch.Pool.Start(); err != nil {
 		t.Fatalf("pool start: %v", err)
 	}
@@ -251,15 +243,9 @@ func TestControlAPIAgentRuntimeConfigCreatesScopedAgentContext(t *testing.T) {
 	}
 	defer cleanup()
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read runtime config: %v", err)
-	}
-	if !strings.Contains(string(data), "cdpUrl") {
-		t.Fatalf("runtime config missing scoped cdpUrl: %s", data)
-	}
-	if strings.Contains(string(data), "ws://127.0.0.1:9222") {
-		t.Fatalf("runtime config kept stale cdpUrl: %s", data)
+	// The native runtime drives the pooled context directly and needs no config file.
+	if path != "" {
+		t.Fatalf("native runtime needs no config file, got path %q", path)
 	}
 
 	persisted, err := db.GetAgent(agent.ID)

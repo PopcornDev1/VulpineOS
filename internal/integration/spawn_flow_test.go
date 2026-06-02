@@ -145,26 +145,24 @@ func TestSpawnFlow_TrackOwnership(t *testing.T) {
 		t.Fatalf("create citizen: %v", err)
 	}
 
-	availBefore, activeBefore, totalBefore := env.Orch.Pool.Stats()
+	_, _, totalBefore := env.Orch.Pool.Stats()
 
-	_, spawnErr := env.Orch.SpawnCitizen(citizen.ID, tmpl.ID)
-	if spawnErr == nil {
-		t.Fatal("expected spawn to fail in integration harness with missing NanoClaw binary")
+	// The native runtime spawns in-process and returns immediately; the acquired
+	// context is owned by the agent until it completes or is killed.
+	agentID, spawnErr := env.Orch.SpawnCitizen(citizen.ID, tmpl.ID)
+	if spawnErr != nil {
+		t.Fatalf("SpawnCitizen: %v", spawnErr)
+	}
+	if agentID == "" {
+		t.Fatal("expected a non-empty agent id")
 	}
 
-	t.Logf("spawn failed (expected in test env): %v", spawnErr)
-
-	_, activeAfterCleanup, _ := env.Orch.Pool.Stats()
-	if activeAfterCleanup != activeBefore {
-		t.Fatalf("pool active = %d, want %d (after cleanup)", activeAfterCleanup, activeBefore)
-	}
-
-	availAfter, _, totalAfter := env.Orch.Pool.Stats()
-	if availAfter != availBefore+1 {
-		t.Errorf("pool available = %d, want %d after failed spawn release", availAfter, availBefore+1)
-	}
+	_, activeAfter, totalAfter := env.Orch.Pool.Stats()
 	if totalAfter != totalBefore+1 {
-		t.Fatalf("pool total = %d, want %d after reusable context creation", totalAfter, totalBefore+1)
+		t.Fatalf("pool total = %d, want %d after context creation", totalAfter, totalBefore+1)
+	}
+	if activeAfter < 1 {
+		t.Fatalf("pool active = %d, want >=1 (context owned by spawned agent)", activeAfter)
 	}
 }
 

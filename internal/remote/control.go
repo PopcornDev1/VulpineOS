@@ -14,7 +14,6 @@ import (
 	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
-	"vulpineos/internal/nanoclaw"
 	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/proxy"
 	"vulpineos/internal/vault"
@@ -173,17 +172,6 @@ func (api *ControlAPI) configSet(params json.RawMessage) (json.RawMessage, error
 	}
 	if err := api.Config.Save(); err != nil {
 		return nil, err
-	}
-	if api.Config.SetupComplete {
-		exe, _ := os.Executable()
-		if err := api.Config.GenerateNanoClawConfig(exe, api.Config.BinaryPath); err != nil {
-			return nil, err
-		}
-		if _, err := os.Stat(filepath.Join(config.NanoClawProfileDir(), "data", "v2.db")); err == nil {
-			if err := nanoclaw.RepairVulpineProfileDatabase(config.NanoClawProfileDir(), api.Config.Provider, api.Config.Model, api.Config.FoxbridgeCDPURL); err != nil {
-				return nil, err
-			}
-		}
 	}
 	return json.Marshal(summarizeConfig(api.Config))
 }
@@ -622,7 +610,7 @@ func (api *ControlAPI) agentsSpawn(params json.RawMessage) (json.RawMessage, err
 		_ = api.Vault.AppendMessage(agent.ID, "system", "Failed to prepare runtime: "+err.Error(), 0)
 		return json.Marshal(map[string]any{"agentId": agent.ID})
 	}
-	intro := nanoclaw.IntroMessage(p.Name, p.Task)
+	intro := agentprompt.IntroMessage(p.Name, p.Task)
 	sessionName := "vulpine-" + agent.ID
 	if _, err := api.Orchestrator.Agents.SpawnWithSessionIsolated(agent.ID, intro, sessionName, configPath, cleanup); err != nil {
 		_ = api.Vault.UpdateAgentStatus(agent.ID, "error")
@@ -740,11 +728,6 @@ func (api *ControlAPI) agentRuntimeConfig(agent *vault.Agent) (string, func(), e
 	if agent == nil {
 		return "", nil, fmt.Errorf("agent not found")
 	}
-	if api.Config != nil {
-		if err := config.RepairNanoClawProfile(api.activeFoxbridgeCDPURL()); err != nil {
-			return "", nil, fmt.Errorf("repair nanoclaw profile: %w", err)
-		}
-	}
 	if api.Orchestrator == nil {
 		return "", nil, fmt.Errorf("orchestrator not available")
 	}
@@ -752,7 +735,11 @@ func (api *ControlAPI) agentRuntimeConfig(agent *vault.Agent) (string, func(), e
 	if err != nil {
 		return "", nil, err
 	}
-	return api.Orchestrator.PrepareScopedNanoClawConfig(contextID)
+	cleanup, err := api.Orchestrator.AgentRuntimeConfig(contextID)
+	if err != nil {
+		return "", nil, err
+	}
+	return "", cleanup, nil
 }
 
 func (api *ControlAPI) statusGet() (json.RawMessage, error) {
@@ -765,7 +752,7 @@ func (api *ControlAPI) statusGet() (json.RawMessage, error) {
 		"browser_route_source":        source,
 		"browser_window":              api.browserWindow(),
 		"nanoclaw_daemon_running":     false,
-		"nanoclaw_profile_configured": config.NanoClawProfileBrowserRoute() != "",
+		"nanoclaw_profile_configured": false,
 	}
 	if api.Kernel != nil {
 		out["kernel_running"] = api.Kernel.Running()

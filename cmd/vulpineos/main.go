@@ -33,7 +33,6 @@ import (
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
 	"vulpineos/internal/mcp"
-	"vulpineos/internal/nanoclaw"
 	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/pagecache"
 	"vulpineos/internal/pool"
@@ -60,59 +59,11 @@ var (
 	stderr io.Writer = os.Stderr
 )
 
-var startNanoClawDaemonIfAvailable = func(cfg *config.Config, audit *runtimeaudit.Manager) *nanoclaw.Daemon {
-	mgr := nanoclaw.NewManager("")
-	if !mgr.NanoClawInstalled() {
-		return nil
-	}
-	daemon := nanoclaw.NewDaemon("")
-	daemon.SetEnv(nanoclaw.ProviderRuntimeEnv(cfg))
-	if err := daemon.Start(); err != nil {
-		log.Printf("Warning: NanoClaw daemon failed to start: %v (agents won't run)", err)
-		if audit != nil {
-			_, _ = audit.Log("nanoclaw", "error", "daemon_start_failed", "NanoClaw daemon failed to start", map[string]string{
-				"error": err.Error(),
-			})
-		}
-		return nil
-	}
-	if audit != nil {
-		_, _ = audit.Log("nanoclaw", "info", "daemon_started", "NanoClaw daemon started", nil)
-	}
-	if cfg != nil {
-		if err := config.RepairNanoClawProfile(cfg.FoxbridgeCDPURL); err != nil {
-			log.Printf("Warning: could not repair NanoClaw profile after daemon start: %v", err)
-			if audit != nil {
-				_, _ = audit.Log("nanoclaw", "warn", "profile_repair_failed", "NanoClaw profile repair failed after daemon start", map[string]string{
-					"error": err.Error(),
-				})
-			}
-		}
-		if err := nanoclaw.RepairVulpineProfileDatabase(config.NanoClawProfileDir(), cfg.Provider, cfg.Model, cfg.FoxbridgeCDPURL); err != nil {
-			log.Printf("Warning: could not repair NanoClaw database after daemon start: %v", err)
-			if audit != nil {
-				_, _ = audit.Log("nanoclaw", "warn", "database_repair_failed", "NanoClaw database repair failed after daemon start", map[string]string{
-					"error": err.Error(),
-				})
-			}
-		}
-	}
-	return daemon
-}
-
-// useNativeAgentRuntime reports whether the in-process native agent runtime
-// (internal/agentcore) should be used instead of the NanoClaw container runtime.
-// Enabled with VULPINE_AGENT_RUNTIME=native.
-func useNativeAgentRuntime() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv("VULPINE_AGENT_RUNTIME")), "native")
-}
-
-// nativeAgentRuntime builds the native agent backend from config, or returns nil
-// (so the orchestrator falls back to NanoClaw) when native mode is off or
-// prerequisites are missing. The native backend drives the host Camoufox
-// directly via the MCP/Juggler tools — no daemon, no per-agent container.
+// nativeAgentRuntime builds the native, in-process agent backend from config.
+// It drives the host Camoufox directly via the MCP/Juggler tools — no daemon,
+// no per-agent container. Returns nil only when prerequisites are missing.
 func nativeAgentRuntime(cfg *config.Config, client *juggler.Client, v *vault.DB) orchestrator.AgentRuntime {
-	if !useNativeAgentRuntime() || cfg == nil || client == nil {
+	if cfg == nil || client == nil {
 		return nil
 	}
 	mgr := agentcore.NewManager(client, agentcore.Config{
@@ -556,20 +507,6 @@ func printRemoteAccess(host string, port int, useTLS bool, apiKey string, genera
 	return remoteURL
 }
 
-func tryGenerateNanoClawConfig(cfg *config.Config, vulpineosBinary, camoufoxBinary string) (bool, error) {
-	if cfg == nil {
-		return false, nil
-	}
-	ready, err := cfg.NanoClawConfigReady()
-	if err != nil {
-		return false, err
-	}
-	if !ready {
-		return false, nil
-	}
-	return true, cfg.GenerateNanoClawConfig(vulpineosBinary, camoufoxBinary)
-}
-
 func runRemote(wsURL string, apiKey string, pairCode string) error {
 	if strings.TrimSpace(apiKey) == "" {
 		token, err := pairRemote(wsURL, pairCode)
@@ -741,17 +678,6 @@ func runServe(binaryPath string, headless bool, profileDir string, host string, 
 			return err
 		}
 	}
-	if cfg.SetupComplete {
-		exe, _ := os.Executable()
-		camoufox := resolvedBinaryPath
-		if camoufox == "" {
-			_, camoufox, _ = nanoclaw.FindBundledNanoClaw()
-		}
-		if _, err := tryGenerateNanoClawConfig(cfg, exe, camoufox); err != nil {
-			log.Printf("Warning: could not generate NanoClaw config: %v", err)
-		}
-	}
-
 	v, err := vault.Open()
 	if err != nil {
 		return fmt.Errorf("open vault: %w", err)
@@ -767,7 +693,6 @@ func runServe(binaryPath string, headless bool, profileDir string, host string, 
 	var client *juggler.Client
 	var orch *orchestrator.Orchestrator
 	var fb *foxbridge.Process
-	var daemon *nanoclaw.Daemon
 	if !noBrowser {
 		k = kernel.New()
 		if err := k.Start(kernel.Config{BinaryPath: resolvedBinaryPath, Headless: headless, ProfileDir: profileDir}); err != nil {
@@ -788,43 +713,29 @@ func runServe(binaryPath string, headless bool, profileDir string, host string, 
 		} else {
 			defer fb.Stop()
 			cfg.FoxbridgeCDPURL = fb.CDPURL()
-			exe, _ := os.Executable()
-			if _, err := tryGenerateNanoClawConfig(cfg, exe, resolvedBinaryPath); err != nil {
-				log.Printf("Warning: could not generate NanoClaw config: %v", err)
-			}
 		}
 
 		model := ""
 		if cfg != nil {
 			model = cfg.Model
 		}
-		nativeRT := nativeAgentRuntime(cfg, client, v)
-		orch = orchestrator.New(k, client, v, pool.DefaultConfig(), "nanoclaw", orchestrator.Opts{
+		orch = orchestrator.New(k, client, v, pool.DefaultConfig(), orchestrator.Opts{
 			AgentBus:     agentbus.New(),
 			Costs:        costtrack.New(model),
 			Webhooks:     webhooks.New(),
 			Recording:    recording.NewRecorder(),
 			PageCache:    pagecache.New(filepath.Join(config.Dir(), "pagecache")),
-			AgentRuntime: nativeRT,
+			AgentRuntime: nativeAgentRuntime(cfg, client, v),
 		})
 		orch.Agents.SetRuntimeAudit(audit)
 		if err := orch.Start(); err != nil {
 			return err
 		}
 		defer orch.Close()
-
-		// The native runtime runs agents in-process; only the NanoClaw backend
-		// needs the daemon.
-		if nativeRT == nil {
-			daemon = startNanoClawDaemonIfAvailable(cfg, audit)
-			if daemon != nil {
-				defer daemon.Stop()
-			}
-		}
 	}
 
 	listen := listenConfig{Host: host, Port: port, APIKey: apiKey, TLSCert: tlsCert, TLSKey: tlsKey, NoTLS: noTLS}
-	server, err := startRemoteAccessServer(listen, cfg, k, client, orch, v, audit, daemon, func() bool {
+	server, err := startRemoteAccessServer(listen, cfg, k, client, orch, v, audit, func() bool {
 		return fb != nil && fb.Running()
 	}, true)
 	if err != nil {
@@ -843,7 +754,7 @@ func runServe(binaryPath string, headless bool, profileDir string, host string, 
 	return nil
 }
 
-func startRemoteAccessServer(cfg listenConfig, appCfg *config.Config, k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchestrator, v *vault.DB, audit *runtimeaudit.Manager, daemon *nanoclaw.Daemon, foxbridgeRunning func() bool, persistAgentEvents bool) (*remote.Server, error) {
+func startRemoteAccessServer(cfg listenConfig, appCfg *config.Config, k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchestrator, v *vault.DB, audit *runtimeaudit.Manager, foxbridgeRunning func() bool, persistAgentEvents bool) (*remote.Server, error) {
 	apiKey := strings.TrimSpace(cfg.APIKey)
 	generated := false
 	pairCode := ""
@@ -884,7 +795,6 @@ func startRemoteAccessServer(cfg listenConfig, appCfg *config.Config, k *kernel.
 		Config:           appCfg,
 		Vault:            v,
 		Kernel:           k,
-		Daemon:           daemon,
 		FoxbridgeRunning: foxbridgeRunning,
 		Client:           client,
 	})
@@ -996,14 +906,6 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 			return fmt.Errorf("save config: %w", err)
 		}
 		_ = config.ClearReconfigureRequest()
-
-		// Generate NanoClaw config
-		exe, _ := os.Executable()
-		_, nanoclawPath, _ := nanoclaw.FindBundledNanoClaw()
-		camoufox := nanoclawPath
-		if _, err := tryGenerateNanoClawConfig(cfg, exe, camoufox); err != nil {
-			log.Printf("Warning: could not generate NanoClaw config: %v", err)
-		}
 	}
 
 	if !noBrowser {
@@ -1020,21 +922,11 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 		cfg.Save()
 	}
 
-	// Always regenerate nanoclaw.json to ensure it matches current config
-	if cfg.SetupComplete {
-		exe, _ := os.Executable()
-		_, nanoclawPath, _ := nanoclaw.FindBundledNanoClaw()
-		if _, genErr := tryGenerateNanoClawConfig(cfg, exe, nanoclawPath); genErr != nil {
-			log.Printf("Warning: could not generate NanoClaw config: %v", genErr)
-		}
-	}
-
 	var k *kernel.Kernel
 	var client *juggler.Client
 	var orch *orchestrator.Orchestrator
 	var v *vault.DB
 	var audit *runtimeaudit.Manager
-	var daemon *nanoclaw.Daemon
 	var fb *foxbridge.Process
 	var wd *kernel.Watchdog
 	var browserEnabled bool
@@ -1113,14 +1005,13 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 						if cfg != nil {
 							model = cfg.Model
 						}
-						nativeRT := nativeAgentRuntime(cfg, client, v)
-						orch = orchestrator.New(k, client, v, pool.DefaultConfig(), "nanoclaw", orchestrator.Opts{
+						orch = orchestrator.New(k, client, v, pool.DefaultConfig(), orchestrator.Opts{
 							AgentBus:     agentbus.New(),
 							Costs:        costtrack.New(model),
 							Webhooks:     webhooks.New(),
 							Recording:    recording.NewRecorder(),
 							PageCache:    pagecache.New(filepath.Join(config.Dir(), "pagecache")),
-							AgentRuntime: nativeRT,
+							AgentRuntime: nativeAgentRuntime(cfg, client, v),
 						})
 						if audit != nil {
 							orch.Agents.SetRuntimeAudit(audit)
@@ -1130,30 +1021,19 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 				}
 			}
 
-			// Start foxbridge as an embedded CDP server sharing the kernel's Juggler client.
-			// This avoids launching a second Firefox — NanoClaw connects to the same kernel.
+			// Start foxbridge as an embedded CDP server sharing the kernel's Juggler
+			// client, exposing the same Camoufox over CDP on :9222 for external tools.
 			if startErr == nil && client != nil {
 				fb = foxbridge.New()
 				fb.SetRuntimeAudit(audit)
 				fbErr := fb.StartEmbeddedMode(client, 9222)
 				if fbErr != nil {
-					log.Printf("embedded foxbridge not available: %v (NanoClaw will use built-in Chrome)", fbErr)
+					log.Printf("embedded foxbridge not available: %v", fbErr)
 					fb = nil
 				} else {
-					// Set CDP URL in config so NanoClaw routes through foxbridge
 					cfg.FoxbridgeCDPURL = fb.CDPURL()
-					exe, _ := os.Executable()
-					if _, err := tryGenerateNanoClawConfig(cfg, exe, resolvedBinaryPath); err != nil {
-						log.Printf("Warning: could not generate NanoClaw config: %v", err)
-					}
-					log.Printf("foxbridge embedded — NanoClaw browser routed through Camoufox at %s", fb.CDPURL())
+					log.Printf("foxbridge embedded — Camoufox exposed over CDP at %s", fb.CDPURL())
 				}
-			}
-
-			// Start NanoClaw daemon for agent support (skipped for the native
-			// in-process runtime, which needs no daemon).
-			if startErr == nil && !useNativeAgentRuntime() {
-				daemon = startNanoClawDaemonIfAvailable(cfg, audit)
 			}
 
 			loaderProg.Send(loading.DoneMsg{})
@@ -1176,9 +1056,6 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 		if startErr != nil {
 			if wd != nil {
 				wd.Stop()
-			}
-			if daemon != nil {
-				daemon.Stop()
 			}
 			if fb != nil {
 				fb.Stop()
@@ -1231,21 +1108,13 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 		if orch != nil {
 			defer orch.Close()
 		}
-		if daemon != nil {
-			defer func() {
-				if audit != nil {
-					_, _ = audit.Log("nanoclaw", "info", "daemon_stopped", "NanoClaw daemon stopped", nil)
-				}
-				daemon.Stop()
-			}()
-		}
 	}
 
 	// Create the TUI after startup subsystems are fully initialized.
 	app := tui.NewApp(k, client, orch, v, cfg, audit)
 	var remoteServer *remote.Server
 	if listenCfg != nil {
-		srv, err := startRemoteAccessServer(*listenCfg, cfg, k, client, orch, v, audit, daemon, func() bool {
+		srv, err := startRemoteAccessServer(*listenCfg, cfg, k, client, orch, v, audit, func() bool {
 			return fb != nil && fb.Running()
 		}, false)
 		if err != nil {

@@ -1,23 +1,18 @@
 package orchestrator
 
 import (
+	"vulpineos/internal/agentcore"
 	"vulpineos/internal/agentmsg"
-	"vulpineos/internal/nanoclaw"
 	"vulpineos/internal/runtimeaudit"
 )
 
-// AgentRuntime is the agent-execution backend the orchestrator drives. Two
-// implementations satisfy it:
-//
-//   - *nanoclaw.Manager — runs each agent in a per-turn Docker container via the
-//     NanoClaw daemon (the legacy/default backend).
-//   - *agentcore.Manager — runs the model<->tool loop in-process and drives the
-//     host Camoufox directly through the MCP/Juggler tools (the native backend).
-//
-// The backend is chosen by the caller via Opts.AgentRuntime; when unset the
-// orchestrator defaults to NanoClaw. Both emit the same agentmsg.ConversationMsg
-// / agentmsg.AgentStatus value types so the TUI, web panel, and remote
-// broadcasts work unchanged regardless of backend.
+// AgentRuntime is the agent-execution backend the orchestrator drives. The sole
+// implementation is *agentcore.Manager — the native in-process runtime that runs
+// the model<->tool loop and drives the host Camoufox directly through the
+// MCP/Juggler tools. The interface is retained so the orchestrator depends on a
+// behavioral contract rather than a concrete type (and so tests can substitute a
+// fake). It emits agentmsg.ConversationMsg / agentmsg.AgentStatus value types so
+// the TUI, web panel, and remote broadcasts work unchanged.
 type AgentRuntime interface {
 	SetRuntimeAudit(*runtimeaudit.Manager)
 	StatusChan() <-chan agentmsg.AgentStatus
@@ -33,7 +28,5 @@ type AgentRuntime interface {
 	List() []agentmsg.AgentStatus
 }
 
-// Compile-time check that the NanoClaw manager satisfies the runtime contract.
-// (The native agentcore.Manager is checked at its construction site in cmd to
-// keep this package free of an agentcore import.)
-var _ AgentRuntime = (*nanoclaw.Manager)(nil)
+// Compile-time check that the native manager satisfies the runtime contract.
+var _ AgentRuntime = (*agentcore.Manager)(nil)
