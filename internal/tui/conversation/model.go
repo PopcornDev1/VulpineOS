@@ -55,6 +55,8 @@ var (
 	inputCursorStyle = lipgloss.NewStyle().
 				Foreground(inputBlockBg).
 				Background(lipgloss.Color("#E5E7EB"))
+	inputHalfLineStyle = lipgloss.NewStyle().Foreground(inputBlockBg).Background(inputBlockBg)
+	inputHalfRailStyle = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(inputBlockBg)
 )
 
 const inputBlockHeight = 5
@@ -972,7 +974,8 @@ func (m Model) inputStatusLabel() string {
 	case "starting":
 		return "Starting"
 	default:
-		return clipCellText(strings.ToUpper(status[:1])+status[1:], 24)
+		first, size := utf8.DecodeRuneInString(status)
+		return clipCellText(strings.ToUpper(string(first))+status[size:], 24)
 	}
 }
 
@@ -991,12 +994,10 @@ func inputBlockLine(content string, blockWidth int) string {
 
 func inputBlockHalfLine(blockWidth int) string {
 	contentWidth := blockWidth - 1
-	halfLineStyle := lipgloss.NewStyle().Foreground(inputBlockBg).Background(inputBlockBg)
-	halfRailStyle := lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(inputBlockBg)
 	if contentWidth < 1 {
-		return halfRailStyle.Render("▌")
+		return inputHalfRailStyle.Render("▌")
 	}
-	return halfRailStyle.Render("▌") + halfLineStyle.Render(strings.Repeat("▀", contentWidth))
+	return inputHalfRailStyle.Render("▌") + inputHalfLineStyle.Render(strings.Repeat("▀", contentWidth))
 }
 
 func clipCellText(text string, maxWidth int) string {

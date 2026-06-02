@@ -186,6 +186,15 @@ func TestInputBlockShowsModelLabel(t *testing.T) {
 	}
 }
 
+func TestInputStatusLabelCapitalizesUnicodeStatus(t *testing.T) {
+	m := New()
+	m.SetAgentStatus("échec")
+
+	if got := m.inputStatusLabel(); got != "Échec" {
+		t.Fatalf("inputStatusLabel() = %q, want Unicode-safe capitalization", got)
+	}
+}
+
 func TestInputPulseTickTogglesCaret(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })

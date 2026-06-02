@@ -3,6 +3,7 @@ package agentlist
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -84,5 +85,49 @@ func TestViewKeepsSelectedAgentVisibleWhenListOverflows(t *testing.T) {
 	}
 	if strings.Contains(view, "Agent A") {
 		t.Fatalf("overflowed view stayed pinned to top:\n%s", view)
+	}
+}
+
+func TestClickNearestUsesSameVisibleRangeAsView(t *testing.T) {
+	m := New()
+	m.SetWidth(24)
+	m.SetHeight(4)
+	agents := make([]vault.Agent, 8)
+	for i := range agents {
+		agents[i] = vault.Agent{
+			ID:     string(rune('a' + i)),
+			Name:   "Agent " + string(rune('A'+i)),
+			Status: "active",
+		}
+	}
+	m.SetAgents(agents)
+	m.SelectIndex(6)
+
+	item, ok := m.ClickNearest(12, 10)
+	if !ok {
+		t.Fatal("ClickNearest returned no agent")
+	}
+	if item.Name != "Agent F" {
+		t.Fatalf("clicked item = %q, want first rendered row Agent F", item.Name)
+	}
+}
+
+func TestUpdateLastSelectedAt(t *testing.T) {
+	m := New()
+	m.SetAgents([]vault.Agent{{ID: "agent-1", Name: "Agent", Status: "created"}})
+	selectedAt := time.Now().Truncate(time.Second)
+
+	if !m.UpdateLastSelectedAt("agent-1", selectedAt) {
+		t.Fatal("UpdateLastSelectedAt returned false for existing agent")
+	}
+	item, ok := m.Agent("agent-1")
+	if !ok {
+		t.Fatal("agent missing after update")
+	}
+	if !item.LastSelectedAt.Equal(selectedAt) {
+		t.Fatalf("LastSelectedAt = %s, want %s", item.LastSelectedAt, selectedAt)
+	}
+	if m.UpdateLastSelectedAt("missing", selectedAt) {
+		t.Fatal("UpdateLastSelectedAt returned true for missing agent")
 	}
 }

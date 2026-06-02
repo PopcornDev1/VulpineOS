@@ -936,6 +936,30 @@ func TestConversationInputUsesConfiguredModelLabel(t *testing.T) {
 	}
 }
 
+func TestSwitchToPausedAgentUnlocksConversationInput(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, nil, nil)
+	app.agentList.SetAgents([]vault.Agent{
+		{ID: "agent-active", Name: "Active", Status: "active"},
+		{ID: "agent-paused", Name: "Paused", Status: "paused"},
+	})
+	app.selectedAgentID = "agent-active"
+	app.conversation.SetAgentID("agent-active")
+	app.conversation.SetThinking(true)
+
+	item, ok := app.agentList.Agent("agent-paused")
+	if !ok {
+		t.Fatal("paused agent missing from list")
+	}
+	app.switchToAgent(item)
+
+	if app.selectedAgentID != "agent-paused" {
+		t.Fatalf("selected agent = %q, want paused agent", app.selectedAgentID)
+	}
+	if app.conversationInputLocked() {
+		t.Fatal("paused agent should not inherit locked input from previous active agent")
+	}
+}
+
 func TestModelSlashCommandOpensEmbeddedWizard(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -2865,6 +2889,45 @@ func TestOpenExternalTargetFallsBackToAvailableLauncher(t *testing.T) {
 	}
 	if len(opened) != 2 || opened[0] != "xdg-open" || opened[1] != "https://example.test" {
 		t.Fatalf("opened = %#v, want xdg-open fallback", opened)
+	}
+}
+
+func TestOpenExternalTargetTriesNextLauncherWhenStartFails(t *testing.T) {
+	originalStart := startExternalCommand
+	originalLook := lookExternalCommand
+	defer func() {
+		startExternalCommand = originalStart
+		lookExternalCommand = originalLook
+	}()
+
+	lookExternalCommand = func(name string) (string, error) {
+		switch name {
+		case "open", "xdg-open":
+			return "/usr/bin/" + name, nil
+		default:
+			return "", errors.New("missing")
+		}
+	}
+	var attempts []string
+	startExternalCommand = func(name string, args ...string) error {
+		attempts = append(attempts, name)
+		if name == "open" {
+			return errors.New("open failed")
+		}
+		return nil
+	}
+
+	if err := openExternalTarget("https://example.test"); err != nil {
+		t.Fatalf("openExternalTarget: %v", err)
+	}
+	want := []string{"open", "xdg-open"}
+	if len(attempts) != len(want) {
+		t.Fatalf("attempts = %#v, want %#v", attempts, want)
+	}
+	for i := range want {
+		if attempts[i] != want[i] {
+			t.Fatalf("attempts = %#v, want %#v", attempts, want)
+		}
 	}
 }
 

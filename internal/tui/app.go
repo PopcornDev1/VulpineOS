@@ -51,11 +51,19 @@ func openExternalTarget(target string) error {
 		{"xdg-open", target},
 		{"rundll32", "url.dll,FileProtocolHandler", target},
 	}
+	var lastErr error
 	for _, candidate := range candidates {
 		if _, err := lookExternalCommand(candidate[0]); err != nil {
 			continue
 		}
-		return startExternalCommand(candidate[0], candidate[1:]...)
+		if err := startExternalCommand(candidate[0], candidate[1:]...); err != nil {
+			lastErr = fmt.Errorf("%s: %w", candidate[0], err)
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
 	}
 	return fmt.Errorf("no opener available")
 }
@@ -886,15 +894,16 @@ func remoteSummaryToAgent(item remoteAgentSummary) vault.Agent {
 
 func agentListItemToAgent(item agentlist.AgentListItem) vault.Agent {
 	return vault.Agent{
-		ID:          item.ID,
-		Name:        item.Name,
-		Task:        item.Task,
-		Status:      item.Status,
-		TotalTokens: item.Tokens,
-		Fingerprint: item.Fingerprint,
-		ProxyConfig: item.ProxyConfig,
-		Metadata:    item.Metadata,
-		CreatedAt:   item.CreatedAt,
+		ID:             item.ID,
+		Name:           item.Name,
+		Task:           item.Task,
+		Status:         item.Status,
+		TotalTokens:    item.Tokens,
+		Fingerprint:    item.Fingerprint,
+		ProxyConfig:    item.ProxyConfig,
+		Metadata:       item.Metadata,
+		CreatedAt:      item.CreatedAt,
+		LastSelectedAt: item.LastSelectedAt,
 	}
 }
 
@@ -1795,9 +1804,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				msg.X >= rx && msg.X < rx+rw &&
 				msg.Y >= ry && msg.Y < ry+rh {
 				if item, ok := a.agentList.ClickNearest(msg.Y, ry); ok {
-					if a.vault != nil {
-						_ = a.vault.MarkAgentSelected(item.ID, time.Now())
-					}
+					selectedAt := time.Now()
+					a.markAgentSelected(item.ID, selectedAt)
+					item.LastSelectedAt = selectedAt
 					a.switchToAgent(item)
 					a.syncCommandPaletteAgents()
 				}
@@ -1893,9 +1902,16 @@ func isReadyChatStatus(status string) bool {
 
 func (a *App) applyConversationStatus(status string) {
 	a.conversation.SetAgentStatus(status)
-	if isReadyChatStatus(status) {
+	switch {
+	case isLiveAgentStatus(status):
+		a.conversation.SetThinking(true)
+	case isReadyChatStatus(status):
 		a.conversation.SetThinking(false)
 		a.conversation.SetAwake(true)
+	case status == "paused" || isTerminalAgentStatus(status):
+		a.conversation.SetThinking(false)
+	default:
+		a.conversation.SetThinking(false)
 	}
 }
 
@@ -2953,11 +2969,11 @@ func (a *App) cancelAgentPicker() {
 }
 
 func (a *App) completeAgentPicker(agentID, agentName string) {
-	if a.vault != nil {
-		_ = a.vault.MarkAgentSelected(agentID, time.Now())
-	}
+	selectedAt := time.Now()
+	a.markAgentSelected(agentID, selectedAt)
 	for _, item := range a.agentList.Agents() {
 		if item.ID == agentID {
+			item.LastSelectedAt = selectedAt
 			a.switchToAgent(item)
 			break
 		}
@@ -3548,6 +3564,16 @@ func (a App) resumeSelectedAgent() tea.Cmd {
 	return a.resumeAgent(a.selectedAgentID)
 }
 
+func (a *App) markAgentSelected(agentID string, selectedAt time.Time) {
+	if strings.TrimSpace(agentID) == "" {
+		return
+	}
+	if a.vault != nil {
+		_ = a.vault.MarkAgentSelected(agentID, selectedAt)
+	}
+	a.agentList.UpdateLastSelectedAt(agentID, selectedAt)
+}
+
 func (a *App) selectAgentListItem(item agentlist.AgentListItem) {
 	a.switchToAgent(item)
 }
@@ -3560,6 +3586,7 @@ func (a *App) switchToAgent(item agentlist.AgentListItem) {
 	a.selectedAgentID = item.ID
 	a.conversation.SetAgentID(item.ID)
 	a.conversation.SetAgentName(item.Name)
+	a.applyConversationStatus(item.Status)
 	if a.vault != nil {
 		msgs, err := a.vault.GetMessages(item.ID)
 		if err == nil {
@@ -4117,7 +4144,11 @@ func (a *App) dispatchCommand(name, rawInput string) tea.Cmd {
 		}
 		for _, item := range a.agentList.Agents() {
 			if item.ID == target || strings.EqualFold(item.Name, target) {
+				selectedAt := time.Now()
+				a.markAgentSelected(item.ID, selectedAt)
+				item.LastSelectedAt = selectedAt
 				a.switchToAgent(item)
+				a.syncCommandPaletteAgents()
 				break
 			}
 		}
@@ -4130,7 +4161,7 @@ func (a *App) dispatchCommand(name, rawInput string) tea.Cmd {
 	if a.returnToChat {
 		a.returnToChat = false
 		switch name {
-		case "settings", "config", "log", "new", "rename", "quit":
+		case "settings", "config", "log", "new", "rename", "help", "quit":
 		default:
 			a.inputMode = "chat"
 			if a.selectedAgentID != "" {

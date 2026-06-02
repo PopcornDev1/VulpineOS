@@ -525,6 +525,51 @@ func TestInlinePaletteTruncatesToThreeRecentAgents(t *testing.T) {
 	}
 }
 
+func TestHelpCommandFromPaletteDoesNotReturnToChat(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, nil, nil)
+	app.returnToChat = true
+	app.inputMode = ""
+
+	_ = app.dispatchCommand("help", "help")
+
+	if !app.commandPalette.Active() {
+		t.Fatal("help command should reactivate the command palette")
+	}
+	if app.returnToChat {
+		t.Fatal("help command should consume returnToChat")
+	}
+	if app.inputMode != "" {
+		t.Fatalf("inputMode = %q, want unchanged for help", app.inputMode)
+	}
+}
+
+func TestAgentPickerSelectionRefreshesInlineRecencyInMemory(t *testing.T) {
+	oldCreated := time.Now().Add(-time.Hour)
+	newCreated := time.Now()
+	app := NewApp(nil, nil, nil, nil, nil, nil)
+	app.agentList.SetAgents([]vault.Agent{
+		{ID: "older", Name: "Older", Status: "created", CreatedAt: oldCreated},
+		{ID: "newer", Name: "Newer", Status: "created", CreatedAt: newCreated},
+	})
+
+	app.completeAgentPicker("older", "Older")
+
+	agents := app.commandPalette.Agents()
+	if len(agents) == 0 {
+		t.Fatal("inline palette agents should be populated")
+	}
+	if agents[0].ID != "older" {
+		t.Fatalf("top inline palette agent = %q, want selected older agent", agents[0].ID)
+	}
+	item, ok := app.agentList.Agent("older")
+	if !ok {
+		t.Fatal("selected agent missing from list")
+	}
+	if item.LastSelectedAt.IsZero() {
+		t.Fatal("selected agent LastSelectedAt should be updated in memory")
+	}
+}
+
 func TestAgentsSlashCommandOpensPicker(t *testing.T) {
 	db := openTestVault(t)
 	alpha, err := db.CreateAgent("Alpha", "first", "{}")
@@ -652,5 +697,12 @@ func TestMouseClickOnAgentListSelectsAgent(t *testing.T) {
 	}
 	if app.conversation.AgentID() != second.ID {
 		t.Errorf("conversation agent = %q, want %q", app.conversation.AgentID(), second.ID)
+	}
+	item, ok := app.agentList.Agent(second.ID)
+	if !ok {
+		t.Fatal("clicked agent missing from list")
+	}
+	if item.LastSelectedAt.IsZero() {
+		t.Fatal("mouse selection should update LastSelectedAt in memory")
 	}
 }

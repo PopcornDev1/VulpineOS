@@ -185,11 +185,7 @@ func (m *Model) ClickNearest(clickY, panelY int) (AgentListItem, bool) {
 	if len(m.agents) == 0 {
 		return AgentListItem{}, false
 	}
-	capacity := m.height - 3 // border (2) + title (1)
-	if capacity < 1 {
-		capacity = len(m.agents)
-	}
-	start, end := VisibleRange(len(m.agents), m.selected, capacity)
+	start, end := VisibleRange(len(m.agents), m.selected, m.visibleCapacity())
 	if start >= end {
 		return AgentListItem{}, false
 	}
@@ -250,6 +246,17 @@ func (m *Model) UpdateStatus(id, status string) {
 			return
 		}
 	}
+}
+
+// UpdateLastSelectedAt updates an agent's in-memory recency timestamp.
+func (m *Model) UpdateLastSelectedAt(id string, selectedAt time.Time) bool {
+	for i := range m.agents {
+		if m.agents[i].ID == id {
+			m.agents[i].LastSelectedAt = selectedAt
+			return true
+		}
+	}
+	return false
 }
 
 // RenameAgent updates an agent's display name by ID.
@@ -345,7 +352,7 @@ func (m Model) View() string {
 		return b.String()
 	}
 
-	start, end := VisibleRange(len(m.agents), m.selected, m.height-1)
+	start, end := VisibleRange(len(m.agents), m.selected, m.visibleCapacity())
 	for i := start; i < end; i++ {
 		a := m.agents[i]
 		cursor := "  "
@@ -393,6 +400,10 @@ func (m Model) View() string {
 		}
 	}
 	return result
+}
+
+func (m Model) visibleCapacity() int {
+	return m.height - 1
 }
 
 // VisibleRange returns the [start, end) indices of the agent slice that

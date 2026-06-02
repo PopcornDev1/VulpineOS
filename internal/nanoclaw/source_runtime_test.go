@@ -34,6 +34,49 @@ func TestRelaxBunFrozenLockfileNoop(t *testing.T) {
 	}
 }
 
+func TestPrepareNanoClawSourceRuntimeFailsImageBuildByDefault(t *testing.T) {
+	srcDir := writeMinimalNanoClawSource(t)
+	t.Setenv("VULPINE_NANOCLAW_SRC", srcDir)
+	t.Setenv("VULPINE_NANOCLAW_SKIP_IMAGE_BUILD", "0")
+	t.Setenv("VULPINE_NANOCLAW_ALLOW_UNISOLATED_AGENTS", "0")
+	t.Setenv("PATH", t.TempDir())
+
+	err := prepareNanoClawSourceRuntime(filepath.Join(t.TempDir(), "profile"))
+	if err == nil {
+		t.Fatal("prepareNanoClawSourceRuntime should fail when the image cannot be built")
+	}
+	if !strings.Contains(err.Error(), "VULPINE_NANOCLAW_ALLOW_UNISOLATED_AGENTS=1") {
+		t.Fatalf("error should explain explicit unisolated fallback opt-in, got: %v", err)
+	}
+}
+
+func TestPrepareNanoClawSourceRuntimeAllowsExplicitUnisolatedFallback(t *testing.T) {
+	srcDir := writeMinimalNanoClawSource(t)
+	t.Setenv("VULPINE_NANOCLAW_SRC", srcDir)
+	t.Setenv("VULPINE_NANOCLAW_SKIP_IMAGE_BUILD", "0")
+	t.Setenv("VULPINE_NANOCLAW_ALLOW_UNISOLATED_AGENTS", "1")
+	t.Setenv("PATH", t.TempDir())
+
+	if err := prepareNanoClawSourceRuntime(filepath.Join(t.TempDir(), "profile")); err != nil {
+		t.Fatalf("prepareNanoClawSourceRuntime with explicit fallback: %v", err)
+	}
+}
+
+func writeMinimalNanoClawSource(t *testing.T) string {
+	t.Helper()
+	srcDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(srcDir, "container"), 0700); err != nil {
+		t.Fatalf("mkdir container: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "package.json"), []byte(`{"name":"nanoclaw"}`), 0600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "container", "Dockerfile"), []byte("FROM scratch\n"), 0600); err != nil {
+		t.Fatalf("write Dockerfile: %v", err)
+	}
+	return srcDir
+}
+
 func TestPatchNanoClawDockerfileInstallsRipgrep(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Dockerfile")
 	in := "RUN apt-get update && apt-get install -y --no-install-recommends \\\n        curl \\\n        git \\\n        tini \\\n    && rm -rf /var/lib/apt/lists/*\n"

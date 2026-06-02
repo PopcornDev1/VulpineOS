@@ -1024,6 +1024,7 @@ func prepareNanoClawSourceRuntime(profileDir string) error {
 		return err
 	}
 	if strings.TrimSpace(os.Getenv("VULPINE_NANOCLAW_SKIP_IMAGE_BUILD")) == "1" {
+		log.Printf("Warning: NanoClaw agent container image build skipped by VULPINE_NANOCLAW_SKIP_IMAGE_BUILD=1 (agents may run without container isolation)")
 		return nil
 	}
 	image := nanoClawAgentImageName(profileDir)
@@ -1034,7 +1035,11 @@ func prepareNanoClawSourceRuntime(profileDir string) error {
 		return nil
 	}
 	if err := buildNanoClawAgentImage(profileDir, image); err != nil {
-		log.Printf("Warning: NanoClaw agent container image build failed (agents will run without container isolation): %v", err)
+		if strings.TrimSpace(os.Getenv("VULPINE_NANOCLAW_ALLOW_UNISOLATED_AGENTS")) == "1" {
+			log.Printf("Warning: NanoClaw agent container image build failed; VULPINE_NANOCLAW_ALLOW_UNISOLATED_AGENTS=1 allows agents to run without container isolation: %v", err)
+			return nil
+		}
+		return fmt.Errorf("build NanoClaw agent container image: %w (set VULPINE_NANOCLAW_ALLOW_UNISOLATED_AGENTS=1 to run agents without container isolation)", err)
 	}
 	return nil
 }
