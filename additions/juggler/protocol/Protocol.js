@@ -292,6 +292,24 @@ const Browser = {
       },
       returns: {
         browserContextId: t.String,
+        userContextId: t.Number,
+      },
+    },
+    'setContextFingerprint': {
+      params: {
+        // Per-context fingerprint values delivered from the privileged parent
+        // process as roverfox.s.<key>_<userContextId> prefs (read per-context by
+        // the C++ managers). Replaces content-world window.set* calls so those
+        // setters can stay invisible to web content (ChromeOnly).
+        prefs: t.Array(browserTypes.UserPreference),
+      },
+    },
+    'clearContextFingerprint': {
+      params: {
+        // Clear all roverfox.s.*_<userContextId> per-context fingerprint prefs
+        // so a recycled/reused userContextId never inherits a prior agent's
+        // identity. Called before applying a new context's fingerprint.
+        userContextId: t.Number,
       },
     },
     'removeBrowserContext': {
@@ -1145,6 +1163,29 @@ const Page = {
         data: t.String,
         dataType: t.Optional(t.String),
       }
+    },
+    'applyFingerprintOverrides': {
+      params: {
+        webglVendor: t.Optional(t.String),
+        webglRenderer: t.Optional(t.String),
+        audioSeed: t.Optional(t.Number),
+        fontSpacingSeed: t.Optional(t.Number),
+        fontList: t.Optional(t.String),
+        speechVoices: t.Optional(t.String),
+        timezone: t.Optional(t.String),
+        screenWidth: t.Optional(t.Number),
+        screenHeight: t.Optional(t.Number),
+        screenColorDepth: t.Optional(t.Number),
+        navUserAgent: t.Optional(t.String),
+        navPlatform: t.Optional(t.String),
+        navOscpu: t.Optional(t.String),
+        hardwareConcurrency: t.Optional(t.Number),
+        webrtcIPv4: t.Optional(t.String),
+        webrtcIPv6: t.Optional(t.String),
+      },
+      returns: {
+        applied: t.Array(t.String),
+      },
     },
     'getShadowDOM': {
       params: {

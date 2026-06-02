@@ -104,7 +104,31 @@ export class BrowserHandler {
       throw new Error('Browser domain is not enabled');
     const browserContext = this._targetRegistry.createBrowserContext(removeOnDetach);
     this._createdBrowserContextIds.add(browserContext.browserContextId);
-    return {browserContextId: browserContext.browserContextId};
+    return {
+      browserContextId: browserContext.browserContextId,
+      userContextId: browserContext.userContextId,
+    };
+  }
+
+  async ['Browser.setContextFingerprint']({prefs}) {
+    // Privileged-side per-context fingerprint delivery: set the
+    // roverfox.s.<key>_<userContextId> prefs the C++ managers read per-context.
+    // Constrained to the roverfox namespace so this cannot set arbitrary prefs.
+    for (const { name, value } of (prefs || [])) {
+      if (typeof name !== 'string' || !name.startsWith('roverfox.s.'))
+        continue;
+      Services.prefs.setStringPref(name, String(value));
+    }
+  }
+
+  async ['Browser.clearContextFingerprint']({userContextId}) {
+    // Remove every roverfox.s.<key>_<userContextId> pref so a recycled/reused
+    // container id cannot inherit the previous agent's per-context identity.
+    const suffix = '_' + String(userContextId);
+    for (const name of Services.prefs.getChildList('roverfox.s.')) {
+      if (name.endsWith(suffix))
+        Services.prefs.clearUserPref(name);
+    }
   }
 
   async ['Browser.removeBrowserContext']({browserContextId}) {
