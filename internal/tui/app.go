@@ -889,8 +889,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.notice = "Press X again to kill all live agents, or any other key to cancel"
 				a.noticeTTL = 5
 			}
-		case "tab":
-			a.cycleFocus()
 		case "m":
 			enabled := !a.resizeModeEnabled()
 			a.resizeMode = enabled
@@ -1778,8 +1776,6 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			return a, a.shutdown()
-		case "tab":
-			a.cycleFocus()
 		case "ctrl+v":
 			return a, a.handleBrowserToggle()
 		case "ctrl+o":
@@ -1810,9 +1806,6 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return a, a.shutdown()
-	case "tab":
-		a.cycleFocus()
-		return a, nil
 	case "ctrl+v":
 		return a, a.handleBrowserToggle()
 	case "ctrl+o":
@@ -1858,15 +1851,6 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		*ti, cmd = ti.Update(msg)
 		return a, cmd
 	}
-}
-
-func (a *App) cycleFocus() {
-	if a.focus == FocusConversation {
-		a.conversation.Blur()
-		a.inputMode = ""
-	}
-	// Cycle: AgentList -> Conversation -> AgentDetail -> ContextList -> AgentList
-	a.focus = (a.focus + 1) % FocusNormalCount
 }
 
 func (a App) allowFocusedChatShortcut(msg tea.KeyMsg) bool {
@@ -2440,9 +2424,9 @@ func (a App) renderStatusBar() string {
 	if contextID := a.contextList.SelectedContextID(); contextID != "" && a.focus == FocusContextList {
 		ctxHint = shared.MutedStyle.Render("  n:new-in-ctx " + shortContextID(contextID))
 	}
-	controls := "  n:new  X:kill-allx:del  v:view  o:log  m:resize  S:settings  Enter:chat  Tab:focus  t:trace  "
+	controls := "  ↑/↓:select  Enter:chat  Esc:back  n:new  x:del  X:kill-all  v:view  o:log  m:resize  S:settings  t:trace  "
 	if a.control != nil {
-		controls = "  n:new  X:kill-allx:kill  v:view  o:log  m:resize  S:settings  Enter:chat  Tab:focus  t:trace  "
+		controls = "  ↑/↓:select  Enter:chat  Esc:back  n:new  x:kill  X:kill-all  v:view  o:log  m:resize  S:settings  t:trace  "
 	}
 	prefix := shared.TitleStyle.Render("VULPINE") +
 		shared.MutedStyle.Render(" | ") +

@@ -663,11 +663,9 @@ func (m Model) View() string {
 		b.WriteString(shared.KeyStyle.Render("n"))
 		b.WriteString(shared.MutedStyle.Render(" to create a new agent"))
 		b.WriteString("\n\n")
-		b.WriteString(shared.MutedStyle.Render("  Or select an agent from the left panel"))
-		b.WriteString("\n")
-		b.WriteString(shared.MutedStyle.Render("  with "))
-		b.WriteString(shared.KeyStyle.Render("j/k"))
-		b.WriteString(shared.MutedStyle.Render(" to view its conversation"))
+		b.WriteString(shared.MutedStyle.Render("  Or use the "))
+		b.WriteString(shared.KeyStyle.Render("↑/↓"))
+		b.WriteString(shared.MutedStyle.Render(" arrow keys to select an agent"))
 		return b.String()
 	}
 

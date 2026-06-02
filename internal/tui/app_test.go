@@ -616,7 +616,7 @@ func TestFocusedChatAllowsQuitShortcut(t *testing.T) {
 	}
 }
 
-func TestFocusedChatAllowsTabFocusCycle(t *testing.T) {
+func TestFocusedChatEscReturnsToAgentList(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
 	app.selectedAgentID = "agent-1"
 	app.focus = FocusConversation
@@ -625,16 +625,16 @@ func TestFocusedChatAllowsTabFocusCycle(t *testing.T) {
 	app.conversation.SetAwake(true)
 	app.conversation.Focus()
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	app = model.(App)
 	if app.focus != FocusAgentList {
-		t.Fatalf("focus = %d, want agent list after tab from focused chat (2-panel cycle)", app.focus)
+		t.Fatalf("focus = %d, want agent list after esc from focused chat", app.focus)
 	}
 	if app.inputMode != "" {
-		t.Fatalf("inputMode = %q, want empty after tab focus cycle", app.inputMode)
+		t.Fatalf("inputMode = %q, want empty after esc from chat", app.inputMode)
 	}
 	if app.conversation.Focused() {
-		t.Fatal("conversation should blur after tab focus cycle")
+		t.Fatal("conversation should blur after esc from chat")
 	}
 }
 
