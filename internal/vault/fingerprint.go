@@ -52,6 +52,11 @@ type FingerprintData struct {
 	// own proxy's IP.
 	WebRTCIPv4 string `json:"webrtc:ipv4,omitempty"`
 	WebRTCIPv6 string `json:"webrtc:ipv6,omitempty"`
+	// WebGL parameter sets (the 147-param fingerprint surface) as raw JSON
+	// objects keyed by GLenum. Delivered per-context so concurrent agents do
+	// not share an identical GL parameter set. Populated by BrowserForge.
+	WebGLParams  json.RawMessage `json:"webGl:parameters,omitempty"`
+	WebGL2Params json.RawMessage `json:"webGl2:parameters,omitempty"`
 }
 
 // UnmarshalJSON accepts both the current array form and the older comma-string

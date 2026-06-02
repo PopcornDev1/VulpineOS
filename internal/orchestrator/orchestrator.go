@@ -511,6 +511,14 @@ func buildContextFingerprintPrefs(fp vault.FingerprintData, userContextID uint32
 	}
 	addStr("webrtc_ipv4", fp.WebRTCIPv4)
 	addStr("webrtc_ipv6", fp.WebRTCIPv6)
+	// The 147-param WebGL set, delivered per-context as a JSON blob the C++
+	// WebGLParamsManager reads (roverfox.s.webgl_params_<ucid> / webgl2_params).
+	if len(fp.WebGLParams) > 0 {
+		items = append(items, kv{"webgl_params", string(fp.WebGLParams)})
+	}
+	if len(fp.WebGL2Params) > 0 {
+		items = append(items, kv{"webgl2_params", string(fp.WebGL2Params)})
+	}
 	if len(items) == 0 {
 		return nil
 	}
