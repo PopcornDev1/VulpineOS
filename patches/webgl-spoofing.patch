@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000..abcdef1234
 --- /dev/null
 +++ b/dom/base/WebGLParamsManager.cpp
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,89 @@
 +/* Camoufox: Per-context WebGL parameter manager */
 +#include "WebGLParamsManager.h"
 +
@@ -50,6 +50,13 @@ index 0000000000..abcdef1234
 +  return RoverfoxStorageManager::GetString(key, aOut);
 +}
 +
++bool WebGLParamsManager::GetParamsBlob(uint32_t aId, bool aIsWebGL2,
++                                       nsAString& aOut) {
++  nsAutoString key;
++  key.AppendPrintf(aIsWebGL2 ? "webgl2_params_%u" : "webgl_params_%u", aId);
++  return RoverfoxStorageManager::GetString(key, aOut);
++}
++
 +void WebGLParamsManager::DisableVendorFunction(uint32_t aId) {
 +  RoverfoxStorageManager::PutBool(VendorDisabledKey(aId), true);
 +}
@@ -91,7 +98,7 @@ new file mode 100644
 index 0000000000..bcdef12345
 --- /dev/null
 +++ b/dom/base/WebGLParamsManager.h
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,37 @@
 +/* Camoufox: Per-context WebGL parameter manager */
 +#ifndef mozilla_dom_WebGLParamsManager_h
 +#define mozilla_dom_WebGLParamsManager_h
@@ -110,6 +117,11 @@ index 0000000000..bcdef12345
 +  static bool GetVendor(uint32_t aId, nsAString& aOut);
 +  static void SetRenderer(uint32_t aId, const nsAString& aValue);
 +  static bool GetRenderer(uint32_t aId, nsAString& aOut);
++  // Per-context WebGL parameter blob: a JSON object keyed by GLenum (same
++  // format as the global webGl:parameters/webGl2:parameters config). Stored by
++  // the privileged side as roverfox.s.webgl_params_<id> / webgl2_params_<id> so
++  // the 147-param set is per-context instead of process-global.
++  static bool GetParamsBlob(uint32_t aId, bool aIsWebGL2, nsAString& aOut);
 +  static void DisableVendorFunction(uint32_t aId);
 +  static void DisableRendererFunction(uint32_t aId);
 +  static bool IsVendorFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj);
