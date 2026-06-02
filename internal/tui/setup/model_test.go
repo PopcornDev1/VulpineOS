@@ -277,6 +277,29 @@ func TestSetupOAuthMethodSelectsHiddenVariantAndStartsLogin(t *testing.T) {
 	}
 }
 
+// TestIsAsyncMsgCoversOAuthMessages guards the contract the embedded TUI relies
+// on: the host forwards exactly these async messages back to the wizard. If they
+// aren't recognized, the OAuth flow stalls at "Starting sign-in..." and never
+// shows the auth URL.
+func TestIsAsyncMsgCoversOAuthMessages(t *testing.T) {
+	asyncMsgs := []tea.Msg{
+		oauthBeganMsg{},
+		oauthCodeMsg{},
+		oauthDoneMsg{},
+	}
+	for _, msg := range asyncMsgs {
+		if !IsAsyncMsg(msg) {
+			t.Fatalf("IsAsyncMsg(%T) = false, want true", msg)
+		}
+	}
+	if IsAsyncMsg(tea.KeyMsg{Type: tea.KeyEnter}) {
+		t.Fatal("IsAsyncMsg(KeyMsg) = true, want false (key input is routed separately)")
+	}
+	if IsAsyncMsg(tea.WindowSizeMsg{}) {
+		t.Fatal("IsAsyncMsg(WindowSizeMsg) = true, want false (size is routed separately)")
+	}
+}
+
 func TestSetupAuthMethodAPIKeyChoiceUsesBaseProvider(t *testing.T) {
 	m := newWithConfigAndProviders(nil, oauthTestProviders())
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

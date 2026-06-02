@@ -822,6 +822,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyMsg, tea.WindowSizeMsg:
 			return a.updateEmbeddedSetup(msg)
 		}
+		// Forward the wizard's own async messages (e.g. OAuth flow steps) so the
+		// embedded sign-in state machine advances; otherwise it stalls before the
+		// auth URL is shown.
+		if setup.IsAsyncMsg(msg) {
+			return a.updateEmbeddedSetup(msg)
+		}
 	}
 
 	switch msg := msg.(type) {

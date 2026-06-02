@@ -35,6 +35,19 @@ type oauthCodeMsg struct {
 }
 type oauthDoneMsg struct{ err error }
 
+// IsAsyncMsg reports whether msg is one of the wizard's internal async messages
+// (e.g. the OAuth sign-in flow steps). When the wizard runs embedded inside the
+// main TUI, the host must forward these back to Update so the OAuth state
+// machine can advance — otherwise the flow stalls before showing the auth URL.
+func IsAsyncMsg(msg tea.Msg) bool {
+	switch msg.(type) {
+	case oauthBeganMsg, oauthCodeMsg, oauthDoneMsg:
+		return true
+	default:
+		return false
+	}
+}
+
 func beginOAuthCmd() tea.Cmd {
 	return func() tea.Msg {
 		login, err := auth.BeginOpenAILogin()
