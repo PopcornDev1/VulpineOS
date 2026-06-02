@@ -47,6 +47,11 @@ type FingerprintData struct {
 	WebGLVendor         string   `json:"webGl:vendor,omitempty"`
 	WebGLRenderer       string   `json:"webGl:renderer,omitempty"`
 	HardwareConcurrency int      `json:"navigator.hardwareConcurrency,omitempty"`
+	// WebRTC IPs are injected by the proxy sync (proxy exit IP) so WebRTC does
+	// not leak the real host IP; applied per-context so each agent reports its
+	// own proxy's IP.
+	WebRTCIPv4 string `json:"webrtc:ipv4,omitempty"`
+	WebRTCIPv6 string `json:"webrtc:ipv6,omitempty"`
 }
 
 // UnmarshalJSON accepts both the current array form and the older comma-string

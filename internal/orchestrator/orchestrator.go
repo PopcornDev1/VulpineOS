@@ -514,6 +514,12 @@ func buildFingerprintInitScript(fp vault.FingerprintData) string {
 	if fp.HardwareConcurrency > 0 {
 		setters = append(setters, setter{"setNavigatorHardwareConcurrency", fp.HardwareConcurrency})
 	}
+	if fp.WebRTCIPv4 != "" {
+		setters = append(setters, setter{"setWebRTCIPv4", fp.WebRTCIPv4})
+	}
+	if fp.WebRTCIPv6 != "" {
+		setters = append(setters, setter{"setWebRTCIPv6", fp.WebRTCIPv6})
+	}
 	if len(setters) == 0 {
 		return ""
 	}
