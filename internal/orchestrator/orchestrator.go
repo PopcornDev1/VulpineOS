@@ -68,6 +68,12 @@ type Orchestrator struct {
 	agentToSlot          map[string]*pool.ContextSlot
 	persistentAgentSlots map[string]bool
 	agentToSlotMu        sync.Mutex
+
+	// Central per-context network-identity registry keyed by userContextId.
+	// The full set is flushed to the networklab shmem as a ctx-<id> map so the
+	// NSS NetworkIdentityManager applies the right TLS identity per context.
+	netIdentities   map[uint32]*networklab.Identity
+	netIdentitiesMu sync.Mutex
 }
 
 // Opts holds optional subsystem dependencies for the orchestrator.
@@ -136,7 +142,7 @@ func (o *Orchestrator) SpawnCitizen(citizenID, templateID string) (string, error
 	}
 
 	// Apply citizen identity to context
-	if err := o.applyCitizenToContext(slot.ContextID, citizen); err != nil {
+	if err := o.applyCitizenToContext(slot.ContextID, slot.UserContextID, citizen); err != nil {
 		o.Pool.Release(slot)
 		return "", fmt.Errorf("apply citizen: %w", err)
 	}
@@ -196,7 +202,7 @@ func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
 	}
 
 	// Apply default network identity based on host OS
-	o.applyDefaultNetworkIdentity(slot.ContextID, session.ID)
+	o.applyDefaultNetworkIdentity(slot.ContextID, slot.UserContextID, session.ID)
 
 	// Write SOP and spawn agent
 	sopFile, err := nanoclaw.WriteSOP(tmpl.SOP)
@@ -269,7 +275,7 @@ func (o *Orchestrator) EnsureAgentBrowserContext(agent *vault.Agent) (string, er
 		return "", fmt.Errorf("parse agent metadata: %w", err)
 	}
 	if meta.ContextID != "" {
-		if err := o.applyAgentToContext(meta.ContextID, agent); err == nil {
+		if err := o.applyAgentToContext(meta.ContextID, meta.UserContextID, agent); err == nil {
 			o.agentToSlotMu.Lock()
 			o.persistentAgentSlots[agent.ID] = true
 			o.agentToSlotMu.Unlock()
@@ -283,12 +289,13 @@ func (o *Orchestrator) EnsureAgentBrowserContext(agent *vault.Agent) (string, er
 	if err != nil {
 		return "", fmt.Errorf("acquire agent context: %w", err)
 	}
-	if err := o.applyAgentToContext(slot.ContextID, agent); err != nil {
+	if err := o.applyAgentToContext(slot.ContextID, slot.UserContextID, agent); err != nil {
 		o.Pool.Discard(slot)
 		return "", fmt.Errorf("apply agent identity: %w", err)
 	}
 
 	meta.ContextID = slot.ContextID
+	meta.UserContextID = slot.UserContextID
 	metadata := vault.MarshalAgentMetadata(meta)
 	if o.Vault != nil {
 		if err := o.Vault.UpdateAgentMetadata(agent.ID, metadata); err != nil {
@@ -321,6 +328,10 @@ func (o *Orchestrator) ReleaseAgentContext(agentID string) {
 	}
 	delete(o.persistentAgentSlots, agentID)
 	o.agentToSlotMu.Unlock()
+
+	if ok {
+		o.unregisterNetworkIdentity(slot.UserContextID)
+	}
 
 	var meta vault.AgentMetadata
 	var hasMetadata bool
@@ -402,7 +413,7 @@ func (o *Orchestrator) Close() {
 	o.PageCache = nil
 }
 
-func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Citizen) error {
+func (o *Orchestrator) applyCitizenToContext(contextID string, userContextID uint32, citizen *vault.Citizen) error {
 	// Restore cached page state if resuming
 	if o.PageCache != nil {
 		if state := o.PageCache.Load(citizen.ID); state != nil {
@@ -435,7 +446,7 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Ci
 	}
 
 	// Apply network identity (TLS fingerprint) and proxy for this citizen
-	o.applyCitizenNetworkIdentity(contextID, citizen)
+	o.applyCitizenNetworkIdentity(contextID, userContextID, citizen)
 
 	// Apply security protections (CSP + sandbox) when enabled
 	if o.SecurityEnabled {
@@ -445,7 +456,7 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Ci
 	return nil
 }
 
-func (o *Orchestrator) applyAgentToContext(contextID string, agent *vault.Agent) error {
+func (o *Orchestrator) applyAgentToContext(contextID string, userContextID uint32, agent *vault.Agent) error {
 	if agent == nil {
 		return fmt.Errorf("agent not found")
 	}
@@ -454,7 +465,7 @@ func (o *Orchestrator) applyAgentToContext(contextID string, agent *vault.Agent)
 			return err
 		}
 	}
-	if err := o.applyNetworkIdentity(contextID, agent); err != nil {
+	if err := o.applyNetworkIdentity(contextID, userContextID, agent); err != nil {
 		log.Printf("orchestrator: warning: failed to apply network identity for agent %s: %v", agent.ID, err)
 	}
 	if agent.ProxyConfig != "" {
@@ -713,6 +724,7 @@ func (o *Orchestrator) handleTerminalAgentStatus(agentID string) {
 	}
 	o.agentToSlotMu.Unlock()
 	if ok {
+		o.unregisterNetworkIdentity(slot.UserContextID)
 		o.Pool.Release(slot)
 	}
 }
@@ -936,7 +948,45 @@ func profileFamilyForPlatform(platform string) string {
 // createNetworklabIdentity creates a networklab identity from a fingerprint string
 // and writes it to shared memory for the Camoufox NetworkIdentityManager to consume.
 // Returns the identity, computed hashes, and the profile family name.
-func (o *Orchestrator) createNetworklabIdentity(fingerprint string, contextID string) (*networklab.Identity, *networklab.IdentityHashes, string, error) {
+// registerNetworkIdentity records the identity for a context (keyed by the
+// numeric userContextId) and flushes the full set to the networklab shmem as a
+// ctx-<id> map, so each context's TLS identity is applied independently.
+func (o *Orchestrator) registerNetworkIdentity(userContextID uint32, nid *networklab.Identity) {
+	o.netIdentitiesMu.Lock()
+	defer o.netIdentitiesMu.Unlock()
+	if o.netIdentities == nil {
+		o.netIdentities = make(map[uint32]*networklab.Identity)
+	}
+	o.netIdentities[userContextID] = nid
+	o.flushNetworkIdentitiesLocked()
+}
+
+// unregisterNetworkIdentity drops a context's identity and rewrites the shmem so
+// a torn-down context's TLS identity is not left applying to a reused id.
+func (o *Orchestrator) unregisterNetworkIdentity(userContextID uint32) {
+	o.netIdentitiesMu.Lock()
+	defer o.netIdentitiesMu.Unlock()
+	if o.netIdentities == nil {
+		return
+	}
+	delete(o.netIdentities, userContextID)
+	o.flushNetworkIdentitiesLocked()
+}
+
+// flushNetworkIdentitiesLocked writes the current registry to shmem. Caller
+// must hold netIdentitiesMu. A single entry serializes to the top-level form
+// (applies to every context); multiple entries serialize to the ctx-<id> map.
+func (o *Orchestrator) flushNetworkIdentitiesLocked() {
+	m := make(map[string]*networklab.Identity, len(o.netIdentities))
+	for ucid, nid := range o.netIdentities {
+		m[fmt.Sprintf("ctx-%d", ucid)] = nid
+	}
+	if err := networklab.WriteIdentities(m); err != nil {
+		log.Printf("orchestrator: failed to flush %d network identities to shmem: %v", len(m), err)
+	}
+}
+
+func (o *Orchestrator) createNetworklabIdentity(fingerprint string, contextID string, userContextID uint32) (*networklab.Identity, *networklab.IdentityHashes, string, error) {
 	var fp vault.FingerprintData
 	if err := json.Unmarshal([]byte(fingerprint), &fp); err != nil {
 		return nil, nil, "", fmt.Errorf("parse fingerprint: %w", err)
@@ -950,20 +1000,18 @@ func (o *Orchestrator) createNetworklabIdentity(fingerprint string, contextID st
 	if err != nil {
 		return nil, nil, family, fmt.Errorf("hashes on %s: %w", family, err)
 	}
-	if err := networklab.WriteCurrentIdentity(nid); err != nil {
-		log.Printf("orchestrator: failed to write network identity to shmem for context %s: %v", contextID, err)
-	}
+	o.registerNetworkIdentity(userContextID, nid)
 	return nid, hashes, family, nil
 }
 
 // applyNetworkIdentity creates a networklab identity for the agent and stores
 // its metadata in the vault. The identity is also written to shared memory so
 // the Camoufox NetworkIdentityManager applies TLS parameters per socket.
-func (o *Orchestrator) applyNetworkIdentity(contextID string, agent *vault.Agent) error {
+func (o *Orchestrator) applyNetworkIdentity(contextID string, userContextID uint32, agent *vault.Agent) error {
 	if agent == nil || agent.Fingerprint == "" {
 		return nil
 	}
-	_, hashes, family, err := o.createNetworklabIdentity(agent.Fingerprint, contextID)
+	_, hashes, family, err := o.createNetworklabIdentity(agent.Fingerprint, contextID, userContextID)
 	if err != nil {
 		log.Printf("orchestrator: networklab identity unavailable for %s on %s: %v", agent.ID, family, err)
 		return nil
@@ -1002,11 +1050,11 @@ func (o *Orchestrator) applyNetworkIdentity(contextID string, agent *vault.Agent
 
 // applyCitizenNetworkIdentity applies networklab identity and proxy for a citizen
 // context. Called from SpawnCitizen since citizens have fingerprints and proxies.
-func (o *Orchestrator) applyCitizenNetworkIdentity(contextID string, citizen *vault.Citizen) {
+func (o *Orchestrator) applyCitizenNetworkIdentity(contextID string, userContextID uint32, citizen *vault.Citizen) {
 	if citizen.Fingerprint == "" {
 		return
 	}
-	_, hashes, family, err := o.createNetworklabIdentity(citizen.Fingerprint, contextID)
+	_, hashes, family, err := o.createNetworklabIdentity(citizen.Fingerprint, contextID, userContextID)
 	if err != nil {
 		log.Printf("orchestrator: citizen networklab identity unavailable for %s: %v", citizen.ID, err)
 		return
@@ -1024,7 +1072,7 @@ func (o *Orchestrator) applyCitizenNetworkIdentity(contextID string, citizen *va
 // applyDefaultNetworkIdentity creates a default networklab identity based on the
 // host OS platform and writes it to shared memory. Used by nomad sessions and
 // other ephemeral contexts that lack a stored fingerprint.
-func (o *Orchestrator) applyDefaultNetworkIdentity(contextID, ownerID string) {
+func (o *Orchestrator) applyDefaultNetworkIdentity(contextID string, userContextID uint32, ownerID string) {
 	family := profileFamilyForPlatform(vault.DefaultPlatformForHostOS())
 	nid, err := networklab.NewIdentity(family)
 	if err != nil {
@@ -1036,9 +1084,7 @@ func (o *Orchestrator) applyDefaultNetworkIdentity(contextID, ownerID string) {
 		log.Printf("orchestrator: default networklab hashes unavailable for %s on %s: %v", ownerID, family, err)
 		return
 	}
-	if err := networklab.WriteCurrentIdentity(nid); err != nil {
-		log.Printf("orchestrator: failed to write default network identity to shmem for %s on context %s: %v", ownerID, contextID, err)
-	}
+	o.registerNetworkIdentity(userContextID, nid)
 	log.Printf("orchestrator: nomad %s default network identity %s → JA3=%s JA4=%s (context=%s)",
 		ownerID, family, hashes.JA3, hashes.JA4, contextID)
 }

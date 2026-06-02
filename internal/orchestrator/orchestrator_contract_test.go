@@ -154,7 +154,7 @@ func TestOrchestratorAppliesFingerprintViaJuggler(t *testing.T) {
 
 	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50}, "")
 
-	if err := o.applyCitizenToContext("ctx-fp", cit); err != nil {
+	if err := o.applyCitizenToContext("ctx-fp", 1, cit); err != nil {
 		t.Fatalf("applyCitizenToContext: %v", err)
 	}
 
@@ -264,7 +264,7 @@ func TestOrchestratorSanitizesCamoufoxUserAgent(t *testing.T) {
 	}
 
 	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50}, "")
-	if err := o.applyCitizenToContext("ctx-camoufox", cit); err != nil {
+	if err := o.applyCitizenToContext("ctx-camoufox", 2, cit); err != nil {
 		t.Fatalf("applyCitizenToContext: %v", err)
 	}
 

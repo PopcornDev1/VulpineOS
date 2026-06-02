@@ -99,10 +99,14 @@ type NetworkIdentityMetadata struct {
 
 // AgentMetadata holds optional runtime metadata for a persistent agent.
 type AgentMetadata struct {
-	ContextID       string                    `json:"contextId,omitempty"`
-	NetworkIdentity *NetworkIdentityMetadata  `json:"networkIdentity,omitempty"`
-	Budget          *AgentBudgetMetadata      `json:"budget,omitempty"`
-	ProxyRotation   *AgentRotationMetadata    `json:"proxyRotation,omitempty"`
+	ContextID string `json:"contextId,omitempty"`
+	// UserContextID is the numeric Firefox container id for the agent's
+	// context, persisted so resume re-keys the same per-context network
+	// identity (ctx-<userContextId>) and the JA3 stays stable across restarts.
+	UserContextID   uint32                   `json:"userContextId,omitempty"`
+	NetworkIdentity *NetworkIdentityMetadata `json:"networkIdentity,omitempty"`
+	Budget          *AgentBudgetMetadata     `json:"budget,omitempty"`
+	ProxyRotation   *AgentRotationMetadata   `json:"proxyRotation,omitempty"`
 }
 
 // AgentMessage is a single message in an agent's conversation history.

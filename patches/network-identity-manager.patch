@@ -38,7 +38,7 @@ index 8e77933a89..165f920f8a 100644
 +  // vulpine-networklab: apply per-context network identity
 +  // ---------------------------------------------------------------
 +  {
-+    uint64_t contextId = 0;
++    uint64_t contextId = infoObject->GetOriginAttributes().mUserContextId;
 +    mozilla::psm::NetworkIdentityManager::ApplyIdentityToSocket(
 +        fd, contextId);
 +  }
