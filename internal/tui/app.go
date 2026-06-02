@@ -1273,8 +1273,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.waitForEvent())
 
 	case shared.ConversationEntryMsg:
-		// Save to vault always
-		if a.vault != nil {
+		// Persist real conversation turns, but NOT transient streaming deltas
+		// (Role "stream") — they update one live entry and would otherwise be
+		// stored token-by-token and reload as fragmented one-word messages.
+		if a.vault != nil && msg.Role != "stream" {
 			a.vault.AppendMessageWithDisplay(msg.AgentID, msg.Role, msg.Content, msg.DisplayContent, msg.Tokens)
 		}
 		// Check for rate limit / captcha / block patterns

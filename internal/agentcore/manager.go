@@ -467,15 +467,21 @@ func readTask(sopFile string, extraArgs []string) string {
 }
 
 // managerEvents adapts agentcore loop Events to the manager's streaming channels.
+// stream accumulates the in-progress assistant text so each "stream" message
+// carries the full text-so-far (consumers replace the live entry in place),
+// rather than a lone token; it is reset when an assistant message finalizes.
 type managerEvents struct {
 	m       *Manager
 	agentID string
+	stream  strings.Builder
 }
 
 func (e *managerEvents) OnTextDelta(delta string) {
-	e.m.safeSendConversation(agentmsg.ConversationMsg{AgentID: e.agentID, Role: "stream", Content: delta, StreamActive: true})
+	e.stream.WriteString(delta)
+	e.m.safeSendConversation(agentmsg.ConversationMsg{AgentID: e.agentID, Role: "stream", Content: e.stream.String(), StreamActive: true})
 }
 func (e *managerEvents) OnAssistant(text string) {
+	e.stream.Reset()
 	if strings.TrimSpace(text) != "" {
 		e.m.safeSendConversation(agentmsg.ConversationMsg{AgentID: e.agentID, Role: "assistant", Content: text, Tokens: e.m.agentTokens(e.agentID)})
 	}

@@ -855,7 +855,9 @@ func wireRemoteAgentEvents(orch *orchestrator.Orchestrator, v *vault.DB, server 
 	conversationCh := orch.Agents.ConversationChan()
 	go func() {
 		for msg := range conversationCh {
-			if persist && v != nil {
+			// Don't persist transient streaming deltas (Role "stream") — they
+			// update one live entry; persisting per-token fragments the history.
+			if persist && v != nil && msg.Role != "stream" {
 				_ = v.AppendMessage(msg.AgentID, msg.Role, msg.Content, msg.Tokens)
 			}
 			server.BroadcastConversation(msg)
