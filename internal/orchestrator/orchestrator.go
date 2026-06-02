@@ -52,7 +52,7 @@ type Orchestrator struct {
 	Client *juggler.Client
 	Pool   *pool.Pool
 	Vault  *vault.DB
-	Agents *nanoclaw.Manager
+	Agents AgentRuntime
 
 	// Optional subsystems (nil-safe)
 	AgentBus        *agentbus.Bus
@@ -80,6 +80,10 @@ type Opts struct {
 	SecurityEnabled bool
 	MemoryMonitor   *pool.MemoryMonitor
 	MutationMonitor *security.MutationMonitor
+	// AgentRuntime overrides the agent-execution backend. When nil, the
+	// orchestrator uses the NanoClaw manager. Set it to an *agentcore.Manager
+	// to run agents in-process (native backend).
+	AgentRuntime AgentRuntime
 }
 
 // New creates an orchestrator with all subsystems.
@@ -89,9 +93,13 @@ func New(k *kernel.Kernel, client *juggler.Client, v *vault.DB, poolCfg pool.Con
 		Client:               client,
 		Pool:                 pool.New(client, poolCfg),
 		Vault:                v,
-		Agents:               nanoclaw.NewManager(nanoclawBinary),
 		agentToSlot:          make(map[string]*pool.ContextSlot),
 		persistentAgentSlots: make(map[string]bool),
+	}
+	if len(opts) > 0 && opts[0].AgentRuntime != nil {
+		o.Agents = opts[0].AgentRuntime
+	} else {
+		o.Agents = nanoclaw.NewManager(nanoclawBinary)
 	}
 	if len(opts) > 0 {
 		o.AgentBus = opts[0].AgentBus

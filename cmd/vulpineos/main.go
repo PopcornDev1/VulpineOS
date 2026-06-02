@@ -25,6 +25,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"vulpineos/internal/agentbus"
+	"vulpineos/internal/agentcore"
 	"vulpineos/internal/config"
 	"vulpineos/internal/costtrack"
 	"vulpineos/internal/extensions"
@@ -97,6 +98,30 @@ var startNanoClawDaemonIfAvailable = func(cfg *config.Config, audit *runtimeaudi
 		}
 	}
 	return daemon
+}
+
+// useNativeAgentRuntime reports whether the in-process native agent runtime
+// (internal/agentcore) should be used instead of the NanoClaw container runtime.
+// Enabled with VULPINE_AGENT_RUNTIME=native.
+func useNativeAgentRuntime() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("VULPINE_AGENT_RUNTIME")), "native")
+}
+
+// nativeAgentRuntime builds the native agent backend from config, or returns nil
+// (so the orchestrator falls back to NanoClaw) when native mode is off or
+// prerequisites are missing. The native backend drives the host Camoufox
+// directly via the MCP/Juggler tools — no daemon, no per-agent container.
+func nativeAgentRuntime(cfg *config.Config, client *juggler.Client) orchestrator.AgentRuntime {
+	if !useNativeAgentRuntime() || cfg == nil || client == nil {
+		return nil
+	}
+	mgr := agentcore.NewManager(client, agentcore.Config{
+		Provider: cfg.Provider,
+		Model:    cfg.Model,
+		APIKey:   cfg.APIKey,
+	})
+	log.Printf("agent runtime: native in-process (provider=%s model=%s)", cfg.Provider, cfg.Model)
+	return mgr
 }
 
 func logSentinelRuntimeStatus(audit *runtimeaudit.Manager) {
@@ -748,12 +773,14 @@ func runServe(binaryPath string, headless bool, profileDir string, host string, 
 		if cfg != nil {
 			model = cfg.Model
 		}
+		nativeRT := nativeAgentRuntime(cfg, client)
 		orch = orchestrator.New(k, client, v, pool.DefaultConfig(), "nanoclaw", orchestrator.Opts{
-			AgentBus:  agentbus.New(),
-			Costs:     costtrack.New(model),
-			Webhooks:  webhooks.New(),
-			Recording: recording.NewRecorder(),
-			PageCache: pagecache.New(filepath.Join(config.Dir(), "pagecache")),
+			AgentBus:     agentbus.New(),
+			Costs:        costtrack.New(model),
+			Webhooks:     webhooks.New(),
+			Recording:    recording.NewRecorder(),
+			PageCache:    pagecache.New(filepath.Join(config.Dir(), "pagecache")),
+			AgentRuntime: nativeRT,
 		})
 		orch.Agents.SetRuntimeAudit(audit)
 		if err := orch.Start(); err != nil {
@@ -761,9 +788,13 @@ func runServe(binaryPath string, headless bool, profileDir string, host string, 
 		}
 		defer orch.Close()
 
-		daemon = startNanoClawDaemonIfAvailable(cfg, audit)
-		if daemon != nil {
-			defer daemon.Stop()
+		// The native runtime runs agents in-process; only the NanoClaw backend
+		// needs the daemon.
+		if nativeRT == nil {
+			daemon = startNanoClawDaemonIfAvailable(cfg, audit)
+			if daemon != nil {
+				defer daemon.Stop()
+			}
 		}
 	}
 
@@ -1057,12 +1088,14 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 						if cfg != nil {
 							model = cfg.Model
 						}
+						nativeRT := nativeAgentRuntime(cfg, client)
 						orch = orchestrator.New(k, client, v, pool.DefaultConfig(), "nanoclaw", orchestrator.Opts{
-							AgentBus:  agentbus.New(),
-							Costs:     costtrack.New(model),
-							Webhooks:  webhooks.New(),
-							Recording: recording.NewRecorder(),
-							PageCache: pagecache.New(filepath.Join(config.Dir(), "pagecache")),
+							AgentBus:     agentbus.New(),
+							Costs:        costtrack.New(model),
+							Webhooks:     webhooks.New(),
+							Recording:    recording.NewRecorder(),
+							PageCache:    pagecache.New(filepath.Join(config.Dir(), "pagecache")),
+							AgentRuntime: nativeRT,
 						})
 						if audit != nil {
 							orch.Agents.SetRuntimeAudit(audit)
@@ -1092,8 +1125,9 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 				}
 			}
 
-			// Start NanoClaw daemon for agent support.
-			if startErr == nil {
+			// Start NanoClaw daemon for agent support (skipped for the native
+			// in-process runtime, which needs no daemon).
+			if startErr == nil && !useNativeAgentRuntime() {
 				daemon = startNanoClawDaemonIfAvailable(cfg, audit)
 			}
 
