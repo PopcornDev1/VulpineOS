@@ -128,7 +128,7 @@ resolve_release_assets() {
         return 0
     fi
 
-    python3 - "${VULPINEOS_REPO}" "${goos}" "${goarch}" "${browser_os}" "${browser_arch}" <<'PY'
+    python3 - "${VULPINEOS_REPO}" "${VULPINEOS_BROWSER_RELEASE:-}" "${goos}" "${goarch}" "${browser_os}" "${browser_arch}" <<'PY'
 import json
 import os
 import shlex
@@ -136,23 +136,30 @@ import sys
 import urllib.error
 import urllib.request
 
-repo, goos, goarch, browser_os, browser_arch = sys.argv[1:]
+repo, browser_fallback, goos, goarch, browser_os, browser_arch = sys.argv[1:]
 api_url = f"https://api.github.com/repos/{repo}/releases/latest"
 headers = {"Accept": "application/vnd.github+json", "User-Agent": "vulpineos-installer"}
 if os.environ.get("GITHUB_TOKEN"):
     headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
 
-try:
-    with urllib.request.urlopen(urllib.request.Request(api_url, headers=headers), timeout=30) as response:
-        release = json.load(response)
-except urllib.error.HTTPError as exc:
-    if exc.code == 404:
-        sys.stderr.write(f"No published release found for {repo}. Publish a release with VulpineOS CLI and Camoufox assets first.\n")
-    else:
-        sys.stderr.write(f"GitHub release lookup failed: HTTP {exc.code}\n")
-    sys.exit(1)
-except Exception as exc:
-    sys.stderr.write(f"GitHub release lookup failed: {exc}\n")
+def fetch_release(tag=None):
+    url = f"https://api.github.com/repos/{repo}/releases/latest" if tag is None else \
+           f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            sys.stderr.write(f"Release not found: {tag or 'latest'}\n")
+        else:
+            sys.stderr.write(f"GitHub release lookup failed (HTTP {exc.code}): {tag or 'latest'}\n")
+        return None
+    except Exception as exc:
+        sys.stderr.write(f"GitHub release lookup failed: {exc}\n")
+        return None
+
+release = fetch_release()
+if release is None:
     sys.exit(1)
 
 assets = release.get("assets") or []
@@ -169,6 +176,16 @@ for asset in assets:
         cli_asset = asset
     if browser_asset is None and name.startswith("camoufox-") and name.endswith(browser_suffix):
         browser_asset = asset
+
+# If Camoufox not in latest release, try the fallback browser release
+if browser_asset is None and browser_fallback:
+    fb = fetch_release(browser_fallback)
+    if fb:
+        for asset in fb.get("assets") or []:
+            name = asset.get("name", "")
+            if browser_asset is None and name.startswith("camoufox-") and name.endswith(browser_suffix):
+                browser_asset = asset
+                break
 
 missing = []
 if cli_asset is None:
@@ -314,6 +331,10 @@ main() {
     have python3 || fatal "python3 is required to resolve release assets and update local config."
     have unzip || fatal "unzip is required to extract the Camoufox browser bundle."
     have curl || have wget || fatal "curl or wget is required to download release assets."
+
+    # Fallback release for Camoufox browser assets (CLI may come from a newer
+    # release that only has the Go binary). Override via VULPINEOS_BROWSER_RELEASE.
+    : "${VULPINEOS_BROWSER_RELEASE:=v0.1.4}"
 
     local goos goarch browser_os browser_arch bin_dir asset_env
     goos="$(detect_goos)"
