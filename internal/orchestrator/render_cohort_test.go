@@ -79,8 +79,10 @@ func TestApplyRenderCohortDeliversBlobsOnceAndPinsContext(t *testing.T) {
 	calls := fake.CallsByMethod("Browser.setContextFingerprint")
 
 	var (
-		enabledSet  bool
-		cfgKeys     = map[string]string{}
+		enabledSet bool
+		// cohort key -> reassembled blob (cfg prefs arrive chunked as
+		// renderlab_cfg_<key>_<i>).
+		cfgByCohort = map[string]string{}
 		cohortPins  = map[string]string{} // pref name -> value
 	)
 	for _, c := range calls {
@@ -89,7 +91,11 @@ func TestApplyRenderCohortDeliversBlobsOnceAndPinsContext(t *testing.T) {
 			case name == "roverfox.s.renderlab_pc_enabled":
 				enabledSet = enabledSet || val == "1"
 			case strings.HasPrefix(name, "roverfox.s.renderlab_cfg_"):
-				cfgKeys[name] = val
+				rest := strings.TrimPrefix(name, "roverfox.s.renderlab_cfg_")
+				if i := strings.LastIndex(rest, "_"); i >= 0 {
+					cohort := rest[:i]
+					cfgByCohort[cohort] += val // tiny test blobs are a single chunk
+				}
 			case strings.HasPrefix(name, "roverfox.s.renderlab_cohort_"):
 				cohortPins[name] = val
 			}
@@ -99,21 +105,21 @@ func TestApplyRenderCohortDeliversBlobsOnceAndPinsContext(t *testing.T) {
 	if !enabledSet {
 		t.Fatal("per-context render mode flag was not set")
 	}
-	// Three valid cohorts delivered (the empty-blob one dropped), each once.
-	if len(cfgKeys) != 3 {
-		t.Fatalf("expected 3 cohort config blobs, got %d: %v", len(cfgKeys), cfgKeys)
+	// Three valid cohorts delivered (the empty-blob one dropped).
+	if len(cfgByCohort) != 3 {
+		t.Fatalf("expected 3 cohort config blobs, got %d: %v", len(cfgByCohort), cfgByCohort)
 	}
-	if cfgKeys["roverfox.s.renderlab_cfg_mac_a_aaa"] != "blobA" {
-		t.Fatalf("cohort blob mismatch: %v", cfgKeys)
+	if cfgByCohort["mac_a_aaa"] != "blobA" {
+		t.Fatalf("cohort blob mismatch: %v", cfgByCohort)
 	}
-	// Each context pinned to exactly one cohort selector.
+	// Each context pinned to exactly one cohort selector that has a delivered blob.
 	for _, ucid := range []string{"7", "8", "9"} {
 		name := "roverfox.s.renderlab_cohort_" + ucid
 		val, ok := cohortPins[name]
 		if !ok {
 			t.Fatalf("context %s was not pinned to a cohort", ucid)
 		}
-		if _, isCfg := cfgKeys["roverfox.s.renderlab_cfg_"+val]; !isCfg {
+		if _, isCfg := cfgByCohort[val]; !isCfg {
 			t.Fatalf("context %s pinned to unknown cohort key %q", ucid, val)
 		}
 	}

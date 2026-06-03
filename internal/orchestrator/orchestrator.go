@@ -704,6 +704,28 @@ func (o *Orchestrator) applyFingerprintToContext(contextID string, userContextID
 	return nil
 }
 
+// renderCohortPrefChunkSize bounds each cohort-config pref chunk below the
+// browser's 1 MB per-pref limit (MAX_PREF_LENGTH), leaving generous headroom.
+const renderCohortPrefChunkSize = 512 * 1024
+
+// chunkRenderCohortBlob splits an (already gzip+base64) cohort blob into pieces
+// no larger than size, in order. The content process concatenates the
+// renderlab_cfg_<key>_<i> chain back together before decoding.
+func chunkRenderCohortBlob(blob string, size int) []string {
+	if size <= 0 {
+		return []string{blob}
+	}
+	var chunks []string
+	for len(blob) > size {
+		chunks = append(chunks, blob[:size])
+		blob = blob[size:]
+	}
+	if len(blob) > 0 {
+		chunks = append(chunks, blob)
+	}
+	return chunks
+}
+
 // ensureRenderCohorts lazily delivers the shared per-cohort render config blobs
 // (and the per-context mode flag) to the browser exactly once, and returns the
 // available cohorts. The blobs are shared cohort data (one copy per cohort,
@@ -746,8 +768,19 @@ func (o *Orchestrator) ensureRenderCohorts() ([]extensions.RenderCohort, bool) {
 		if strings.TrimSpace(c.Key) == "" || strings.TrimSpace(c.ConfigBlob) == "" {
 			continue
 		}
+		// The cohort blob routinely exceeds the browser's 1 MB per-pref limit, so
+		// deliver it as a chunk chain renderlab_cfg_<key>_1, _2, ... that the
+		// content process reassembles. Each chunk stays well under the limit.
+		chunks := chunkRenderCohortBlob(c.ConfigBlob, renderCohortPrefChunkSize)
+		prefs := make([]map[string]interface{}, 0, len(chunks))
+		for i, chunk := range chunks {
+			prefs = append(prefs, map[string]interface{}{
+				"name":  fmt.Sprintf("roverfox.s.renderlab_cfg_%s_%d", c.Key, i+1),
+				"value": chunk,
+			})
+		}
 		if _, err := o.Client.Call("", "Browser.setContextFingerprint", map[string]interface{}{
-			"prefs": []map[string]interface{}{{"name": "roverfox.s.renderlab_cfg_" + c.Key, "value": c.ConfigBlob}},
+			"prefs": prefs,
 		}); err != nil {
 			log.Printf("orchestrator: warning: deliver render cohort %s failed: %v", c.Key, err)
 			continue
