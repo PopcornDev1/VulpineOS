@@ -45,14 +45,53 @@ var wakingPhrases = []string{
 // Spinner frames for the animated icon
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
+// Input block (OpenCode-style chat box) styling.
+var (
+	inputBlockBg     = shared.ColorBg
+	inputRailStyle   = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(inputBlockBg)
+	inputBlockStyle  = lipgloss.NewStyle().Background(inputBlockBg)
+	inputStatusStyle = lipgloss.NewStyle().
+				Foreground(shared.ColorPrimary).
+				Background(inputBlockBg).
+				Bold(true)
+	inputModelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5E7EB")).Background(inputBlockBg)
+	inputMutedStyle  = lipgloss.NewStyle().Foreground(shared.ColorMuted).Background(inputBlockBg)
+	inputCursorStyle = lipgloss.NewStyle().
+				Foreground(inputBlockBg).
+				Background(lipgloss.Color("#E5E7EB"))
+)
+
+// inputBlockHeight is the fixed number of rendered lines the chat input block occupies.
+const inputBlockHeight = 5
+
 // ThinkingTickMsg triggers animation updates for the thinking indicator.
 type ThinkingTickMsg struct{}
+
+// InputPulseTickMsg advances the chat input caret pulse.
+type InputPulseTickMsg struct{}
 
 // ThinkingTick returns a command that ticks every 120ms for animation.
 func ThinkingTick() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg {
 		return ThinkingTickMsg{}
 	})
+}
+
+// InputPulseTick keeps the chat input caret blinking while the TUI is open.
+func InputPulseTick() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+		return InputPulseTickMsg{}
+	})
+}
+
+// SetModelLabel sets the provider/model string shown in the input block metadata.
+func (m *Model) SetModelLabel(label string) {
+	m.modelLabel = label
+}
+
+// SetNotice stores a transient message rendered just under the chat input.
+func (m *Model) SetNotice(text string) {
+	m.notice = text
 }
 
 // Entry is a single message displayed in the conversation.
@@ -71,23 +110,26 @@ type pasteSnippet struct {
 
 // Model holds the conversation panel state.
 type Model struct {
-	entries       []Entry
-	agentID       string
-	agentName     string
-	agentStatus   string
-	traceOnly     bool
-	thinking      bool // true while waiting for agent response
-	awake         bool // true after agent has sent its first message
-	textInput     textinput.Model
-	width         int
-	height        int
-	scroll        int  // scroll offset in rendered lines (not entries)
-	autoScroll    bool // whether to auto-scroll to bottom on new messages
-	spinnerFrame  int  // current spinner animation frame
-	phraseIdx     int  // current thinking phrase index
-	shimmerOffset int  // shimmer position for the gradient effect
-	phraseTicks   int  // ticks since last phrase change
-	pasteSnippets []pasteSnippet
+	entries         []Entry
+	agentID         string
+	agentName       string
+	agentStatus     string
+	traceOnly       bool
+	thinking        bool // true while waiting for agent response
+	awake           bool // true after agent has sent its first message
+	textInput       textinput.Model
+	width           int
+	height          int
+	scroll          int  // scroll offset in rendered lines (not entries)
+	autoScroll      bool // whether to auto-scroll to bottom on new messages
+	spinnerFrame    int  // current spinner animation frame
+	phraseIdx       int  // current thinking phrase index
+	shimmerOffset   int  // shimmer position for the gradient effect
+	phraseTicks     int  // ticks since last phrase change
+	pasteSnippets   []pasteSnippet
+	modelLabel      string // provider/model shown in the input block metadata
+	notice          string // transient message rendered just under the chatbox
+	inputPulseFrame int    // caret blink frame for the chat input
 }
 
 // SetAgentName sets the display name for the agent.
@@ -195,6 +237,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, ThinkingTick()
 		}
+	case InputPulseTickMsg:
+		m.inputPulseFrame++
+		return m, InputPulseTick()
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up":
@@ -482,10 +527,13 @@ func (m Model) Focused() bool {
 
 // visibleLines returns how many rendered lines fit in the message area.
 func (m Model) visibleLines() int {
-	// Layout: title(1) + messages + thinking(0-1) + divider(1) + input(1) + divider(1)
-	reserved := 4 // title + divider above + input + divider below
+	// Layout: title(1) + messages + thinking(0-1) + input block(inputBlockHeight) + notice(0-1)
+	reserved := 1 + inputBlockHeight // title + input block
 	if m.thinking {
-		reserved++ // thinking indicator between messages and top divider
+		reserved++ // thinking indicator between messages and input block
+	}
+	if m.notice != "" {
+		reserved++
 	}
 	visible := m.height - reserved
 	if visible < 1 {
@@ -498,8 +546,17 @@ func (m Model) visibleLines() int {
 func (m Model) getDisplayLines() []string {
 	var rendered []string
 	matched := 0
-	for _, e := range m.entries {
+	for idx, e := range m.entries {
 		if m.traceOnly && e.Role != "system" {
+			continue
+		}
+		// Main (non-trace) view: collapse a run of consecutive tool-activity
+		// (system) entries into a single status line — render only the last of
+		// each run. While the agent works, that line is the most recent event,
+		// so it reads as one status "cycling" through what it's doing; when an
+		// assistant message breaks the run, the next run renders its own line,
+		// giving a checkpoint per phase. The action-trace view keeps full detail.
+		if !m.traceOnly && e.Role == "system" && idx+1 < len(m.entries) && m.entries[idx+1].Role == "system" {
 			continue
 		}
 		lines := e.renderedLines
@@ -558,8 +615,12 @@ func (m Model) getDisplayLines() []string {
 				rendered[len(rendered)-1] = rendered[len(rendered)-1] + cursor
 			}
 		case "system":
-			// System messages: muted dot
+			// System messages: muted dot. The trailing status line while the
+			// agent is working animates with the spinner to signal it's live.
 			marker := shared.MutedStyle.Render("● ")
+			if !m.traceOnly && idx == len(m.entries)-1 && m.thinking {
+				marker = shared.WarmingStyle.Render(spinnerFrames[m.spinnerFrame%len(spinnerFrames)] + " ")
+			}
 			for j, line := range lines {
 				if j == 0 {
 					rendered = append(rendered, marker+line)
@@ -632,45 +693,193 @@ func (m *Model) clampScroll() {
 // View renders the conversation panel.
 // Messages are bottom-aligned: empty space at top, messages grow upward from the input box.
 // Input box is framed by dividers above and below.
+// inputBlock renders the 5-line OpenCode-style chat input box: a top blank rail
+// line, the input line, a blank rail line, the agent·model metadata line, and a
+// half-block bottom border.
+func (m Model) inputBlock(inputArea string) string {
+	blockWidth := m.width - 2
+	if blockWidth < 4 {
+		return inputArea
+	}
+	contentWidth := blockWidth - 1
+	return strings.Join([]string{
+		inputBlockLine("", blockWidth),
+		inputBlockLine(inputBlockStyle.Render("  ")+inputArea, blockWidth),
+		inputBlockLine("", blockWidth),
+		inputBlockLine(inputBlockStyle.Render("  ")+m.inputMetadata(contentWidth-2), blockWidth),
+		inputBlockHalfLine(blockWidth),
+	}, "\n")
+}
+
+func (m Model) inputArea() string {
+	if m.agentStatus == "error" {
+		return inputMutedStyle.Render("Agent failed - press Enter to retry or x to remove")
+	}
+	if !m.awake && m.thinking {
+		return inputMutedStyle.Render("Chat available after agent responds")
+	}
+	if m.textInput.Focused() {
+		return m.inputTextView()
+	}
+	if m.awake {
+		return inputMutedStyle.Render("Press Enter to chat...")
+	}
+	return inputMutedStyle.Render("Agent not active")
+}
+
+func (m Model) inputTextView() string {
+	value := m.textInput.Value()
+	if value == "" {
+		return m.inputCaret(" ") + inputMutedStyle.Render(m.textInput.Placeholder)
+	}
+	runes := []rune(value)
+	pos := m.textInput.Position()
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(runes) {
+		pos = len(runes)
+	}
+	before := inputModelStyle.Render(string(runes[:pos]))
+	if pos == len(runes) {
+		return before + m.inputCaret(" ")
+	}
+	cursor := m.inputCaret(string(runes[pos]))
+	after := inputModelStyle.Render(string(runes[pos+1:]))
+	return before + cursor + after
+}
+
+func (m Model) inputCaret(text string) string {
+	if m.inputPulseFrame%2 == 0 {
+		return inputCursorStyle.Render(text)
+	}
+	return inputModelStyle.Render(text)
+}
+
+func (m Model) inputMetadata(maxWidth int) string {
+	name := m.agentName
+	if name == "" {
+		name = "Agent"
+	}
+	model := strings.TrimSpace(m.modelLabel)
+	if model == "" {
+		model = "model"
+	}
+	fixedWidth := ansiVisualWidth(name) + ansiVisualWidth(" · ")
+	modelWidth := maxWidth - fixedWidth
+	if modelWidth < 1 {
+		modelWidth = 1
+	}
+	model = clipCellText(model, modelWidth)
+	return inputStatusStyle.Render(name) + inputMutedStyle.Render(" · ") + inputModelStyle.Render(model)
+}
+
+func inputBlockLine(content string, blockWidth int) string {
+	contentWidth := blockWidth - 1
+	if contentWidth < 1 {
+		return inputRailStyle.Render("▌")
+	}
+	content = fitCellLine(content, contentWidth)
+	padding := ""
+	if contentWidth > ansiVisualWidth(content) {
+		padding = strings.Repeat(" ", contentWidth-ansiVisualWidth(content))
+	}
+	return inputRailStyle.Render("▌") + content + inputBlockStyle.Render(padding)
+}
+
+func inputBlockHalfLine(blockWidth int) string {
+	contentWidth := blockWidth - 1
+	halfLineStyle := lipgloss.NewStyle().Foreground(inputBlockBg).Background(inputBlockBg)
+	halfRailStyle := lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(inputBlockBg)
+	if contentWidth < 1 {
+		return halfRailStyle.Render("▌")
+	}
+	return halfRailStyle.Render("▌") + halfLineStyle.Render(strings.Repeat("▀", contentWidth))
+}
+
+func clipCellText(text string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	if ansiVisualWidth(text) <= maxWidth {
+		return text
+	}
+	tail := "..."
+	if maxWidth <= ansiVisualWidth(tail) {
+		tail = ""
+	}
+	limit := maxWidth - ansiVisualWidth(tail)
+	if limit <= 0 {
+		return tail
+	}
+	var b strings.Builder
+	width := 0
+	for _, r := range text {
+		runeWidth := runewidth.RuneWidth(r)
+		if width+runeWidth > limit {
+			break
+		}
+		b.WriteRune(r)
+		width += runeWidth
+	}
+	return b.String() + tail
+}
+
+func fitCellLine(line string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if ansiVisualWidth(line) <= width {
+		return line
+	}
+	fitted := lipgloss.NewStyle().MaxWidth(width).Render(line)
+	lines := strings.Split(fitted, "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	return lines[0]
+}
+
 func (m Model) View() string {
+	return m.view("")
+}
+
+// ViewWithCommandPalette renders the conversation with an inline command palette
+// shown just above the chat input. Pass an empty string for no palette.
+func (m Model) ViewWithCommandPalette(palette string) string {
+	return m.view(palette)
+}
+
+func (m Model) view(palette string) string {
 	var b strings.Builder
 
-	dividerWidth := m.width - 2
-	if dividerWidth < 1 {
-		dividerWidth = 1
+	var paletteLines []string
+	if strings.TrimSpace(palette) != "" {
+		paletteLines = strings.Split(palette, "\n")
 	}
-	divider := shared.MutedStyle.Render(strings.Repeat("─", dividerWidth))
 
 	// No agent selected — show centered prompt
 	if m.agentID == "" {
-		for i := 0; i < m.height/2-2; i++ {
+		topPad := m.height/2 - 2 - len(paletteLines)
+		for i := 0; i < topPad; i++ {
 			b.WriteString("\n")
 		}
 		b.WriteString(shared.MutedStyle.Render("  Press "))
 		b.WriteString(shared.KeyStyle.Render("n"))
 		b.WriteString(shared.MutedStyle.Render(" to create a new agent"))
 		b.WriteString("\n\n")
-		b.WriteString(shared.MutedStyle.Render("  Or select an agent from the left panel"))
-		b.WriteString("\n")
-		b.WriteString(shared.MutedStyle.Render("  with "))
-		b.WriteString(shared.KeyStyle.Render("j/k"))
-		b.WriteString(shared.MutedStyle.Render(" to view its conversation"))
+		b.WriteString(shared.MutedStyle.Render("  Or use the "))
+		b.WriteString(shared.KeyStyle.Render("↑/↓"))
+		b.WriteString(shared.MutedStyle.Render(" arrow keys to select an agent"))
+		for _, line := range paletteLines {
+			b.WriteString("\n")
+			b.WriteString(line)
+		}
 		return b.String()
 	}
 
-	// Build the input line
-	var inputArea string
-	if m.agentStatus == "error" {
-		inputArea = shared.MutedStyle.Render("  > Agent failed — press Enter to retry or x to remove")
-	} else if !m.awake && m.thinking {
-		inputArea = shared.MutedStyle.Render("  Chat available after agent responds")
-	} else if m.textInput.Focused() {
-		inputArea = m.textInput.View()
-	} else if m.awake {
-		inputArea = shared.MutedStyle.Render("  > Press Enter to chat...")
-	} else {
-		inputArea = shared.MutedStyle.Render("  > Agent not active")
-	}
+	// Build the input line (rendered inside the styled input block below).
+	inputArea := m.inputArea()
 
 	// Build thinking indicator
 	var thinkingLine string
@@ -687,9 +896,12 @@ func (m Model) View() string {
 	}
 
 	// Calculate available lines for messages
-	// Layout (bottom to top): divider(1) + input(1) + divider(1) + thinking(0-1) + messages + title(1)
-	bottomLines := 3 // divider + input + divider
+	// Layout (bottom to top): notice(0-1) + input block(5) + palette(0-n) + thinking(0-1) + messages + title(1)
+	bottomLines := inputBlockHeight + len(paletteLines)
 	if m.thinking {
+		bottomLines++
+	}
+	if m.notice != "" {
 		bottomLines++
 	}
 	visibleMsgLines := m.height - 1 - bottomLines // 1 for title
@@ -752,16 +964,24 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// 5. Divider above input
-	b.WriteString(divider)
-	b.WriteString("\n")
+	// 4b. Inline command palette (above the input)
+	for _, line := range paletteLines {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
 
-	// 6. Input area
-	b.WriteString(inputArea)
-	b.WriteString("\n")
+	// 5. Styled input block (5 lines)
+	b.WriteString(m.inputBlock(inputArea))
 
-	// 7. Divider below input
-	b.WriteString(divider)
+	// 6. Transient notice rendered just under the chatbox.
+	if m.notice != "" {
+		b.WriteString("\n")
+		notice := m.notice
+		if w := m.width - 2; w > 2 {
+			notice = clipCellText(notice, w-2)
+		}
+		b.WriteString(inputMutedStyle.Render("  " + notice))
+	}
 
 	return b.String()
 }

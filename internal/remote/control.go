@@ -3,9 +3,6 @@ package remote
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -14,7 +11,6 @@ import (
 	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
-	"vulpineos/internal/nanoclaw"
 	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/proxy"
 	"vulpineos/internal/vault"
@@ -87,7 +83,6 @@ type configSummary struct {
 	Model                   string  `json:"model"`
 	APIKeySet               bool    `json:"apiKeySet"`
 	SetupComplete           bool    `json:"setupComplete"`
-	ResizePanelsWithArrows  bool    `json:"resizePanelsWithArrows"`
 	DefaultBudgetMaxCostUSD float64 `json:"defaultBudgetMaxCostUsd,omitempty"`
 	DefaultBudgetMaxTokens  int64   `json:"defaultBudgetMaxTokens,omitempty"`
 }
@@ -142,12 +137,11 @@ func (api *ControlAPI) configSet(params json.RawMessage) (json.RawMessage, error
 		return nil, fmt.Errorf("config not available")
 	}
 	var p struct {
-		Provider               string `json:"provider"`
-		Model                  string `json:"model"`
-		APIKey                 string `json:"apiKey"`
-		KeepAPIKey             bool   `json:"keepApiKey"`
-		SetupComplete          *bool  `json:"setupComplete"`
-		ResizePanelsWithArrows *bool  `json:"resizePanelsWithArrows"`
+		Provider      string `json:"provider"`
+		Model         string `json:"model"`
+		APIKey        string `json:"apiKey"`
+		KeepAPIKey    bool   `json:"keepApiKey"`
+		SetupComplete *bool  `json:"setupComplete"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
@@ -164,26 +158,12 @@ func (api *ControlAPI) configSet(params json.RawMessage) (json.RawMessage, error
 		// A blank key is treated as "preserve existing" by default so remote
 		// settings never need to read the host secret back.
 	}
-	if p.ResizePanelsWithArrows != nil {
-		api.Config.ResizePanelsWithArrows = *p.ResizePanelsWithArrows
-	}
 	api.Config.RefreshSetupComplete()
 	if p.SetupComplete != nil && !*p.SetupComplete {
 		api.Config.SetupComplete = false
 	}
 	if err := api.Config.Save(); err != nil {
 		return nil, err
-	}
-	if api.Config.SetupComplete {
-		exe, _ := os.Executable()
-		if err := api.Config.GenerateNanoClawConfig(exe, api.Config.BinaryPath); err != nil {
-			return nil, err
-		}
-		if _, err := os.Stat(filepath.Join(config.NanoClawProfileDir(), "data", "v2.db")); err == nil {
-			if err := nanoclaw.RepairVulpineProfileDatabase(config.NanoClawProfileDir(), api.Config.Provider, api.Config.Model, api.Config.FoxbridgeCDPURL); err != nil {
-				return nil, err
-			}
-		}
 	}
 	return json.Marshal(summarizeConfig(api.Config))
 }
@@ -300,12 +280,6 @@ func (api *ControlAPI) skillsSet(params json.RawMessage) (json.RawMessage, error
 	if err := api.Config.Save(); err != nil {
 		return nil, err
 	}
-	if api.Config.SetupComplete {
-		exe, _ := os.Executable()
-		if err := api.Config.GenerateNanoClawConfig(exe, api.Config.BinaryPath); err != nil {
-			return nil, err
-		}
-	}
 	return json.Marshal(map[string]any{"skills": summarizeSkills(api.Config)})
 }
 
@@ -323,7 +297,6 @@ func summarizeConfig(cfg *config.Config) configSummary {
 		Model:                   cfg.Model,
 		APIKeySet:               strings.TrimSpace(cfg.APIKey) != "",
 		SetupComplete:           cfg.SetupComplete,
-		ResizePanelsWithArrows:  cfg.ResizePanelsWithArrows,
 		DefaultBudgetMaxCostUSD: cfg.DefaultBudgetMaxCostUSD,
 		DefaultBudgetMaxTokens:  cfg.DefaultBudgetMaxTokens,
 	}
@@ -464,31 +437,24 @@ func (api *ControlAPI) agentsGetSessionLog(params json.RawMessage) (json.RawMess
 	if agentID == "" {
 		return nil, fmt.Errorf("agentId is required")
 	}
-	if api.Vault != nil {
-		if _, err := api.Vault.GetAgent(agentID); err != nil {
-			return nil, err
-		}
+	if api.Vault == nil {
+		return json.Marshal(map[string]any{
+			"agentId": agentID, "exists": false, "redacted": true,
+			"content": "", "offset": int64(0), "nextOffset": int64(0), "eof": true,
+		})
 	}
-	path, err := sessionLogPathForAgentID(agentID)
+	// The native runtime persists turns to the vault; render the transcript on demand.
+	rendered, exists, err := api.Vault.RenderSessionLog(agentID)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return json.Marshal(map[string]any{
-				"agentId":    agentID,
-				"exists":     false,
-				"redacted":   true,
-				"content":    "",
-				"offset":     int64(0),
-				"nextOffset": int64(0),
-				"eof":        true,
-			})
-		}
-		return nil, err
+	if !exists {
+		return json.Marshal(map[string]any{
+			"agentId": agentID, "exists": false, "redacted": true,
+			"content": "", "offset": int64(0), "nextOffset": int64(0), "eof": true,
+		})
 	}
-	size := info.Size()
+	size := int64(len(rendered))
 	limit := p.LimitBytes
 	if limit <= 0 || limit > 65536 {
 		limit = 65536
@@ -503,21 +469,12 @@ func (api *ControlAPI) agentsGetSessionLog(params json.RawMessage) (json.RawMess
 	if offset > size {
 		offset = size
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+	end := offset + limit
+	if end > size {
+		end = size
 	}
-	defer f.Close()
-	if _, err := f.Seek(offset, 0); err != nil {
-		return nil, err
-	}
-	buf := make([]byte, limit)
-	n, err := f.Read(buf)
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-	next := offset + int64(n)
-	content := redactRemoteLogText(string(buf[:n]))
+	next := end
+	content := redactRemoteLogText(string(rendered[offset:end]))
 	return json.Marshal(map[string]any{
 		"agentId":    agentID,
 		"exists":     true,
@@ -622,7 +579,7 @@ func (api *ControlAPI) agentsSpawn(params json.RawMessage) (json.RawMessage, err
 		_ = api.Vault.AppendMessage(agent.ID, "system", "Failed to prepare runtime: "+err.Error(), 0)
 		return json.Marshal(map[string]any{"agentId": agent.ID})
 	}
-	intro := nanoclaw.IntroMessage(p.Name, p.Task)
+	intro := agentprompt.IntroMessage(p.Name, p.Task)
 	sessionName := "vulpine-" + agent.ID
 	if _, err := api.Orchestrator.Agents.SpawnWithSessionIsolated(agent.ID, intro, sessionName, configPath, cleanup); err != nil {
 		_ = api.Vault.UpdateAgentStatus(agent.ID, "error")
@@ -740,11 +697,6 @@ func (api *ControlAPI) agentRuntimeConfig(agent *vault.Agent) (string, func(), e
 	if agent == nil {
 		return "", nil, fmt.Errorf("agent not found")
 	}
-	if api.Config != nil {
-		if err := config.RepairNanoClawProfile(api.activeFoxbridgeCDPURL()); err != nil {
-			return "", nil, fmt.Errorf("repair nanoclaw profile: %w", err)
-		}
-	}
 	if api.Orchestrator == nil {
 		return "", nil, fmt.Errorf("orchestrator not available")
 	}
@@ -752,7 +704,11 @@ func (api *ControlAPI) agentRuntimeConfig(agent *vault.Agent) (string, func(), e
 	if err != nil {
 		return "", nil, err
 	}
-	return api.Orchestrator.PrepareScopedNanoClawConfig(contextID)
+	cleanup, err := api.Orchestrator.AgentRuntimeConfig(contextID)
+	if err != nil {
+		return "", nil, err
+	}
+	return "", cleanup, nil
 }
 
 func (api *ControlAPI) statusGet() (json.RawMessage, error) {
@@ -765,7 +721,7 @@ func (api *ControlAPI) statusGet() (json.RawMessage, error) {
 		"browser_route_source":        source,
 		"browser_window":              api.browserWindow(),
 		"nanoclaw_daemon_running":     false,
-		"nanoclaw_profile_configured": config.NanoClawProfileBrowserRoute() != "",
+		"nanoclaw_profile_configured": false,
 	}
 	if api.Kernel != nil {
 		out["kernel_running"] = api.Kernel.Running()
@@ -846,23 +802,6 @@ func (api *ControlAPI) browserWindow() string {
 		return "visible"
 	}
 	return "hidden"
-}
-
-func sessionLogPathForAgentID(agentID string) (string, error) {
-	id := strings.TrimSpace(agentID)
-	if id == "" {
-		return "", fmt.Errorf("agent id is required")
-	}
-	if strings.ContainsAny(id, `/\`) || id == "." || id == ".." {
-		return "", fmt.Errorf("invalid agent id")
-	}
-	sessionsDir := filepath.Join(config.NanoClawProfileDir(), "agents", "main", "sessions")
-	path := filepath.Join(sessionsDir, "vulpine-"+id+".jsonl")
-	rel, err := filepath.Rel(sessionsDir, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("invalid agent id")
-	}
-	return path, nil
 }
 
 var (

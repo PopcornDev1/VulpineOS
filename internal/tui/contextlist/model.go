@@ -107,6 +107,21 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// PageCount returns the number of tracked targets (pages/tabs).
+func (m Model) PageCount() int {
+	return len(m.items)
+}
+
+// ContextCount returns the number of distinct browser contexts across all
+// tracked targets.
+func (m Model) ContextCount() int {
+	seen := make(map[string]struct{}, len(m.items))
+	for _, item := range m.items {
+		seen[item.ContextID] = struct{}{}
+	}
+	return len(seen)
+}
+
 // MoveUp moves selection up.
 func (m *Model) MoveUp() {
 	if m.selected > 0 {

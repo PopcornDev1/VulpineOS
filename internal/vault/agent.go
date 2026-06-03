@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -35,15 +36,16 @@ func (db *DB) CreateAgentWithID(id, name, task, fingerprint string) (*Agent, err
 	}
 
 	return &Agent{
-		ID:          id,
-		Name:        name,
-		Task:        task,
-		Fingerprint: fingerprint,
-		Status:      "created",
-		TotalTokens: 0,
-		CreatedAt:   time.Unix(now, 0),
-		LastActive:  time.Unix(now, 0),
-		Metadata:    "{}",
+		ID:             id,
+		Name:           name,
+		Task:           task,
+		Fingerprint:    fingerprint,
+		Status:         "created",
+		TotalTokens:    0,
+		CreatedAt:      time.Unix(now, 0),
+		LastActive:     time.Unix(now, 0),
+		LastSelectedAt: time.Time{},
+		Metadata:       "{}",
 	}, nil
 }
 
@@ -51,20 +53,23 @@ func (db *DB) CreateAgentWithID(id, name, task, fingerprint string) (*Agent, err
 func (db *DB) GetAgent(id string) (*Agent, error) {
 	row := db.conn.QueryRow(
 		`SELECT id, name, task, fingerprint, proxy_config, locale, timezone,
-		        status, total_tokens, created_at, last_active, metadata
+		        status, total_tokens, created_at, last_active, last_selected_at, metadata
 		 FROM agents WHERE id = ?`, id,
 	)
 
 	var a Agent
-	var createdAt, lastActive int64
+	var createdAt, lastActive, lastSelectedAt int64
 	err := row.Scan(&a.ID, &a.Name, &a.Task, &a.Fingerprint, &a.ProxyConfig,
 		&a.Locale, &a.Timezone, &a.Status, &a.TotalTokens,
-		&createdAt, &lastActive, &a.Metadata)
+		&createdAt, &lastActive, &lastSelectedAt, &a.Metadata)
 	if err != nil {
 		return nil, fmt.Errorf("get agent: %w", err)
 	}
 	a.CreatedAt = time.Unix(createdAt, 0)
 	a.LastActive = time.Unix(lastActive, 0)
+	if lastSelectedAt > 0 {
+		a.LastSelectedAt = time.Unix(lastSelectedAt, 0)
+	}
 	return &a, nil
 }
 
@@ -72,7 +77,7 @@ func (db *DB) GetAgent(id string) (*Agent, error) {
 func (db *DB) ListAgents() ([]Agent, error) {
 	rows, err := db.conn.Query(
 		`SELECT id, name, task, fingerprint, proxy_config, locale, timezone,
-		        status, total_tokens, created_at, last_active, metadata
+		        status, total_tokens, created_at, last_active, last_selected_at, metadata
 		 FROM agents ORDER BY last_active DESC`,
 	)
 	if err != nil {
@@ -83,14 +88,17 @@ func (db *DB) ListAgents() ([]Agent, error) {
 	var agents []Agent
 	for rows.Next() {
 		var a Agent
-		var createdAt, lastActive int64
+		var createdAt, lastActive, lastSelectedAt int64
 		if err := rows.Scan(&a.ID, &a.Name, &a.Task, &a.Fingerprint, &a.ProxyConfig,
 			&a.Locale, &a.Timezone, &a.Status, &a.TotalTokens,
-			&createdAt, &lastActive, &a.Metadata); err != nil {
+			&createdAt, &lastActive, &lastSelectedAt, &a.Metadata); err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
 		a.CreatedAt = time.Unix(createdAt, 0)
 		a.LastActive = time.Unix(lastActive, 0)
+		if lastSelectedAt > 0 {
+			a.LastSelectedAt = time.Unix(lastSelectedAt, 0)
+		}
 		agents = append(agents, a)
 	}
 	return agents, nil
@@ -100,7 +108,7 @@ func (db *DB) ListAgents() ([]Agent, error) {
 func (db *DB) ListAgentsByStatus(status string) ([]Agent, error) {
 	rows, err := db.conn.Query(
 		`SELECT id, name, task, fingerprint, proxy_config, locale, timezone,
-		        status, total_tokens, created_at, last_active, metadata
+		        status, total_tokens, created_at, last_active, last_selected_at, metadata
 		 FROM agents WHERE status = ? ORDER BY last_active DESC`, status,
 	)
 	if err != nil {
@@ -111,17 +119,34 @@ func (db *DB) ListAgentsByStatus(status string) ([]Agent, error) {
 	var agents []Agent
 	for rows.Next() {
 		var a Agent
-		var createdAt, lastActive int64
+		var createdAt, lastActive, lastSelectedAt int64
 		if err := rows.Scan(&a.ID, &a.Name, &a.Task, &a.Fingerprint, &a.ProxyConfig,
 			&a.Locale, &a.Timezone, &a.Status, &a.TotalTokens,
-			&createdAt, &lastActive, &a.Metadata); err != nil {
+			&createdAt, &lastActive, &lastSelectedAt, &a.Metadata); err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
 		a.CreatedAt = time.Unix(createdAt, 0)
 		a.LastActive = time.Unix(lastActive, 0)
+		if lastSelectedAt > 0 {
+			a.LastSelectedAt = time.Unix(lastSelectedAt, 0)
+		}
 		agents = append(agents, a)
 	}
 	return agents, nil
+}
+
+// MarkAgentSelected records that the user just switched to this agent.
+// Pass time.Time{} to clear the timestamp.
+func (db *DB) MarkAgentSelected(id string, t time.Time) error {
+	var ts int64
+	if !t.IsZero() {
+		ts = t.Unix()
+	}
+	_, err := db.conn.Exec(
+		`UPDATE agents SET last_selected_at = ? WHERE id = ?`,
+		ts, id,
+	)
+	return err
 }
 
 // UpdateAgentStatus updates the status and last_active timestamp of an agent.
@@ -197,6 +222,39 @@ func (db *DB) DeleteAgent(id string) error {
 // AppendMessage inserts a message into an agent's conversation history.
 func (db *DB) AppendMessage(agentID, role, content string, tokens int) error {
 	return db.AppendMessageWithDisplay(agentID, role, content, "", tokens)
+}
+
+// RenderSessionLog builds a JSON-lines transcript of an agent's conversation
+// from the vault — one JSON object per message. This is the native runtime's
+// source for the operator-facing raw session log (the native runtime persists
+// turns to the vault rather than to an on-disk session file). Returns the
+// rendered bytes and whether any messages exist.
+func (db *DB) RenderSessionLog(agentID string) ([]byte, bool, error) {
+	messages, err := db.GetMessages(agentID)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(messages) == 0 {
+		return nil, false, nil
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, m := range messages {
+		content := m.Content
+		if content == "" {
+			content = m.DisplayContent
+		}
+		line := map[string]interface{}{
+			"role":      m.Role,
+			"content":   content,
+			"tokens":    m.Tokens,
+			"timestamp": m.Timestamp.UTC().Format(time.RFC3339),
+		}
+		if err := enc.Encode(line); err != nil {
+			return nil, false, err
+		}
+	}
+	return buf.Bytes(), true, nil
 }
 
 // AppendMessageWithDisplay inserts a message with optional operator-facing display text.

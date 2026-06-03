@@ -24,6 +24,10 @@ type WindowController struct {
 	targetPID      int
 	mu             sync.Mutex
 	contextWindows map[string][]int
+	// hiddenWindowIDs records the X11 windows we unmapped on Linux, so Show only
+	// re-maps those (not always-hidden helper windows). uint32 keeps the field
+	// platform-neutral (xproto is linux-only).
+	hiddenWindowIDs []uint32
 }
 
 // NewWindowController creates a window controller for the given browser PID.
@@ -110,13 +114,16 @@ func (w *WindowController) Hide() error {
 
 // HideWhenReady waits for the browser window to appear, then hides it.
 func (w *WindowController) HideWhenReady() {
-	if runtime.GOOS != "darwin" {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return
 	}
 
 	// Poll until the process has a window, then hide it
 	for i := 0; i < 30; i++ { // up to 15 seconds
 		time.Sleep(500 * time.Millisecond)
+		if runtime.GOOS == "linux" && len(w.linuxWindowIDs(false)) == 0 {
+			continue // window not mapped yet
+		}
 		if err := w.Hide(); err == nil {
 			return
 		}
@@ -206,6 +213,18 @@ func (w *WindowController) HideAll() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Contexts are usually tabs in a single window, so no per-context PIDs are
+	// registered; fall back to hiding the main browser window directly rather
+	// than no-opping.
+	if len(w.contextWindows) == 0 {
+		if err := w.hide(); err != nil {
+			return err
+		}
+		w.visible = false
+		w.found = true
+		return nil
+	}
+
 	var lastErr error
 	for contextID, pids := range w.contextWindows {
 		for _, pid := range pids {
@@ -223,12 +242,19 @@ func (w *WindowController) HideAll() error {
 	return lastErr
 }
 
-// IsContextVisible checks if any window for a context is visible.
+// IsContextVisible checks if any window for a context is visible. When no
+// per-context window PIDs are registered (the common case — contexts are tabs in
+// one window), it falls back to the main browser window's actual state so the
+// toggle alternates correctly.
 func (w *WindowController) IsContextVisible(contextID string) bool {
 	w.mu.Lock()
 	pids := w.contextWindows[contextID]
 	w.mu.Unlock()
 
+	if len(pids) == 0 {
+		visible, _ := w.Status()
+		return visible
+	}
 	for _, pid := range pids {
 		wc := NewWindowController(pid)
 		if visible, _ := wc.Status(); visible {
@@ -239,6 +265,9 @@ func (w *WindowController) IsContextVisible(contextID string) bool {
 }
 
 func (w *WindowController) show() error {
+	if runtime.GOOS == "linux" {
+		return w.linuxSetVisible(true)
+	}
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
@@ -266,6 +295,9 @@ func (w *WindowController) show() error {
 }
 
 func (w *WindowController) hide() error {
+	if runtime.GOOS == "linux" {
+		return w.linuxSetVisible(false)
+	}
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
@@ -356,6 +388,11 @@ func (w *WindowController) candidatePIDs() []int {
 }
 
 func (w *WindowController) refreshVisibleLocked() bool {
+	if runtime.GOOS == "linux" {
+		w.visible = len(w.linuxWindowIDs(true)) > 0
+		w.found = true
+		return true
+	}
 	if runtime.GOOS != "darwin" {
 		w.found = true
 		return true
@@ -402,3 +439,7 @@ func parseAppleScriptBool(out string) (bool, bool) {
 		return false, false
 	}
 }
+
+// Linux (X11 / WSLg) window control is implemented in window_linux.go via a
+// pure-Go X11 client (no external tools needed); window_other.go stubs it out on
+// other platforms. The linuxWindowIDs / linuxSetVisible methods are defined there.

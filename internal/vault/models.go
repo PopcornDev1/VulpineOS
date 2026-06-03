@@ -58,18 +58,19 @@ type NomadSession struct {
 
 // Agent is a persistent AI agent profile.
 type Agent struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Task        string    `json:"task"`
-	Fingerprint string    `json:"fingerprint"`
-	ProxyConfig string    `json:"proxy_config"`
-	Locale      string    `json:"locale"`
-	Timezone    string    `json:"timezone"`
-	Status      string    `json:"status"` // created, active, paused, completed, failed
-	TotalTokens int       `json:"total_tokens"`
-	CreatedAt   time.Time `json:"created_at"`
-	LastActive  time.Time `json:"last_active"`
-	Metadata    string    `json:"metadata"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Task           string    `json:"task"`
+	Fingerprint    string    `json:"fingerprint"`
+	ProxyConfig    string    `json:"proxy_config"`
+	Locale         string    `json:"locale"`
+	Timezone       string    `json:"timezone"`
+	Status         string    `json:"status"` // created, active, paused, completed, failed
+	TotalTokens    int       `json:"total_tokens"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastActive     time.Time `json:"last_active"`
+	LastSelectedAt time.Time `json:"last_selected_at"`
+	Metadata       string    `json:"metadata"`
 }
 
 // AgentBudgetMetadata persists an agent-specific budget override.

@@ -1,14 +1,11 @@
 package tui
 
 import (
-	"bufio"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"go/parser"
 	"go/token"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,10 +15,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"vulpineos/internal/agentmsg"
 	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/pool"
+	"vulpineos/internal/runtimeaudit"
 	"vulpineos/internal/testutil"
 	"vulpineos/internal/tui/settings"
 	"vulpineos/internal/tui/shared"
@@ -72,59 +71,6 @@ func openTestVault(t *testing.T) *vault.DB {
 		_ = db.Close()
 	})
 	return db
-}
-
-func startFakeNanoClawSocket(t *testing.T) func() {
-	t.Helper()
-	home, err := os.MkdirTemp("/tmp", "vot-*")
-	if err != nil {
-		t.Fatalf("create short temp home: %v", err)
-	}
-	t.Setenv("HOME", home)
-	dataDir := filepath.Join(home, ".vulpineos", "nanoclaw", "data")
-	if err := os.MkdirAll(dataDir, 0700); err != nil {
-		t.Fatalf("mkdir nanoclaw data dir: %v", err)
-	}
-	db, err := sql.Open("sqlite", filepath.Join(dataDir, "v2.db"))
-	if err != nil {
-		t.Fatalf("open fake nanoclaw db: %v", err)
-	}
-	_, err = db.Exec(`
-CREATE TABLE agent_groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, folder TEXT NOT NULL UNIQUE, agent_provider TEXT, created_at TEXT NOT NULL);
-CREATE TABLE messaging_groups (id TEXT PRIMARY KEY, channel_type TEXT NOT NULL, platform_id TEXT NOT NULL, name TEXT, is_group INTEGER DEFAULT 0, unknown_sender_policy TEXT NOT NULL DEFAULT 'strict', created_at TEXT NOT NULL, denied_at TEXT, UNIQUE(channel_type, platform_id));
-CREATE TABLE messaging_group_agents (id TEXT PRIMARY KEY, messaging_group_id TEXT NOT NULL REFERENCES messaging_groups(id), agent_group_id TEXT NOT NULL REFERENCES agent_groups(id), session_mode TEXT DEFAULT 'shared', priority INTEGER DEFAULT 0, created_at TEXT NOT NULL, engage_mode TEXT, engage_pattern TEXT, sender_scope TEXT, ignored_message_policy TEXT, UNIQUE(messaging_group_id, agent_group_id));
-INSERT INTO agent_groups (id, name, folder, created_at) VALUES ('ag-1', 'vulpine-test', 'vulpine-test', '2026-01-01T00:00:00Z');
-`)
-	if err != nil {
-		_ = db.Close()
-		t.Fatalf("create fake nanoclaw schema: %v", err)
-	}
-	_ = db.Close()
-
-	socketPath := filepath.Join(dataDir, "cli.sock")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("listen fake nanoclaw socket: %v", err)
-	}
-	done := make(chan struct{})
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				_, _ = bufio.NewReader(c).ReadString('\n')
-				<-done
-			}(conn)
-		}
-	}()
-	return func() {
-		close(done)
-		_ = listener.Close()
-		_ = os.RemoveAll(home)
-	}
 }
 
 func TestNewAppReconcilesNonTerminalAgentsToPaused(t *testing.T) {
@@ -213,13 +159,6 @@ func TestBrowserRouteLabelIgnoresStoppedFoxbridge(t *testing.T) {
 func TestAgentRuntimeConfigCreatesScopedAgentContext(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	if err := os.MkdirAll(config.NanoClawProfileDir(), 0700); err != nil {
-		t.Fatalf("mkdir profile dir: %v", err)
-	}
-	if err := os.WriteFile(config.NanoClawConfigPath(), []byte(`{"browser":{"enabled":true,"headless":true,"cdpUrl":"ws://127.0.0.1:9222"}}`), 0600); err != nil {
-		t.Fatalf("write nanoclaw.json: %v", err)
-	}
-
 	fake := testutil.NewFakeJugglerTransport(t)
 	fake.RespondJSON("Browser.createBrowserContext", map[string]string{"browserContextId": "ctx-agent-runtime"})
 	fake.RespondJSON("Browser.enable", map[string]any{})
@@ -243,7 +182,7 @@ func TestAgentRuntimeConfigCreatesScopedAgentContext(t *testing.T) {
 		t.Fatalf("CreateAgent: %v", err)
 	}
 
-	orch := orchestrator.New(nil, client, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, "")
+	orch := orchestrator.New(nil, client, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1})
 	if err := orch.Pool.Start(); err != nil {
 		t.Fatalf("pool start: %v", err)
 	}
@@ -257,16 +196,9 @@ func TestAgentRuntimeConfigCreatesScopedAgentContext(t *testing.T) {
 	}
 	defer cleanup()
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read runtime config: %v", err)
-	}
-	if strings.Contains(string(data), "cdpUrl") {
-		if strings.Contains(string(data), "ws://127.0.0.1:9222") {
-			t.Fatalf("runtime config kept stale cdpUrl: %s", data)
-		}
-	} else {
-		t.Fatalf("runtime config missing scoped cdpUrl: %s", data)
+	// The native runtime drives the pooled context directly and needs no config file.
+	if path != "" {
+		t.Fatalf("native runtime needs no config file, got path %q", path)
 	}
 
 	persisted, err := db.GetAgent(agent.ID)
@@ -684,7 +616,7 @@ func TestFocusedChatAllowsQuitShortcut(t *testing.T) {
 	}
 }
 
-func TestFocusedChatAllowsTabFocusCycle(t *testing.T) {
+func TestFocusedChatEscReturnsToAgentList(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
 	app.selectedAgentID = "agent-1"
 	app.focus = FocusConversation
@@ -693,16 +625,16 @@ func TestFocusedChatAllowsTabFocusCycle(t *testing.T) {
 	app.conversation.SetAwake(true)
 	app.conversation.Focus()
 
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	app = model.(App)
-	if app.focus != FocusAgentDetail {
-		t.Fatalf("focus = %d, want agent detail after tab from focused chat", app.focus)
+	if app.focus != FocusAgentList {
+		t.Fatalf("focus = %d, want agent list after esc from focused chat", app.focus)
 	}
 	if app.inputMode != "" {
-		t.Fatalf("inputMode = %q, want empty after tab focus cycle", app.inputMode)
+		t.Fatalf("inputMode = %q, want empty after esc from chat", app.inputMode)
 	}
 	if app.conversation.Focused() {
-		t.Fatal("conversation should blur after tab focus cycle")
+		t.Fatal("conversation should blur after esc from chat")
 	}
 }
 
@@ -726,10 +658,10 @@ func TestSettingsProxyImportAcceptsLifecycleKeyCharacters(t *testing.T) {
 	app.settings.SetActive(true)
 
 	var cmd tea.Cmd
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyDown})
 	app = model.(App)
 	if cmd != nil {
-		t.Fatalf("unexpected command after tab: %#v", cmd())
+		t.Fatalf("unexpected command after section switch: %#v", cmd())
 	}
 	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
 	app = model.(App)
@@ -782,16 +714,28 @@ func TestAgentCreatedSelectsNewAgentListRow(t *testing.T) {
 	}
 }
 
-func TestPoolStatsMsgUpdatesVisibleSystemPanel(t *testing.T) {
+func TestTargetAttachUpdatesSystemPanelBrowserCounts(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, nil, nil)
 	app.systemInfo.SetHeight(20)
 
-	model, _ := app.Update(shared.PoolStatsMsg{Available: 3, Active: 2, Total: 5})
+	model, _ := app.Update(shared.TargetAttachedMsg{SessionID: "s1", TargetID: "t1", ContextID: "ctx-a", URL: "https://example.com"})
+	app = model.(App)
+	model, _ = app.Update(shared.TargetAttachedMsg{SessionID: "s2", TargetID: "t2", ContextID: "ctx-a", URL: "https://example.com/2"})
 	app = model.(App)
 
 	view := app.systemInfo.View()
-	if !strings.Contains(view, "Pool: 3/2/5") {
-		t.Fatalf("system panel missing pool stats:\n%s", view)
+	if strings.Contains(view, "Pool:") {
+		t.Fatalf("system panel should no longer show pool stats:\n%s", view)
+	}
+	if !strings.Contains(view, "Ctx: 1 Pg: 2") {
+		t.Fatalf("system panel browser counts wrong (want 1 ctx / 2 pages):\n%s", view)
+	}
+
+	model, _ = app.Update(shared.TargetDetachedMsg{SessionID: "s2", TargetID: "t2"})
+	app = model.(App)
+	view = app.systemInfo.View()
+	if !strings.Contains(view, "Ctx: 1 Pg: 1") {
+		t.Fatalf("system panel browser counts wrong after detach (want 1 ctx / 1 page):\n%s", view)
 	}
 }
 
@@ -812,8 +756,7 @@ func TestArrowKeysNavigateAgentsWhenResizeModeDisabled(t *testing.T) {
 		t.Fatalf("set second last_active: %v", err)
 	}
 
-	cfg := &config.Config{ResizePanelsWithArrows: false}
-	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.focus = FocusAgentList
 
 	originalSplit := app.leftSplit
@@ -821,50 +764,13 @@ func TestArrowKeysNavigateAgentsWhenResizeModeDisabled(t *testing.T) {
 	app = model.(App)
 
 	if app.leftSplit != originalSplit {
-		t.Fatalf("leftSplit changed from %d to %d with resize mode disabled", originalSplit, app.leftSplit)
+		t.Fatalf("leftSplit changed from %d to %d on arrow navigation", originalSplit, app.leftSplit)
 	}
 	if app.selectedAgentID != second.ID {
 		t.Fatalf("selected agent = %q, want %q after down arrow", app.selectedAgentID, second.ID)
 	}
 	if !strings.Contains(app.renderStatusBar(), "q:quit") {
 		t.Fatalf("status bar missing quit hint: %s", app.renderStatusBar())
-	}
-}
-
-func TestStatusBarStartsNavigateWhenLegacyResizeDefaultSet(t *testing.T) {
-	db := openTestVault(t)
-	cfg := &config.Config{ResizePanelsWithArrows: true}
-	app := NewApp(nil, nil, nil, db, cfg, nil)
-	app.width = 180
-
-	if !strings.Contains(app.renderStatusBar(), "q:quit") {
-		t.Fatalf("status bar missing quit hint: %s", app.renderStatusBar())
-	}
-}
-
-func TestResizeModeKeepsVerticalSplitsUsableAfterTerminalShrink(t *testing.T) {
-	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
-	app.width = 80
-	app.height = 16
-	app.focus = FocusAgentList
-	app.resizeMode = true
-	app.leftSplit = 30
-	app.rightSplit = 30
-
-	app.updatePanelSizes()
-
-	if app.leftSplit >= 30 {
-		t.Fatalf("left split was not clamped after shrink: %d", app.leftSplit)
-	}
-	if app.rightSplit >= 30 {
-		t.Fatalf("right split was not clamped after shrink: %d", app.rightSplit)
-	}
-	clampedLeft := app.leftSplit
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyUp})
-	app = model.(App)
-
-	if app.leftSplit != clampedLeft-1 {
-		t.Fatalf("up arrow leftSplit = %d, want %d after clamp", app.leftSplit, clampedLeft-1)
 	}
 }
 
@@ -1062,25 +968,6 @@ func TestRemoteControlNewAgentShortcutStartsCreation(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("new-agent shortcut should focus the name input")
-	}
-}
-
-func TestRemoteControlPauseSelectedUsesAgentListStatus(t *testing.T) {
-	control := &fakeControlClient{responses: map[string]any{
-		"agents.pause": map[string]any{"status": "ok"},
-	}}
-	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, control)
-	app.agentList.SetAgents([]vault.Agent{{ID: "agent-1", Name: "Remote", Status: "active"}})
-	app.agentList.SelectAgentID("agent-1")
-	app.selectedAgentID = "agent-1"
-
-	msg := app.pauseSelectedAgent()()
-	bulk, ok := msg.(shared.BulkAgentStatusMsg)
-	if !ok {
-		t.Fatalf("pauseSelectedAgent returned %#v, want BulkAgentStatusMsg", msg)
-	}
-	if len(bulk.AgentIDs) != 1 || bulk.AgentIDs[0] != "agent-1" || bulk.Status != "paused" {
-		t.Fatalf("bulk status = %+v", bulk)
 	}
 }
 
@@ -1428,10 +1315,9 @@ func TestViewKeepsRenderedLinesWithinTerminalWidthAfterShrink(t *testing.T) {
 
 func TestSettingsViewKeepsRenderedLinesWithinTerminalAfterShrink(t *testing.T) {
 	cfg := &config.Config{
-		Provider:               "anthropic",
-		Model:                  "anthropic/claude-sonnet-4-6-with-a-long-display-name",
-		APIKey:                 "sk-test",
-		ResizePanelsWithArrows: true,
+		Provider: "anthropic",
+		Model:    "anthropic/claude-sonnet-4-6-with-a-long-display-name",
+		APIKey:   "sk-test",
 	}
 	app := NewApp(nil, nil, nil, nil, cfg, nil)
 	app.width = 58
@@ -1489,11 +1375,12 @@ func TestSettingsWorkbenchViewRendersFullContainerFrame(t *testing.T) {
 	border := lipgloss.RoundedBorder()
 	topLine := lines[0]
 	bodyBottomLine := lines[len(lines)-2]
-	if got := strings.Count(topLine, border.TopLeft) + strings.Count(topLine, border.TopRight); got < 6 {
-		t.Fatalf("top workbench row has %d panel corners, want at least 6:\n%s", got, view)
+	// Two-column workbench (left sidebar + center): each row shows 2 panels = 4 corners.
+	if got := strings.Count(topLine, border.TopLeft) + strings.Count(topLine, border.TopRight); got < 4 {
+		t.Fatalf("top workbench row has %d panel corners, want at least 4:\n%s", got, view)
 	}
-	if got := strings.Count(bodyBottomLine, border.BottomLeft) + strings.Count(bodyBottomLine, border.BottomRight); got < 6 {
-		t.Fatalf("bottom workbench row has %d panel corners, want at least 6:\n%s", got, view)
+	if got := strings.Count(bodyBottomLine, border.BottomLeft) + strings.Count(bodyBottomLine, border.BottomRight); got < 4 {
+		t.Fatalf("bottom workbench row has %d panel corners, want at least 4:\n%s", got, view)
 	}
 }
 
@@ -1606,46 +1493,6 @@ func TestStatusBarPreservesModeAndQuitHints(t *testing.T) {
 	}
 	if width := lipgloss.Width(bar); width > app.width {
 		t.Fatalf("status bar width = %d, want <= %d:\n%s", width, app.width, bar)
-	}
-}
-
-func TestModeHotkeyTogglesResizeMode(t *testing.T) {
-	db := openTestVault(t)
-	cfg := &config.Config{ResizePanelsWithArrows: false}
-	app := NewApp(nil, nil, nil, db, cfg, nil)
-
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
-	if !app.resizeModeEnabled() {
-		t.Fatal("resize mode should be enabled after pressing m")
-	}
-	if app.notice == "" || !strings.Contains(app.notice, "Resize mode enabled") {
-		t.Fatalf("unexpected notice after enabling resize mode: %q", app.notice)
-	}
-
-	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
-	if app.resizeModeEnabled() {
-		t.Fatal("resize mode should be disabled after pressing m again")
-	}
-	if app.notice == "" || !strings.Contains(app.notice, "Resize mode disabled") {
-		t.Fatalf("unexpected notice after disabling resize mode: %q", app.notice)
-	}
-}
-
-func TestModeHotkeyDoesNotPersistResizePreference(t *testing.T) {
-	db := openTestVault(t)
-	cfg := &config.Config{ResizePanelsWithArrows: false}
-	app := NewApp(nil, nil, nil, db, cfg, nil)
-
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
-
-	if !app.resizeModeEnabled() {
-		t.Fatal("resize mode should be enabled after pressing m")
-	}
-	if cfg.ResizePanelsWithArrows {
-		t.Fatal("mode hotkey should not persist the resize preference")
 	}
 }
 
@@ -2062,35 +1909,6 @@ func TestFocusedEmptyChatAllowsViewShortcut(t *testing.T) {
 	}
 }
 
-func TestFocusedEmptyChatAllowsModeShortcut(t *testing.T) {
-	db := openTestVault(t)
-	cfg := &config.Config{}
-	app := NewApp(nil, nil, nil, db, cfg, nil)
-	app.conversation.SetSize(80, 20)
-
-	agent, err := db.CreateAgent("Scraper", "Scrape prices", "{}")
-	if err != nil {
-		t.Fatalf("create agent: %v", err)
-	}
-	app.selectedAgentID = agent.ID
-	app.focus = FocusConversation
-	app.inputMode = "chat"
-	app.conversation.SetAgentID(agent.ID)
-	app.conversation.SetAgentName(agent.Name)
-	app.conversation.SetAwake(true)
-	app.conversation.Focus()
-
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
-	app = model.(App)
-
-	if !app.resizeModeEnabled() {
-		t.Fatal("mode shortcut should enable resize mode from empty focused chat")
-	}
-	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when mode shortcut is used from empty focused chat", got)
-	}
-}
-
 func TestFocusedEmptyChatAllowsSettingsShortcut(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
@@ -2168,7 +1986,7 @@ func TestFocusedEmptyChatAllowsReconfigureShortcut(t *testing.T) {
 }
 
 func TestFocusedDraftChatTreatsShortcutLettersAsText(t *testing.T) {
-	for _, key := range []rune{'v', 't', 'o', 'm', 'c', 'S'} {
+	for _, key := range []rune{'v', 't', 'o', 'c', 'S'} {
 		t.Run(string(key), func(t *testing.T) {
 			db := openTestVault(t)
 			cfg := &config.Config{}
@@ -2434,16 +2252,10 @@ func TestUnfocusedChatAllowsOpenLogShortcut(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	logPath, err := agentSessionLogPath(agent.ID)
-	if err != nil {
-		t.Fatalf("agentSessionLogPath: %v", err)
+	if err := db.AppendMessage(agent.ID, "assistant", "session line", 0); err != nil {
+		t.Fatalf("append message: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
-		t.Fatalf("mkdir log dir: %v", err)
-	}
-	if err := os.WriteFile(logPath, []byte("{}\n"), 0644); err != nil {
-		t.Fatalf("write session log: %v", err)
-	}
+	logPath := filepath.Join(os.TempDir(), "vulpineos-session-"+safeTempAgentID(agent.ID)+".jsonl")
 
 	original := startExternalCommand
 	defer func() { startExternalCommand = original }()
@@ -2488,16 +2300,10 @@ func TestFocusedChatAllowsCtrlOpenLogShortcut(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	logPath, err := agentSessionLogPath(agent.ID)
-	if err != nil {
-		t.Fatalf("agentSessionLogPath: %v", err)
+	if err := db.AppendMessage(agent.ID, "assistant", "session line", 0); err != nil {
+		t.Fatalf("append message: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
-		t.Fatalf("mkdir log dir: %v", err)
-	}
-	if err := os.WriteFile(logPath, []byte("{}\n"), 0644); err != nil {
-		t.Fatalf("write session log: %v", err)
-	}
+	logPath := filepath.Join(os.TempDir(), "vulpineos-session-"+safeTempAgentID(agent.ID)+".jsonl")
 
 	original := startExternalCommand
 	defer func() { startExternalCommand = original }()
@@ -2539,16 +2345,10 @@ func TestFocusedEmptyChatAllowsOpenLogShortcut(t *testing.T) {
 		t.Fatalf("create agent: %v", err)
 	}
 
-	logPath, err := agentSessionLogPath(agent.ID)
-	if err != nil {
-		t.Fatalf("agentSessionLogPath: %v", err)
+	if err := db.AppendMessage(agent.ID, "assistant", "session line", 0); err != nil {
+		t.Fatalf("append message: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
-		t.Fatalf("mkdir log dir: %v", err)
-	}
-	if err := os.WriteFile(logPath, []byte("{}\n"), 0644); err != nil {
-		t.Fatalf("write session log: %v", err)
-	}
+	logPath := filepath.Join(os.TempDir(), "vulpineos-session-"+safeTempAgentID(agent.ID)+".jsonl")
 
 	original := startExternalCommand
 	defer func() { startExternalCommand = original }()
@@ -2607,29 +2407,6 @@ func TestOpenExternalTargetFallsBackToAvailableLauncher(t *testing.T) {
 	}
 }
 
-func TestOpenSessionLogRejectsUnsafeAgentID(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	original := startExternalCommand
-	defer func() { startExternalCommand = original }()
-	startExternalCommand = func(name string, args ...string) error {
-		t.Fatalf("open command should not run for unsafe agent id: %s %#v", name, args)
-		return nil
-	}
-
-	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
-	app.selectedAgentID = "../escape"
-	app.conversation.SetSize(80, 20)
-	app.focus = FocusConversation
-	app.inputMode = "chat"
-
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
-	updated := model.(App)
-	if updated.notice != "Invalid agent id" {
-		t.Fatalf("notice = %q, want invalid agent id", updated.notice)
-	}
-}
-
 func TestTraceModeHotkeyTogglesConversationTrace(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
@@ -2651,143 +2428,6 @@ func TestTraceModeHotkeyTogglesConversationTrace(t *testing.T) {
 	}
 	if !strings.Contains(app.notice, "Trace mode disabled") {
 		t.Fatalf("unexpected trace disable notice: %q", app.notice)
-	}
-}
-
-func TestPauseResumeKeybindings(t *testing.T) {
-	db := openTestVault(t)
-
-	paused, err := db.CreateAgent("paused-agent", "task", "{}")
-	if err != nil {
-		t.Fatalf("create paused agent: %v", err)
-	}
-	if err := db.UpdateAgentStatus(paused.ID, "paused"); err != nil {
-		t.Fatalf("set paused status: %v", err)
-	}
-
-	active, err := db.CreateAgent("active-agent", "task", "{}")
-	if err != nil {
-		t.Fatalf("create active agent: %v", err)
-	}
-	if err := db.UpdateAgentStatus(active.ID, "active"); err != nil {
-		t.Fatalf("set active status: %v", err)
-	}
-
-	app := NewApp(nil, nil, nil, db, nil, nil)
-	if err := db.UpdateAgentStatus(active.ID, "active"); err != nil {
-		t.Fatalf("restore active status after startup reconciliation: %v", err)
-	}
-
-	app.selectedAgentID = active.ID
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if cmd == nil {
-		t.Fatal("expected pause key to return a command")
-	}
-	pauseMsg, ok := cmd().(statusNotice)
-	if !ok {
-		t.Fatalf("pause command returned %T, want statusNotice", cmd())
-	}
-	if pauseMsg.text != "No orchestrator" {
-		t.Fatalf("pause notice = %q, want %q", pauseMsg.text, "No orchestrator")
-	}
-	app = model.(App)
-
-	app.selectedAgentID = paused.ID
-	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if cmd == nil {
-		t.Fatal("expected resume key to return a command")
-	}
-	resumeMsg, ok := cmd().(statusNotice)
-	if !ok {
-		t.Fatalf("resume command returned %T, want statusNotice", cmd())
-	}
-	if resumeMsg.text != "No orchestrator" {
-		t.Fatalf("resume notice = %q, want %q", resumeMsg.text, "No orchestrator")
-	}
-}
-
-func TestPauseResumeKeybindingsShortCircuitOnAgentState(t *testing.T) {
-	db := openTestVault(t)
-
-	paused, err := db.CreateAgent("paused-agent", "task", "{}")
-	if err != nil {
-		t.Fatalf("create paused agent: %v", err)
-	}
-	if err := db.UpdateAgentStatus(paused.ID, "paused"); err != nil {
-		t.Fatalf("set paused status: %v", err)
-	}
-
-	active, err := db.CreateAgent("active-agent", "task", "{}")
-	if err != nil {
-		t.Fatalf("create active agent: %v", err)
-	}
-	if err := db.UpdateAgentStatus(active.ID, "active"); err != nil {
-		t.Fatalf("set active status: %v", err)
-	}
-
-	app := NewApp(nil, nil, nil, db, nil, nil)
-	if err := db.UpdateAgentStatus(active.ID, "active"); err != nil {
-		t.Fatalf("restore active status after startup reconciliation: %v", err)
-	}
-
-	app.selectedAgentID = paused.ID
-	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
-	if cmd == nil {
-		t.Fatal("expected pause key to return a command")
-	}
-	msg := cmd()
-	notice, ok := msg.(statusNotice)
-	if !ok {
-		t.Fatalf("pause command returned %T, want statusNotice", msg)
-	}
-	if notice.text != "Agent already paused" {
-		t.Fatalf("pause notice = %q, want %q", notice.text, "Agent already paused")
-	}
-
-	app.selectedAgentID = active.ID
-	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if cmd == nil {
-		t.Fatal("expected resume key to return a command")
-	}
-	msg = cmd()
-	notice, ok = msg.(statusNotice)
-	if !ok {
-		t.Fatalf("resume command returned %T, want statusNotice", msg)
-	}
-	if notice.text != "Agent already active" {
-		t.Fatalf("resume notice = %q, want %q", notice.text, "Agent already active")
-	}
-}
-
-func TestBulkKillKeybindingWithoutOrchestrator(t *testing.T) {
-	db := openTestVault(t)
-
-	app := NewApp(nil, nil, nil, db, nil, nil)
-
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
-	if cmd != nil {
-		t.Fatal("did not expect first X press to return a command")
-	}
-	app = model.(App)
-	if !app.confirmKillAll {
-		t.Fatal("expected bulk kill confirmation to be armed")
-	}
-
-	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
-	if cmd == nil {
-		t.Fatal("expected second X press to return a command")
-	}
-	app = model.(App)
-	if app.confirmKillAll {
-		t.Fatal("expected bulk kill confirmation to clear after execution")
-	}
-	msg := cmd()
-	notice, ok := msg.(statusNotice)
-	if !ok {
-		t.Fatalf("bulk kill command returned %T, want statusNotice", msg)
-	}
-	if notice.text != "Kill all unavailable" {
-		t.Fatalf("bulk kill notice = %q, want %q", notice.text, "Kill all unavailable")
 	}
 }
 
@@ -2813,13 +2453,6 @@ func TestLocalKillPathsUseOrchestratorCleanup(t *testing.T) {
 			}
 			if strings.Contains(body, "a.orch.Agents.Kill(agentID)") {
 				t.Fatal("deleteAgent bypasses orchestrator cleanup via Agents.Kill")
-			}
-		case strings.Contains(body, "func (a App) killAllAgents"):
-			if !strings.Contains(body, "a.orch.KillAgent(status.AgentID)") {
-				t.Fatal("killAllAgents should use Orchestrator.KillAgent for each live agent")
-			}
-			if strings.Contains(body, "a.orch.Agents.KillAll()") {
-				t.Fatal("killAllAgents bypasses orchestrator cleanup via Agents.KillAll")
 			}
 		}
 	}
@@ -3207,29 +2840,59 @@ func TestRemoteGracefulShutdownPausesActiveAgents(t *testing.T) {
 	}
 }
 
+// shutdownFakeRuntime is a controllable AgentRuntime for testing gracefulShutdown
+// without a live browser/runtime. It reports a fixed live-agent list and records
+// PauseAgent calls.
+type shutdownFakeRuntime struct {
+	statuses []agentmsg.AgentStatus
+	paused   map[string]bool
+}
+
+func (f *shutdownFakeRuntime) SetRuntimeAudit(*runtimeaudit.Manager)             {}
+func (f *shutdownFakeRuntime) StatusChan() <-chan agentmsg.AgentStatus           { return nil }
+func (f *shutdownFakeRuntime) ConversationChan() <-chan agentmsg.ConversationMsg { return nil }
+func (f *shutdownFakeRuntime) SpawnIsolated(string, string, string, func(), ...string) (string, error) {
+	return "", nil
+}
+func (f *shutdownFakeRuntime) SpawnWithSessionIsolated(string, string, string, string, func()) (string, error) {
+	return "", nil
+}
+func (f *shutdownFakeRuntime) ResumeWithSessionIsolated(string, string, string, func()) (string, error) {
+	return "", nil
+}
+func (f *shutdownFakeRuntime) Kill(string) error { return nil }
+func (f *shutdownFakeRuntime) PauseAgent(id string) error {
+	if f.paused == nil {
+		f.paused = map[string]bool{}
+	}
+	f.paused[id] = true
+	for i := range f.statuses {
+		if f.statuses[i].AgentID == id {
+			f.statuses = append(f.statuses[:i], f.statuses[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+func (f *shutdownFakeRuntime) KillAll()                     {}
+func (f *shutdownFakeRuntime) Dispose()                     {}
+func (f *shutdownFakeRuntime) Count() int                   { return len(f.statuses) }
+func (f *shutdownFakeRuntime) List() []agentmsg.AgentStatus { return f.statuses }
+
 func TestGracefulShutdownPausesActiveAgents(t *testing.T) {
 	db := openTestVault(t)
-	stopNanoClaw := startFakeNanoClawSocket(t)
-	defer stopNanoClaw()
 
 	agent, err := db.CreateAgent("active-agent", "task", "{}")
 	if err != nil {
 		t.Fatalf("create active agent: %v", err)
 	}
 
-	nanoclawPath := filepath.Join(t.TempDir(), "fake-nanoclaw")
-	if err := os.WriteFile(nanoclawPath, []byte("#!/bin/sh\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
-		t.Fatalf("write fake nanoclaw: %v", err)
-	}
-
-	orch := orchestrator.New(nil, nil, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, nanoclawPath)
+	rt := &shutdownFakeRuntime{statuses: []agentmsg.AgentStatus{{AgentID: agent.ID, Status: "active"}}}
+	orch := orchestrator.New(nil, nil, db, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, orchestrator.Opts{AgentRuntime: rt})
 	defer orch.Agents.Dispose()
 	defer orch.Pool.Close()
 
 	app := NewApp(nil, nil, orch, db, nil, nil)
-	if _, err := orch.Agents.SpawnWithSessionIsolated(agent.ID, "hold", "shutdown-"+agent.ID, "", nil); err != nil {
-		t.Fatalf("spawn fake agent: %v", err)
-	}
 	if err := db.UpdateAgentStatus(agent.ID, "active"); err != nil {
 		t.Fatalf("set active status: %v", err)
 	}
@@ -3243,10 +2906,11 @@ func TestGracefulShutdownPausesActiveAgents(t *testing.T) {
 	if stored.Status != "paused" {
 		t.Fatalf("agent status = %q, want paused", stored.Status)
 	}
-
-	statuses := orch.Agents.List()
-	if len(statuses) != 0 {
-		t.Fatalf("manager statuses = %d, want 0 live agents after pause", len(statuses))
+	if !rt.paused[agent.ID] {
+		t.Fatalf("PauseAgent was not called for the active agent")
+	}
+	if len(orch.Agents.List()) != 0 {
+		t.Fatalf("runtime List = %d, want 0 live agents after pause", len(orch.Agents.List()))
 	}
 }
 
@@ -3354,9 +3018,8 @@ func TestRemoteStatusUpdatesSystemPanel(t *testing.T) {
 			"kernel_headless": true,
 			"browser_route":   "camoufox",
 			"browser_window":  "headless",
-			"pool_available":  2,
-			"pool_active":     3,
-			"pool_total":      5,
+			"active_contexts": 4,
+			"active_pages":    7,
 		},
 	}}
 	app := NewAppWithControl(nil, nil, nil, nil, &config.Config{}, nil, control)
@@ -3367,10 +3030,13 @@ func TestRemoteStatusUpdatesSystemPanel(t *testing.T) {
 	app = model.(App)
 
 	view := app.systemInfo.View()
-	for _, want := range []string{"RUNNING", "PID 1234", "Mode HEADLESS", "Route camoufox", "Win headless", "Pool: 2/3/5"} {
+	for _, want := range []string{"RUNNING", "PID 1234", "Ctx: 4 Pg: 7"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("system view missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "Pool:") {
+		t.Fatalf("system view should no longer show pool stats:\n%s", view)
 	}
 }
 

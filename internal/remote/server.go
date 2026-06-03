@@ -12,8 +12,8 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"vulpineos/internal/agentmsg"
 	"vulpineos/internal/juggler"
-	"vulpineos/internal/nanoclaw"
 )
 
 const maxWebSocketMessageBytes int64 = 2 << 20
@@ -227,7 +227,7 @@ func (s *Server) BroadcastEvent(method, sessionID string, params json.RawMessage
 	s.enqueueBroadcast(env)
 }
 
-func (s *Server) BroadcastAgentStatus(status nanoclaw.AgentStatus) {
+func (s *Server) BroadcastAgentStatus(status agentmsg.AgentStatus) {
 	params, err := json.Marshal(map[string]any{
 		"agentId":   status.AgentID,
 		"contextId": status.ContextID,
@@ -241,7 +241,7 @@ func (s *Server) BroadcastAgentStatus(status nanoclaw.AgentStatus) {
 	s.BroadcastEvent("Vulpine.agentStatus", "", params)
 }
 
-func (s *Server) BroadcastConversation(msg nanoclaw.ConversationMsg) {
+func (s *Server) BroadcastConversation(msg agentmsg.ConversationMsg) {
 	params, err := json.Marshal(map[string]any{
 		"agentId": msg.AgentID,
 		"role":    msg.Role,

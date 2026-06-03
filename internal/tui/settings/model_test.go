@@ -18,13 +18,13 @@ func TestConstrainedHeightShowsFocusedSection(t *testing.T) {
 	m.SetSize(36, 8)
 
 	var cmd tea.Cmd
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
 			t.Fatalf("unexpected message after first tab: %#v", msg)
 		}
 	}
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
 			t.Fatalf("unexpected message after second tab: %#v", msg)
@@ -46,13 +46,13 @@ func TestMidHeightShowsFocusedSection(t *testing.T) {
 	m.SetSize(36, 16)
 
 	var cmd tea.Cmd
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
 			t.Fatalf("unexpected message after first tab: %#v", msg)
 		}
 	}
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
 			t.Fatalf("unexpected message after second tab: %#v", msg)
@@ -77,13 +77,13 @@ func TestMediumHeightAboveCompactShowsFocusedSection(t *testing.T) {
 	m.SetSize(36, 19)
 
 	var cmd tea.Cmd
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
 			t.Fatalf("unexpected message after first tab: %#v", msg)
 		}
 	}
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
 			t.Fatalf("unexpected message after second tab: %#v", msg)
@@ -161,7 +161,7 @@ func TestProxyTestRequestUsesStoredConfig(t *testing.T) {
 	}})
 
 	var cmd tea.Cmd
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if cmd != nil {
 		t.Fatalf("unexpected command after tab: %#v", cmd())
 	}
@@ -197,7 +197,7 @@ func TestProxyListKeepsSelectionVisibleWhenCropped(t *testing.T) {
 	m.SetProxies(proxies)
 
 	var cmd tea.Cmd
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if cmd != nil {
 		t.Fatalf("unexpected command after tab: %#v", cmd())
 	}
@@ -225,11 +225,11 @@ func TestSkillListKeepsSelectionVisibleWhenCropped(t *testing.T) {
 	m.SetSkills(skills)
 
 	var cmd tea.Cmd
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if cmd != nil {
 		t.Fatalf("unexpected command after first tab: %#v", cmd())
 	}
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if cmd != nil {
 		t.Fatalf("unexpected command after second tab: %#v", cmd())
 	}
@@ -261,7 +261,7 @@ func TestSelectedRowsClipWithoutBrokenANSI(t *testing.T) {
 	}})
 
 	var cmd tea.Cmd
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if cmd != nil {
 		t.Fatalf("unexpected command after tab: %#v", cmd())
 	}

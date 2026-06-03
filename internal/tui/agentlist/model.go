@@ -14,16 +14,17 @@ import (
 
 // AgentListItem represents one agent in the list.
 type AgentListItem struct {
-	ID          string
-	Name        string
-	Task        string
-	Status      string
-	Tokens      int
-	Fingerprint string
-	ProxyConfig string
-	Metadata    string
-	CreatedAt   time.Time
-	Unread      int
+	ID             string
+	Name           string
+	Task           string
+	Status         string
+	Tokens         int
+	Fingerprint    string
+	ProxyConfig    string
+	Metadata       string
+	CreatedAt      time.Time
+	LastSelectedAt time.Time
+	Unread         int
 }
 
 // Model holds the selectable agent list state.
@@ -80,15 +81,16 @@ func (m *Model) SetAgents(agents []vault.Agent) {
 	m.agents = make([]AgentListItem, len(agents))
 	for i, a := range agents {
 		m.agents[i] = AgentListItem{
-			ID:          a.ID,
-			Name:        a.Name,
-			Task:        a.Task,
-			Status:      a.Status,
-			Tokens:      a.TotalTokens,
-			Fingerprint: a.Fingerprint,
-			ProxyConfig: a.ProxyConfig,
-			Metadata:    a.Metadata,
-			CreatedAt:   a.CreatedAt,
+			ID:             a.ID,
+			Name:           a.Name,
+			Task:           a.Task,
+			Status:         a.Status,
+			Tokens:         a.TotalTokens,
+			Fingerprint:    a.Fingerprint,
+			ProxyConfig:    a.ProxyConfig,
+			Metadata:       a.Metadata,
+			CreatedAt:      a.CreatedAt,
+			LastSelectedAt: a.LastSelectedAt,
 		}
 	}
 	if m.selected >= len(m.agents) {
@@ -126,6 +128,63 @@ func (m Model) SelectedAgent() (AgentListItem, bool) {
 	return m.agents[m.selected], true
 }
 
+// Agents returns a copy of the current agent list items.
+func (m Model) Agents() []AgentListItem {
+	result := make([]AgentListItem, len(m.agents))
+	copy(result, m.agents)
+	return result
+}
+
+// ClickNearest selects the agent whose rendered row is nearest to a mouse
+// click at screen row clickY, given the agent-list panel's top screen row
+// panelY. Returns the selected item and true when an agent was hit.
+func (m *Model) ClickNearest(clickY, panelY int) (AgentListItem, bool) {
+	if len(m.agents) == 0 {
+		return AgentListItem{}, false
+	}
+	capacity := m.height - 1 // title (1); visibleAgentRange uses height-1 in View
+	if capacity < 1 {
+		capacity = len(m.agents)
+	}
+	start, end := visibleAgentRange(len(m.agents), m.selected, capacity)
+	if start >= end {
+		return AgentListItem{}, false
+	}
+	// Row layout: screen Y = panelY + 1 (border) + 1 (title) + (i - start).
+	bestIdx := start
+	bestDist := -1
+	for i := start; i < end && i < len(m.agents); i++ {
+		rowY := panelY + 2 + (i - start)
+		dist := clickY - rowY
+		if dist < 0 {
+			dist = -dist
+		}
+		if bestDist == -1 || dist < bestDist {
+			bestDist = dist
+			bestIdx = i
+		}
+	}
+	m.selected = bestIdx
+	return m.agents[bestIdx], true
+}
+
+// SelectIndex selects the agent at index i, returning true if i is in range.
+func (m *Model) SelectIndex(i int) bool {
+	if i < 0 || i >= len(m.agents) {
+		return false
+	}
+	m.selected = i
+	return true
+}
+
+// SelectedIndex returns the index of the currently selected agent (-1 if none).
+func (m Model) SelectedIndex() int {
+	if len(m.agents) == 0 || m.selected >= len(m.agents) {
+		return -1
+	}
+	return m.selected
+}
+
 // Agent returns an item by ID.
 func (m Model) Agent(id string) (AgentListItem, bool) {
 	for _, agent := range m.agents {
@@ -150,15 +209,16 @@ func (m *Model) SelectAgentID(id string) bool {
 // AddAgent adds a new agent to the list.
 func (m *Model) AddAgent(a vault.Agent) {
 	m.agents = append(m.agents, AgentListItem{
-		ID:          a.ID,
-		Name:        a.Name,
-		Task:        a.Task,
-		Status:      a.Status,
-		Tokens:      a.TotalTokens,
-		Fingerprint: a.Fingerprint,
-		ProxyConfig: a.ProxyConfig,
-		Metadata:    a.Metadata,
-		CreatedAt:   a.CreatedAt,
+		ID:             a.ID,
+		Name:           a.Name,
+		Task:           a.Task,
+		Status:         a.Status,
+		Tokens:         a.TotalTokens,
+		Fingerprint:    a.Fingerprint,
+		ProxyConfig:    a.ProxyConfig,
+		Metadata:       a.Metadata,
+		CreatedAt:      a.CreatedAt,
+		LastSelectedAt: a.LastSelectedAt,
 	})
 }
 
@@ -260,7 +320,7 @@ func statusIcon(status string) string {
 func (m Model) View() string {
 	var b strings.Builder
 
-	b.WriteString(shared.TitleStyle.Render("AGENTS"))
+	b.WriteString(shared.TitleStyle.Render(fmt.Sprintf("AGENTS (%d)", len(m.agents))))
 	b.WriteString("\n")
 
 	if len(m.agents) == 0 {
@@ -290,13 +350,21 @@ func (m Model) View() string {
 			unread = lipgloss.NewStyle().Foreground(shared.ColorWarning).Render(unreadText)
 		}
 
-		maxName := m.width - lipgloss.Width(cursor) - 1 - lipgloss.Width(icon) - lipgloss.Width(unreadText)
+		// Context indicator: a small browser-window glyph when this agent owns an
+		// open browser context (so `v` can show/hide that agent's window).
+		ctxText, ctxMark := "", ""
+		if hasOpenContext(a.Metadata) {
+			ctxText = " ◗"
+			ctxMark = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C3AED")).Render(ctxText)
+		}
+
+		maxName := m.width - lipgloss.Width(cursor) - 1 - lipgloss.Width(icon) - lipgloss.Width(unreadText) - lipgloss.Width(ctxText)
 		if maxName < 1 {
 			maxName = 1
 		}
 		name := padVisible(fitVisible(a.Name, maxName), maxName)
 
-		line := fitAgentRow(fmt.Sprintf("%s%s %s%s", cursor, name, icon, unread), m.width)
+		line := fitAgentRow(fmt.Sprintf("%s%s%s %s%s", cursor, name, ctxMark, icon, unread), m.width)
 		if i == m.selected {
 			line = shared.SelectedStyle.Render(line)
 		}
@@ -316,6 +384,16 @@ func (m Model) View() string {
 		}
 	}
 	return result
+}
+
+// hasOpenContext reports whether the agent's metadata records an open browser
+// context (and thus a window that `v` can show/hide).
+func hasOpenContext(metadata string) bool {
+	meta, err := vault.ParseAgentMetadata(metadata)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(meta.ContextID) != ""
 }
 
 func visibleAgentRange(total, selected, capacity int) (int, int) {

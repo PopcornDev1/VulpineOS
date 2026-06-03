@@ -23,7 +23,7 @@ func TestOrchestratorTracksContextOwnership(t *testing.T) {
 	vdb := openTestVault(t)
 	defer vdb.Close()
 
-	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50}, "")
+	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50})
 	o.Pool.Start()
 
 	slot, err := o.Pool.Acquire()
@@ -63,7 +63,7 @@ func TestOrchestratorReleasesContextOnAgentKill(t *testing.T) {
 	vdb := openTestVault(t)
 	defer vdb.Close()
 
-	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, "", Opts{})
+	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, Opts{})
 	o.Pool.Start()
 
 	slot, err := o.Pool.Acquire()
@@ -103,7 +103,7 @@ func TestOrchestratorCloseLeavesSharedClientUsable(t *testing.T) {
 	defer client.Close()
 
 	vdb := openTestVault(t)
-	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, "", Opts{})
+	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 1}, Opts{})
 
 	if _, err := o.Pool.Acquire(); err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -152,7 +152,7 @@ func TestOrchestratorAppliesFingerprintViaJuggler(t *testing.T) {
 		Fingerprint: string(fpJSON),
 	}
 
-	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50}, "")
+	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50})
 
 	if err := o.applyCitizenToContext("ctx-fp", 1, cit); err != nil {
 		t.Fatalf("applyCitizenToContext: %v", err)
@@ -263,7 +263,7 @@ func TestOrchestratorSanitizesCamoufoxUserAgent(t *testing.T) {
 		}`,
 	}
 
-	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50}, "")
+	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50})
 	if err := o.applyCitizenToContext("ctx-camoufox", 2, cit); err != nil {
 		t.Fatalf("applyCitizenToContext: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestEnsureAgentBrowserContextCreatesPersistentScopedContext(t *testing.T) {
 		t.Fatalf("CreateAgent: %v", err)
 	}
 
-	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50}, "")
+	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50})
 	o.Pool.Start()
 	defer o.Close()
 
@@ -361,7 +361,7 @@ func TestReleaseAgentContextRemovesPersistedUntrackedContext(t *testing.T) {
 		t.Fatalf("UpdateAgentMetadata: %v", err)
 	}
 
-	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50}, "")
+	o := New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50})
 	o.ReleaseAgentContext(agent.ID)
 
 	calls := fake.CallsByMethod("Browser.removeBrowserContext")

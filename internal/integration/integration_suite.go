@@ -2,7 +2,6 @@ package integration
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"vulpineos/internal/juggler"
@@ -44,7 +43,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	t.Cleanup(func() { p.Close() })
 
-	o := orchestrator.New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 2, MaxUsesPerSlot: 2}, filepath.Join(t.TempDir(), "missing-nanoclaw"), orchestrator.Opts{})
+	o := orchestrator.New(nil, client, vdb, pool.Config{PreWarm: 0, MaxActive: 2, MaxUsesPerSlot: 2}, orchestrator.Opts{})
 	t.Cleanup(func() { o.Close() })
 
 	return &testEnv{

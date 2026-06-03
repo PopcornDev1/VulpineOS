@@ -6,19 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"vulpineos/internal/agentbus"
-	"vulpineos/internal/config"
+	"vulpineos/internal/agentcore"
 	"vulpineos/internal/costtrack"
 	"vulpineos/internal/extensions"
-	"vulpineos/internal/foxbridge"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
-	"vulpineos/internal/nanoclaw"
 	"vulpineos/internal/pagecache"
 	"vulpineos/internal/pool"
 	"vulpineos/internal/proxy"
@@ -58,7 +57,7 @@ type Orchestrator struct {
 	Client *juggler.Client
 	Pool   *pool.Pool
 	Vault  *vault.DB
-	Agents *nanoclaw.Manager
+	Agents AgentRuntime
 
 	// Optional subsystems (nil-safe)
 	AgentBus        *agentbus.Bus
@@ -101,18 +100,33 @@ type Opts struct {
 	SecurityEnabled bool
 	MemoryMonitor   *pool.MemoryMonitor
 	MutationMonitor *security.MutationMonitor
+	// AgentRuntime overrides the agent-execution backend. When nil, the
+	// orchestrator uses the NanoClaw manager. Set it to an *agentcore.Manager
+	// to run agents in-process (native backend).
+	AgentRuntime AgentRuntime
 }
 
-// New creates an orchestrator with all subsystems.
-func New(k *kernel.Kernel, client *juggler.Client, v *vault.DB, poolCfg pool.Config, nanoclawBinary string, opts ...Opts) *Orchestrator {
+// New creates an orchestrator with all subsystems. The agent backend is the
+// native in-process runtime (internal/agentcore); callers may inject a
+// preconfigured runtime via Opts.AgentRuntime, otherwise a default native
+// manager is created bound to the kernel's browser client + vault.
+func New(k *kernel.Kernel, client *juggler.Client, v *vault.DB, poolCfg pool.Config, opts ...Opts) *Orchestrator {
 	o := &Orchestrator{
 		Kernel:               k,
 		Client:               client,
 		Pool:                 pool.New(client, poolCfg),
 		Vault:                v,
-		Agents:               nanoclaw.NewManager(nanoclawBinary),
 		agentToSlot:          make(map[string]*pool.ContextSlot),
 		persistentAgentSlots: make(map[string]bool),
+	}
+	if len(opts) > 0 && opts[0].AgentRuntime != nil {
+		o.Agents = opts[0].AgentRuntime
+	} else {
+		mgr := agentcore.NewManager(client, agentcore.Config{})
+		if v != nil {
+			mgr.SetVault(v)
+		}
+		o.Agents = mgr
 	}
 	if len(opts) > 0 {
 		o.AgentBus = opts[0].AgentBus
@@ -163,7 +177,7 @@ func (o *Orchestrator) SpawnCitizen(citizenID, templateID string) (string, error
 	}
 
 	// Write SOP and spawn agent
-	sopFile, err := nanoclaw.WriteSOP(tmpl.SOP)
+	sopFile, err := writeSOPFile(tmpl.SOP)
 	if err != nil {
 		o.Pool.Release(slot)
 		return "", fmt.Errorf("write SOP: %w", err)
@@ -171,7 +185,7 @@ func (o *Orchestrator) SpawnCitizen(citizenID, templateID string) (string, error
 
 	agentID, err := o.spawnScopedAgent(slot.ContextID, sopFile)
 	if err != nil {
-		nanoclaw.CleanupSOP(sopFile)
+		removeSOPFile(sopFile)
 		o.Pool.Release(slot)
 		return "", fmt.Errorf("spawn agent: %w", err)
 	}
@@ -220,7 +234,7 @@ func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
 	o.applyDefaultNetworkIdentity(slot.ContextID, slot.UserContextID, session.ID)
 
 	// Write SOP and spawn agent
-	sopFile, err := nanoclaw.WriteSOP(tmpl.SOP)
+	sopFile, err := writeSOPFile(tmpl.SOP)
 	if err != nil {
 		o.Pool.Release(slot)
 		return "", fmt.Errorf("write SOP: %w", err)
@@ -228,7 +242,7 @@ func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
 
 	agentID, err := o.spawnScopedAgent(slot.ContextID, sopFile)
 	if err != nil {
-		nanoclaw.CleanupSOP(sopFile)
+		removeSOPFile(sopFile)
 		o.Pool.Release(slot)
 		return "", fmt.Errorf("spawn agent: %w", err)
 	}
@@ -1040,45 +1054,52 @@ func geolocationFields(raw map[string]interface{}) (float64, float64, bool) {
 }
 
 func (o *Orchestrator) spawnScopedAgent(contextID, sopFile string) (string, error) {
-	scopedConfig, cleanup, err := o.PrepareScopedNanoClawConfig(contextID)
+	// The native runtime drives the pooled context directly through the host
+	// browser client (no per-context CDP bridge or external config needed), so
+	// configPath is empty and there is no scoped-config cleanup to perform.
+	cleanup, err := o.AgentRuntimeConfig(contextID)
 	if err != nil {
 		return "", err
 	}
-
-	agentID, err := o.Agents.SpawnIsolated(contextID, sopFile, scopedConfig, cleanup)
+	agentID, err := o.Agents.SpawnIsolated(contextID, sopFile, "", cleanup)
 	if err != nil {
 		cleanup()
 		return "", err
 	}
-
 	return agentID, nil
 }
 
-// PrepareScopedNanoClawConfig builds a per-context NanoClaw config overlay.
-func (o *Orchestrator) PrepareScopedNanoClawConfig(contextID string) (string, func(), error) {
+// writeSOPFile writes a Standard Operating Procedure to a unique temp file the
+// native runtime reads as the agent's task.
+func writeSOPFile(sop string) (string, error) {
+	f, err := os.CreateTemp("", "vulpineos-sop-*.txt")
+	if err != nil {
+		return "", fmt.Errorf("create SOP temp file: %w", err)
+	}
+	path := f.Name()
+	if _, err := f.WriteString(sop); err != nil {
+		f.Close()
+		os.Remove(path)
+		return "", fmt.Errorf("write SOP file: %w", err)
+	}
+	f.Close()
+	return path, nil
+}
+
+// removeSOPFile removes a temporary SOP file.
+func removeSOPFile(path string) { os.Remove(path) }
+
+// AgentRuntimeConfig validates that a context is ready for a native agent turn
+// and returns a cleanup func. The native runtime needs no per-context config or
+// CDP bridge, so this only checks preconditions; the returned cleanup is a no-op.
+func (o *Orchestrator) AgentRuntimeConfig(contextID string) (func(), error) {
 	if o == nil || o.Client == nil {
-		return "", nil, fmt.Errorf("orchestrator client not available")
+		return nil, fmt.Errorf("orchestrator client not available")
 	}
 	if contextID == "" {
-		return "", nil, fmt.Errorf("context id is required")
+		return nil, fmt.Errorf("context id is required")
 	}
-
-	scopedFoxbridge, err := foxbridge.StartEmbeddedScoped(o.Client, 0, contextID)
-	if err != nil {
-		return "", nil, fmt.Errorf("start scoped foxbridge: %w", err)
-	}
-
-	scopedConfig, cleanupConfig, err := nanoclaw.PrepareScopedConfig(config.NanoClawConfigPath(), scopedFoxbridge.CDPURL())
-	if err != nil {
-		scopedFoxbridge.Stop()
-		return "", nil, fmt.Errorf("prepare scoped NanoClaw config: %w", err)
-	}
-
-	cleanup := func() {
-		cleanupConfig()
-		scopedFoxbridge.Stop()
-	}
-	return scopedConfig, cleanup, nil
+	return func() {}, nil
 }
 
 // profileFamilyForPlatform maps a platform string to a networklab profile family.

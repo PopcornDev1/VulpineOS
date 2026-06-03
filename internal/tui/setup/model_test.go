@@ -217,3 +217,103 @@ func setupTestProviders() []config.Provider {
 		},
 	}
 }
+
+func oauthTestProviders() []config.Provider {
+	return []config.Provider{
+		{ID: "openai", Name: "OpenAI (GPT)", EnvVar: "OPENAI_API_KEY",
+			DefaultModel: "openai/gpt-5.4", Models: []string{"openai/gpt-5.4"},
+			NeedsKey: true, OAuthProviderID: "openai-oauth"},
+		{ID: "openai-oauth", Name: "OpenAI (ChatGPT Sign-in)", EnvVar: "OPENAI_ACCESS_TOKEN",
+			DefaultModel: "openai/gpt-5.5", Models: []string{"openai/gpt-5.5"},
+			NeedsKey: false, OAuth: true, Hidden: true},
+	}
+}
+
+func TestSetupHidesOAuthVariantFromPicker(t *testing.T) {
+	m := newWithConfigAndProviders(nil, oauthTestProviders())
+	for _, p := range m.providers {
+		if p.ID == "openai-oauth" {
+			t.Fatal("hidden OAuth-variant provider should not appear in the picker")
+		}
+	}
+}
+
+func TestSetupProviderWithOAuthOffersAuthMethod(t *testing.T) {
+	m := newWithConfigAndProviders(nil, oauthTestProviders())
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = model.(*Model)
+	// Selecting OpenAI (which has an OAuth variant) goes to the auth-method step.
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = model.(*Model)
+	if m.step != stepAuthMethod {
+		t.Fatalf("step = %v, want stepAuthMethod", m.step)
+	}
+}
+
+func TestSetupOAuthMethodSelectsHiddenVariantAndStartsLogin(t *testing.T) {
+	m := newWithConfigAndProviders(nil, oauthTestProviders())
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = model.(*Model)
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // select OpenAI -> authMethod
+	m = model.(*Model)
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // move to OAuth option
+	m = model.(*Model)
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // choose OAuth -> model step
+	m = model.(*Model)
+	if m.step != stepModel {
+		t.Fatalf("step = %v, want stepModel", m.step)
+	}
+	if m.cfg.Provider != "openai-oauth" {
+		t.Fatalf("provider = %q, want openai-oauth", m.cfg.Provider)
+	}
+	// Selecting the model kicks off the OAuth login (returns a begin command).
+	model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = model.(*Model)
+	if m.step != stepOAuth {
+		t.Fatalf("step = %v, want stepOAuth", m.step)
+	}
+	if cmd == nil {
+		t.Fatal("selecting an OAuth model should start the login flow")
+	}
+}
+
+// TestIsAsyncMsgCoversOAuthMessages guards the contract the embedded TUI relies
+// on: the host forwards exactly these async messages back to the wizard. If they
+// aren't recognized, the OAuth flow stalls at "Starting sign-in..." and never
+// shows the auth URL.
+func TestIsAsyncMsgCoversOAuthMessages(t *testing.T) {
+	asyncMsgs := []tea.Msg{
+		oauthBeganMsg{},
+		oauthCodeMsg{},
+		oauthDoneMsg{},
+	}
+	for _, msg := range asyncMsgs {
+		if !IsAsyncMsg(msg) {
+			t.Fatalf("IsAsyncMsg(%T) = false, want true", msg)
+		}
+	}
+	if IsAsyncMsg(tea.KeyMsg{Type: tea.KeyEnter}) {
+		t.Fatal("IsAsyncMsg(KeyMsg) = true, want false (key input is routed separately)")
+	}
+	if IsAsyncMsg(tea.WindowSizeMsg{}) {
+		t.Fatal("IsAsyncMsg(WindowSizeMsg) = true, want false (size is routed separately)")
+	}
+}
+
+func TestSetupAuthMethodAPIKeyChoiceUsesBaseProvider(t *testing.T) {
+	m := newWithConfigAndProviders(nil, oauthTestProviders())
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = model.(*Model)
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // OpenAI -> authMethod
+	m = model.(*Model)
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // choose API key (idx 0) -> model
+	m = model.(*Model)
+	if m.cfg.Provider != "openai" {
+		t.Fatalf("provider = %q, want openai", m.cfg.Provider)
+	}
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // select model -> API key step
+	m = model.(*Model)
+	if m.step != stepAPIKey {
+		t.Fatalf("step = %v, want stepAPIKey", m.step)
+	}
+}

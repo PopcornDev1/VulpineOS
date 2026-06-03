@@ -11,7 +11,7 @@ import (
 	"vulpineos/internal/vault"
 )
 
-func TestKernelStatusViewShowsModeAndRoute(t *testing.T) {
+func TestKernelStatusViewOmitsModeRouteAndWindow(t *testing.T) {
 	model := New()
 	model.SetHeight(20)
 
@@ -25,14 +25,14 @@ func TestKernelStatusViewShowsModeAndRoute(t *testing.T) {
 	})
 
 	view := updated.View()
-	if !strings.Contains(view, "Mode GUI") {
-		t.Fatalf("expected GUI mode in view, got:\n%s", view)
+	if strings.Contains(view, "Mode ") {
+		t.Fatalf("did not expect Mode line in view, got:\n%s", view)
 	}
-	if !strings.Contains(view, "Route CAMOUFOX") {
-		t.Fatalf("expected CAMOUFOX route in view, got:\n%s", view)
+	if strings.Contains(view, "Route ") {
+		t.Fatalf("did not expect Route line in view, got:\n%s", view)
 	}
-	if !strings.Contains(view, "Win HIDDEN") {
-		t.Fatalf("expected window state in view, got:\n%s", view)
+	if strings.Contains(view, "Win ") {
+		t.Fatalf("did not expect Win line in view, got:\n%s", view)
 	}
 }
 
@@ -55,7 +55,7 @@ func TestViewFitsRuntimeEventsToWidth(t *testing.T) {
 	}
 }
 
-func TestDefaultHeightShowsPoolAndContextStats(t *testing.T) {
+func TestDefaultHeightShowsContextStatsAndOmitsPool(t *testing.T) {
 	model := New()
 	model.SetHeight(13)
 
@@ -67,12 +67,11 @@ func TestDefaultHeightShowsPoolAndContextStats(t *testing.T) {
 		BrowserRoute:  "CAMOUFOX",
 		BrowserWindow: "VISIBLE",
 	})
-	updated, _ = updated.Update(shared.PoolStatsMsg{Available: 3, Active: 2, Total: 5})
-	updated, _ = updated.Update(shared.TelemetryMsg{ActiveContexts: 4, ActivePages: 7})
+	updated.SetBrowserCounts(4, 7)
 
 	view := updated.View()
-	if !strings.Contains(view, "Pool: 3/2/5") {
-		t.Fatalf("default-height system panel missing pool stats:\n%s", view)
+	if strings.Contains(view, "Pool:") {
+		t.Fatalf("system panel should no longer show pool stats:\n%s", view)
 	}
 	if !strings.Contains(view, "Ctx: 4 Pg: 7") {
 		t.Fatalf("default-height system panel missing context stats:\n%s", view)

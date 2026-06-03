@@ -162,7 +162,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.active = false
 			return m, func() tea.Msg { return shared.SettingsClosedMsg{} }
 
-		case "tab":
+		case "down":
+			// Switch to the next section.
 			if m.section == SectionGeneral {
 				m.section = SectionProxies
 			} else if m.section == SectionProxies {
@@ -171,7 +172,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.section = SectionGeneral
 			}
 
-		case "shift+tab":
+		case "up":
+			// Switch to the previous section.
 			if m.section == SectionSkills {
 				m.section = SectionProxies
 			} else if m.section == SectionProxies {
@@ -180,7 +182,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.section = SectionSkills
 			}
 
-		case "j", "down":
+		case "j":
+			// Navigate down within the focused section's list.
 			switch m.section {
 			case SectionProxies:
 				if len(m.proxies) > 0 && m.proxyIdx < len(m.proxies)-1 {
@@ -192,7 +195,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				}
 			}
 
-		case "k", "up":
+		case "k":
+			// Navigate up within the focused section's list.
 			switch m.section {
 			case SectionProxies:
 				if m.proxyIdx > 0 {
@@ -294,7 +298,7 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	b.WriteString(shared.TitleStyle.Render("SETTINGS"))
-	controls := "[Esc] close  [Tab] next"
+	controls := "[Esc] close  [↑/↓] section"
 	pad := contentWidth - lipgloss.Width("SETTINGS") - lipgloss.Width(controls)
 	if pad > 0 {
 		b.WriteString(strings.Repeat(" ", pad))
@@ -340,7 +344,7 @@ func (m Model) viewFocusedSection(contentWidth int) string {
 	var b strings.Builder
 
 	b.WriteString(shared.TitleStyle.Render("SETTINGS"))
-	controls := "[Esc] close  [Tab] next"
+	controls := "[Esc] close  [↑/↓] section"
 	pad := contentWidth - lipgloss.Width("SETTINGS") - lipgloss.Width(controls)
 	if pad > 0 {
 		b.WriteString(strings.Repeat(" ", pad))

@@ -2,11 +2,36 @@ package auth
 
 import (
 	"encoding/base64"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+// TestBeginOpenAILoginAuthURLMatchesCodexClient guards the authorize request
+// against the invalid_client error: OpenAI resolves the registered app from the
+// (client_id, originator) pair, so the public Codex client_id must be paired
+// with originator "codex_cli_rs".
+func TestBeginOpenAILoginAuthURLMatchesCodexClient(t *testing.T) {
+	login, err := BeginOpenAILogin()
+	if err != nil {
+		t.Fatalf("begin login: %v", err)
+	}
+	defer login.Close()
+
+	u, err := url.Parse(login.AuthURL)
+	if err != nil {
+		t.Fatalf("parse auth URL %q: %v", login.AuthURL, err)
+	}
+	q := u.Query()
+	if got := q.Get("client_id"); got != "app_EMoamEEZ73f0CkXaXp7hrann" {
+		t.Errorf("client_id = %q, want the Codex public client", got)
+	}
+	if got := q.Get("originator"); got != "codex_cli_rs" {
+		t.Errorf("originator = %q, want codex_cli_rs (must match the client_id)", got)
+	}
+}
 
 func TestOpenAICredentialPath(t *testing.T) {
 	path := OpenAICredentialPath()

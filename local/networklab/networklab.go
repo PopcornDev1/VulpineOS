@@ -44,6 +44,11 @@ func WriteCurrentIdentity(identity *Identity) error {
 	return errUnavailable
 }
 
+// WriteIdentities reports that private per-context identity sharing is unavailable.
+func WriteIdentities(identities map[string]*Identity) error {
+	return errUnavailable
+}
+
 // BuildIdentityParamsJSON returns an empty identity payload for public builds.
 func BuildIdentityParamsJSON(identity *Identity) string {
 	return "{}"

@@ -189,3 +189,13 @@ type ProxyTestRequestMsg struct {
 	ProxyID string
 	Config  string // JSON ProxyConfig
 }
+
+// AgentPickerPickedMsg fires when the user selects an agent in the
+// agent picker modal.
+type AgentPickerPickedMsg struct {
+	AgentID   string
+	AgentName string
+}
+
+// AgentPickerCancelledMsg fires when the user dismisses the agent picker.
+type AgentPickerCancelledMsg struct{}
