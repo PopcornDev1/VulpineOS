@@ -187,6 +187,16 @@ if browser_asset is None and browser_fallback:
                 browser_asset = asset
                 break
 
+# If CLI not in latest release, try the fallback browser release
+if cli_asset is None and browser_fallback:
+    fb = fetch_release(browser_fallback)
+    if fb:
+        for asset in fb.get("assets") or []:
+            name = asset.get("name", "")
+            if cli_asset is None and name in cli_names:
+                cli_asset = asset
+                break
+
 missing = []
 if cli_asset is None:
     missing.append(" or ".join(cli_names))
