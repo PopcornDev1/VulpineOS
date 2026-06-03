@@ -285,14 +285,16 @@ build_cli_from_source() {
     log "Building vulpineos CLI from source..."
     rm -rf "${src_dir}"
 
-    # Use sparse checkout to avoid downloading the large Camoufox font bundles
-    # stored in the repo (bundle/fonts/ is ~930 MiB and not needed for compilation).
-    # --filter=blob:none skips blob transfers; sparse-checkout restricts to Go source.
-    if git clone --depth 1 --filter=blob:none --sparse "${repo_url}" "${src_dir}" 2>/dev/null; then
-        (cd "${src_dir}" && git sparse-checkout set cmd internal go.mod go.sum) || true
+    # Partial clone: transfer only commit metadata — file blobs are fetched
+    # on demand. The repo contains ~930 MiB of Camoufox font bundles
+    # (bundle/fonts/) that are not needed for compiling the Go CLI binary.
+    if git clone --depth 1 --filter=blob:none "${repo_url}" "${src_dir}" 2>/dev/null; then
+        # Remove font bundle placeholders; their blobs were never downloaded.
+        rm -rf "${src_dir}/bundle"
     else
-        # Older git versions: fall back to shallow clone of primary branch
+        # Older git: full shallow clone, then delete font bundle.
         git clone --depth 1 --single-branch "${repo_url}" "${src_dir}" || fatal "Failed to clone ${VULPINEOS_REPO}."
+        rm -rf "${src_dir}/bundle"
     fi
 
     (cd "${src_dir}" && go build -o "vulpineos-${goos}-${goarch}" ./cmd/vulpineos/) || {
