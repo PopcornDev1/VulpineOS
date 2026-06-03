@@ -596,6 +596,18 @@ func (m *Model) modelIndexFor(p config.Provider, model string) int {
 }
 
 func (m *Model) providerModels(p config.Provider) []string {
+	// OAuth variants inherit models from their base provider so the full
+	// remote-catalog model list is available (not just the built-in subset).
+	if p.OAuth {
+		for _, bp := range m.providers {
+			if bp.OAuthProviderID == p.ID {
+				if len(bp.Models) > 0 {
+					return bp.Models
+				}
+				break
+			}
+		}
+	}
 	if len(p.Models) > 0 {
 		return p.Models
 	}
