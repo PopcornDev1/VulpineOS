@@ -48,13 +48,19 @@ func openExternalTarget(target string) error {
 		{"xdg-open", target},
 		{"rundll32", "url.dll,FileProtocolHandler", target},
 	}
+	var lastErr error
 	for _, candidate := range candidates {
 		if _, err := lookExternalCommand(candidate[0]); err != nil {
 			continue
 		}
-		if err := startExternalCommand(candidate[0], candidate[1:]...); err == nil {
-			return nil
+		if err := startExternalCommand(candidate[0], candidate[1:]...); err != nil {
+			lastErr = fmt.Errorf("%s: %w", candidate[0], err)
+			continue
 		}
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
 	}
 	return fmt.Errorf("no opener available")
 }
@@ -1585,9 +1591,16 @@ func isReadyChatStatus(status string) bool {
 
 func (a *App) applyConversationStatus(status string) {
 	a.conversation.SetAgentStatus(status)
-	if isReadyChatStatus(status) {
+	switch {
+	case isLiveAgentStatus(status):
+		a.conversation.SetThinking(true)
+	case isReadyChatStatus(status):
 		a.conversation.SetThinking(false)
 		a.conversation.SetAwake(true)
+	case status == "paused" || isTerminalAgentStatus(status):
+		a.conversation.SetThinking(false)
+	default:
+		a.conversation.SetThinking(false)
 	}
 }
 

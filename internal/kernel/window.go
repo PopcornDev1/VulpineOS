@@ -213,6 +213,18 @@ func (w *WindowController) HideAll() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Contexts are usually tabs in a single window, so no per-context PIDs are
+	// registered; fall back to hiding the main browser window directly rather
+	// than no-opping.
+	if len(w.contextWindows) == 0 {
+		if err := w.hide(); err != nil {
+			return err
+		}
+		w.visible = false
+		w.found = true
+		return nil
+	}
+
 	var lastErr error
 	for contextID, pids := range w.contextWindows {
 		for _, pid := range pids {
