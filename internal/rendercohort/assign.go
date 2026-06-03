@@ -38,10 +38,40 @@ func Assign(cohorts []extensions.RenderCohort, seed, claimedOS string) (extensio
 	if len(pool) == 0 {
 		return extensions.RenderCohort{}, false
 	}
-	// Sort by key so the index is stable regardless of provider enumeration order.
+	// Sort by key so selection is stable regardless of provider enumeration order.
 	sort.Slice(pool, func(i, j int) bool { return pool[i].Key < pool[j].Key })
+
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(seed))
+	// A stable fraction in [0,1) derived from the agent seed.
+	frac := float64(h.Sum32()) / float64(1<<32)
+
+	// Prevalence-weighted selection only when the data is COMPLETE for this OS
+	// pool (every cohort has a positive Weight). Mixed/absent weights would
+	// silently drop cohorts, so we fall back to uniform unless all are known —
+	// this keeps the fleet's device mix matched to the real population once
+	// prevalence data is available, and unbiased uniform until then.
+	total := 0.0
+	allWeighted := true
+	for _, c := range pool {
+		if c.Weight <= 0 {
+			allWeighted = false
+			break
+		}
+		total += c.Weight
+	}
+	if allWeighted && total > 0 {
+		point := frac * total
+		acc := 0.0
+		for _, c := range pool {
+			acc += c.Weight
+			if point < acc {
+				return c, true
+			}
+		}
+		return pool[len(pool)-1], true // floating-point guard
+	}
+
 	idx := int(h.Sum32() % uint32(len(pool)))
 	return pool[idx], true
 }

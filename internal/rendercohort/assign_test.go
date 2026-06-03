@@ -1,8 +1,11 @@
 package rendercohort
 
-import "testing"
+import (
+	"strconv"
+	"testing"
 
-import "vulpineos/internal/extensions"
+	"vulpineos/internal/extensions"
+)
 
 func cohortSet() []extensions.RenderCohort {
 	return []extensions.RenderCohort{
@@ -88,5 +91,61 @@ func TestNormalizeOS(t *testing.T) {
 		if got := NormalizeOS(in); got != want {
 			t.Fatalf("NormalizeOS(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestAssignPrevalenceWeightedMatchesDistribution(t *testing.T) {
+	// macA is ~9x more prevalent than macB; assignment across many agents should
+	// land near that 90/10 split.
+	cohorts := []extensions.RenderCohort{
+		{Key: "mac_a", OS: "mac", ConfigBlob: "b", Weight: 90},
+		{Key: "mac_b", OS: "mac", ConfigBlob: "b", Weight: 10},
+	}
+	counts := map[string]int{}
+	const n = 4000
+	for i := 0; i < n; i++ {
+		c, ok := Assign(cohorts, "agent-"+strconv.Itoa(i), "MacIntel")
+		if !ok {
+			t.Fatalf("seed %d: expected assignment", i)
+		}
+		counts[c.Key]++
+	}
+	shareA := float64(counts["mac_a"]) / float64(n)
+	if shareA < 0.83 || shareA > 0.97 {
+		t.Fatalf("weighted share for mac_a = %.3f, want ~0.90 (counts=%v)", shareA, counts)
+	}
+}
+
+func TestAssignWeightedIsDeterministic(t *testing.T) {
+	cohorts := []extensions.RenderCohort{
+		{Key: "mac_a", OS: "mac", ConfigBlob: "b", Weight: 70},
+		{Key: "mac_b", OS: "mac", ConfigBlob: "b", Weight: 30},
+	}
+	first, ok := Assign(cohorts, "stable", "MacIntel")
+	if !ok {
+		t.Fatal("expected assignment")
+	}
+	for i := 0; i < 50; i++ {
+		again, _ := Assign(cohorts, "stable", "MacIntel")
+		if again.Key != first.Key {
+			t.Fatalf("weighted assignment not deterministic: %q vs %q", first.Key, again.Key)
+		}
+	}
+}
+
+func TestAssignFallsBackToUniformWhenWeightsIncomplete(t *testing.T) {
+	// One cohort has an unknown (0) weight -> the whole pool must stay uniform so
+	// no cohort is silently dropped.
+	cohorts := []extensions.RenderCohort{
+		{Key: "mac_a", OS: "mac", ConfigBlob: "b", Weight: 100},
+		{Key: "mac_b", OS: "mac", ConfigBlob: "b", Weight: 0},
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		c, _ := Assign(cohorts, "agent-"+strconv.Itoa(i), "MacIntel")
+		seen[c.Key] = true
+	}
+	if !seen["mac_a"] || !seen["mac_b"] {
+		t.Fatalf("incomplete weights should fall back to uniform (both selectable), got %v", seen)
 	}
 }

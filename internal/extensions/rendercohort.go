@@ -21,6 +21,12 @@ type RenderCohort struct {
 	// so the orchestrator only assigns a cohort to an agent whose claimed OS
 	// matches. A cohort must never be presented to a different-OS agent.
 	OS string
+	// Weight is the cohort's real-world prevalence/share within its OS (any
+	// positive scale; only relative magnitudes matter). When every cohort in an
+	// OS pool has a positive Weight, assignment is prevalence-weighted so the
+	// fleet's device mix mirrors the real population instead of being uniform.
+	// 0 means "prevalence unknown" — the pool then falls back to uniform.
+	Weight float64
 	// ConfigBlob is the opaque, transport-ready per-context render config.
 	ConfigBlob string
 }
