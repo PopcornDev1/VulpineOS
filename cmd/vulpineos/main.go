@@ -26,6 +26,7 @@ import (
 
 	"vulpineos/internal/agentbus"
 	"vulpineos/internal/agentcore"
+	"vulpineos/internal/auth"
 	"vulpineos/internal/config"
 	"vulpineos/internal/costtrack"
 	"vulpineos/internal/extensions"
@@ -224,7 +225,8 @@ func Run(args []string) int {
 		fmt.Fprintf(stderr, "  vulpineos --listen [flags]\n")
 		fmt.Fprintf(stderr, "  vulpineos serve [flags]\n")
 		fmt.Fprintf(stderr, "  vulpineos remote [flags]\n")
-		fmt.Fprintf(stderr, "  vulpineos mcp [flags]\n\n")
+		fmt.Fprintf(stderr, "  vulpineos mcp [flags]\n")
+		fmt.Fprintf(stderr, "  vulpineos auth <login|status|logout> [--provider openai]\n\n")
 		fs.PrintDefaults()
 	}
 
@@ -304,11 +306,64 @@ func runSubcommand(program string, args []string) int {
 		return runRemoteSubcommand(args[1:])
 	case "serve":
 		return runServeSubcommand(args[1:])
+	case "auth":
+		return runAuthSubcommand(args[1:])
 	case "tui", "panel":
 		fmt.Fprintf(stderr, "error: %q was removed; use `vulpineos` for local TUI or `vulpineos remote --url ...`\n", args[0])
 		return 2
 	default:
 		fmt.Fprintf(stderr, "error: unknown subcommand %q\n", args[0])
+		return 2
+	}
+}
+
+// runAuthSubcommand handles provider authentication, currently the OpenAI
+// (ChatGPT) OAuth flow used by the "openai-oauth" / codex provider:
+//
+//	vulpineos auth login  --provider openai
+//	vulpineos auth status --provider openai
+//	vulpineos auth logout --provider openai
+func runAuthSubcommand(args []string) int {
+	fs := flag.NewFlagSet("vulpineos auth", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	provider := fs.String("provider", "openai", "Provider to authenticate (openai)")
+	if len(args) == 0 {
+		fmt.Fprintf(stderr, "usage: vulpineos auth <login|status|logout> [--provider openai]\n")
+		return 2
+	}
+	action := args[0]
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(*provider) != "openai" {
+		fmt.Fprintf(stderr, "error: only --provider openai is supported\n")
+		return 2
+	}
+	switch action {
+	case "login":
+		if err := auth.LoginOpenAI(stdout); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return 0
+	case "status":
+		creds, err := auth.OpenAIStatus()
+		if err != nil || creds == nil {
+			fmt.Fprintf(stdout, "Not logged in.\n")
+			return 1
+		}
+		expired := auth.IsOAuthTokenExpired(creds, 0)
+		fmt.Fprintf(stdout, "Logged in (account %s). Token expired: %t\n", creds.AccountID, expired)
+		return 0
+	case "logout":
+		if err := auth.LogoutOpenAI(); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "Logged out.\n")
+		return 0
+	default:
+		fmt.Fprintf(stderr, "error: unknown auth action %q (use login|status|logout)\n", action)
 		return 2
 	}
 }
