@@ -278,14 +278,24 @@ build_cli_from_source() {
     local bin_dir="$1"
     local src_dir="${VULPINEOS_HOME}/src.tmp.$$"
     local repo_url="https://github.com/${VULPINEOS_REPO}.git"
-
-    log "Building vulpineos CLI from source (git clone + go build)..."
-    rm -rf "${src_dir}"
-    git clone --depth 1 "${repo_url}" "${src_dir}" || fatal "Failed to clone ${VULPINEOS_REPO}."
     local goos goarch
     goos="$(detect_goos)"
     goarch="$(detect_goarch)"
-    (cd "${src_dir}" && go build -o "vulpineos-${goos}-${goarch}" .) || {
+
+    log "Building vulpineos CLI from source..."
+    rm -rf "${src_dir}"
+
+    # Use sparse checkout to avoid downloading the large Camoufox font bundles
+    # stored in the repo (bundle/fonts/ is ~930 MiB and not needed for compilation).
+    # --filter=blob:none skips blob transfers; sparse-checkout restricts to Go source.
+    if git clone --depth 1 --filter=blob:none --sparse "${repo_url}" "${src_dir}" 2>/dev/null; then
+        (cd "${src_dir}" && git sparse-checkout set cmd internal go.mod go.sum) || true
+    else
+        # Older git versions: fall back to shallow clone of primary branch
+        git clone --depth 1 --single-branch "${repo_url}" "${src_dir}" || fatal "Failed to clone ${VULPINEOS_REPO}."
+    fi
+
+    (cd "${src_dir}" && go build -o "vulpineos-${goos}-${goarch}" ./cmd/vulpineos/) || {
         local exit_code=$?
         rm -rf "${src_dir}"
         return ${exit_code}
