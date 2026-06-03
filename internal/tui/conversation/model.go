@@ -712,8 +712,11 @@ func (m Model) inputBlock(inputArea string) string {
 }
 
 func (m Model) inputArea() string {
+	if m.textInput.Focused() && m.awake {
+		return m.inputTextView()
+	}
 	if m.agentStatus == "error" {
-		return inputMutedStyle.Render("Agent failed - press Enter to retry or x to remove")
+		return inputMutedStyle.Render("Agent failed - press Enter to retry")
 	}
 	if !m.awake && m.thinking {
 		return inputMutedStyle.Render("Chat available after agent responds")

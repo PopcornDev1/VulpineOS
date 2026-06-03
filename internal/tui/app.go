@@ -210,7 +210,6 @@ type App struct {
 	renameAgentID           string // agent ID being renamed
 	notice                  string
 	noticeTTL               int  // number of ticks before notice is cleared
-	confirmDelete           bool // true when waiting for delete confirmation
 	pendingChatFocusAgentID string
 	liveAgentContexts       map[string]string
 
@@ -331,7 +330,7 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 				}
 			}
 			app.agentList.SetAgents(agents)
-			// Select first agent if any
+			// Select first agent if any and auto-enter chat mode
 			if len(agents) > 0 {
 				app.selectedAgentID = agents[0].ID
 				app.conversation.SetAgentID(agents[0].ID)
@@ -342,6 +341,13 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 				}
 				app.applyConversationStatus(agents[0].Status)
 				app.updateAgentDetail(&agents[0])
+				app.focus = FocusConversation
+				app.inputMode = "chat"
+				app.conversation.SetAwake(true)
+			} else {
+				// No agents — auto-enter creation flow
+				app.inputMode = "new-agent-name"
+				app.nameInput.Focus()
 			}
 		}
 	}
@@ -875,18 +881,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "rename":
 			return a.updateRenameInput(msg)
 		case "chat":
-			if a.conversation.Focused() && a.conversationInputLocked() && isGlobalLifecycleKey(msg) {
+			if a.conversationInputLocked() && isGlobalLifecycleKey(msg) {
 				break
 			}
-			if a.conversation.Focused() && a.allowFocusedChatShortcut(msg) {
-				break
-			}
-			if a.conversation.Focused() || !a.allowFocusedChatShortcut(msg) {
-				if a.conversationInputLocked() && isGlobalLifecycleKey(msg) {
-					break
-				}
-				return a.updateChatInput(msg)
-			}
+			return a.updateChatInput(msg)
 		}
 
 		// Route to settings panel when active. Text capture owns printable keys
@@ -901,93 +899,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 
-		// Cancel delete confirmation on any key except x
-		if a.confirmDelete && msg.String() != "x" {
-			a.confirmDelete = false
-			a.notice = ""
-		}
-
-		// Normal keybinds
+			// Normal keybinds
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return a, a.shutdown()
-		case "t":
-			a.handleTraceToggle()
-		case "j":
-			switch a.focus {
-			case FocusAgentList:
-				a.agentList.MoveDown()
-				cmds = append(cmds, a.selectCurrentAgent())
-			case FocusContextList:
-				a.contextList.MoveDown()
-			}
-		case "k":
-			switch a.focus {
-			case FocusAgentList:
-				a.agentList.MoveUp()
-				cmds = append(cmds, a.selectCurrentAgent())
-			case FocusContextList:
-				a.contextList.MoveUp()
-			}
-		case "n":
-			if a.orch != nil || a.control != nil {
-				a.newAgentContext = ""
-				if a.focus == FocusContextList {
-					a.newAgentContext = a.contextList.SelectedContextID()
-				}
-				a.inputMode = "new-agent-name"
-				a.nameInput.Focus()
-				return a, textinput.Blink
-			}
-			a.notice = "No orchestrator available"
-			a.noticeTTL = 3
-		case "rn":
-			if a.selectedAgentID != "" {
-				agent, err := a.vault.GetAgent(a.selectedAgentID)
-				if err != nil {
-					a.notice = "Failed to get agent: " + err.Error()
-					a.noticeTTL = 3
-					return a, nil
-				}
-				a.renameAgentID = a.selectedAgentID
-				a.renameInput.SetValue(agent.Name)
-				a.inputMode = "rename"
-				a.renameInput.Focus()
-				return a, textinput.Blink
-			}
-			a.notice = "No agent selected"
-			a.noticeTTL = 3
-		case "x":
-			// Delete selected agent — ask for confirmation
-			if a.selectedAgentID != "" {
-				if a.control != nil && !isLiveAgentStatus(a.selectedAgentStatus()) {
-					a.confirmDelete = false
-					a.notice = "Remote kill is only available for live agents"
-					a.noticeTTL = 3
-					return a, nil
-				}
-				if a.confirmDelete {
-					// Second press = confirmed
-					a.confirmDelete = false
-					cmds = append(cmds, a.deleteAgent(a.selectedAgentID))
-				} else {
-					a.confirmDelete = true
-					if a.control != nil {
-						a.notice = "Press x again to kill remote agent, or any other key to cancel"
-					} else {
-						a.notice = "Press x again to delete agent, or any other key to cancel"
-					}
-					a.noticeTTL = 5
-				}
-			}
-		case "v":
-			if cmd := a.handleBrowserToggle(); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-		case "V":
-			if cmd := a.handleHideAll(); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
 		case "o", "ctrl+o":
 			cmds = append(cmds, a.handleOpenSessionLog())
 		case "ctrl+y":
@@ -1032,8 +947,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case FocusContextList:
 				a.contextList.MoveDown()
 			}
-		case "S":
-			return a, a.openSettings()
 		case "/":
 			if a.selectedAgentID != "" {
 				a.focus = FocusConversation
@@ -1043,8 +956,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.syncCommandPaletteAgents()
 			a.commandPalette.Activate()
 			return a, nil
-		case "c":
-			return a, a.startEmbeddedReconfigure()
 		}
 
 	case tea.WindowSizeMsg:
@@ -1996,20 +1907,6 @@ func (a *App) dispatchCommand(name, rawInput string) tea.Cmd {
 	return nil
 }
 
-func (a App) allowFocusedChatShortcut(msg tea.KeyMsg) bool {
-	switch msg.String() {
-	case "v", "t", "o", "S", "c":
-		if strings.TrimSpace(a.conversation.TextInput().Value()) == "" || !a.conversation.IsInputFocused() {
-			return true
-		}
-		return false
-	case "ctrl+y":
-		return true
-	default:
-		return false
-	}
-}
-
 func operatorDisplayContent(content, displayContent string) string {
 	displayContent = strings.TrimSpace(displayContent)
 	if displayContent == "" || displayContent == strings.TrimSpace(content) {
@@ -2611,32 +2508,11 @@ func (a App) renderStatusBar() string {
 		mode = "remote"
 	}
 
-	ctxHint := ""
-	if contextID := a.contextList.SelectedContextID(); contextID != "" && a.focus == FocusContextList {
-		ctxHint = shared.MutedStyle.Render("  n:new-in-ctx " + shortContextID(contextID))
-	}
-	controls := "  ↑/↓:select  Enter:chat  Esc:back  n:new  x:del  v:view  o:log  S:settings  t:trace  "
-	if a.control != nil {
-		controls = "  ↑/↓:select  Enter:chat  Esc:back  n:new  x:kill  v:view  o:log  S:settings  t:trace  "
-	}
 	prefix := shared.TitleStyle.Render("VULPINE") +
 		shared.MutedStyle.Render(" | ") +
-		shared.RunningStyle.Render("* "+mode)
-	right := shared.MutedStyle.Render("  q:quit") + ctxHint
-	statusWidth := a.width
-	if statusWidth <= 0 {
-		statusWidth = lipgloss.Width(prefix) + lipgloss.Width(shared.MutedStyle.Render(controls)) + lipgloss.Width(right)
-	}
-	controlsWidth := statusWidth - lipgloss.Width(prefix) - lipgloss.Width(right)
-	if controlsWidth < 0 {
-		controlsWidth = 0
-	}
-	bar := prefix +
-		fitTerminalLine(shared.MutedStyle.Render(controls), controlsWidth) +
-		shared.MutedStyle.Render("  q:quit") +
-		ctxHint
+		shared.RunningStyle.Render("* " + mode)
 
-	return fitTerminalLine(bar, statusWidth)
+	return fitTerminalLine(prefix, a.width)
 }
 
 // updatePanelSizes recalculates panel dimensions after a resize.
@@ -2782,7 +2658,7 @@ func (a App) updateEmbeddedSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.updatePanelSizes()
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "esc", "ctrl+c":
 			a.cancelEmbeddedReconfigure()
 			return a, nil
 		}
@@ -2801,11 +2677,8 @@ func (a App) updateEmbeddedSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *App) cancelEmbeddedReconfigure() {
 	a.setupActive = false
-	a.focus = FocusSettings
-	a.settings.SetActive(true)
-	if a.cfg != nil {
-		a.settings.SetConfig(a.cfg)
-	}
+	a.focus = FocusConversation
+	a.inputMode = "chat"
 	a.notice = "Reconfigure cancelled"
 	a.noticeTTL = 3
 }
@@ -2815,15 +2688,14 @@ func (a *App) completeEmbeddedReconfigure() {
 		a.notice = "Failed to save configuration: " + err.Error()
 		a.noticeTTL = 4
 		a.setupActive = false
-		a.focus = FocusSettings
-		a.settings.SetActive(true)
+		a.focus = FocusConversation
+		a.inputMode = "chat"
 		return
 	}
 	_ = config.ClearReconfigureRequest()
 	a.setupActive = false
-	a.focus = FocusSettings
-	a.settings.SetActive(true)
-	a.settings.SetConfig(a.cfg)
+	a.focus = FocusConversation
+	a.inputMode = "chat"
 	a.notice = "Configuration updated"
 	a.noticeTTL = 3
 }

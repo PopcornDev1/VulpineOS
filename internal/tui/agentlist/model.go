@@ -128,6 +128,12 @@ func (m Model) SelectedAgent() (AgentListItem, bool) {
 	return m.agents[m.selected], true
 }
 
+// AllAgents returns the internal agent slice directly (no copy).
+// Use this when callers need raw access to the full slice for iteration.
+func (m Model) AllAgents() []AgentListItem {
+	return m.agents
+}
+
 // Agents returns a copy of the current agent list items.
 func (m Model) Agents() []AgentListItem {
 	result := make([]AgentListItem, len(m.agents))
