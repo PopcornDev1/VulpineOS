@@ -524,7 +524,7 @@ func runRemote(wsURL string, apiKey string, pairCode string) error {
 	client := juggler.NewClient(rc)
 	defer client.Close()
 	app := tui.NewAppWithControl(nil, client, nil, nil, nil, nil, rc)
-	p := tea.NewProgram(app, tea.WithAltScreen())
+	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = p.Run()
 	return err
 }
@@ -1135,7 +1135,7 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 			browserEnabled = true
 		}
 	}
-	p := tea.NewProgram(app, tea.WithAltScreen())
+	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, runErr := p.Run()
 	return runErr
 }

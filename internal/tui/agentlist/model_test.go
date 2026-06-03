@@ -86,3 +86,34 @@ func TestViewKeepsSelectedAgentVisibleWhenListOverflows(t *testing.T) {
 		t.Fatalf("overflowed view stayed pinned to top:\n%s", view)
 	}
 }
+
+func TestClickNearestSelectsRowUnderClick(t *testing.T) {
+	m := New()
+	m.SetHeight(10)
+	m.SetAgents([]vault.Agent{
+		{ID: "a0", Name: "Agent0", Status: "ready"},
+		{ID: "a1", Name: "Agent1", Status: "ready"},
+		{ID: "a2", Name: "Agent2", Status: "ready"},
+	})
+
+	// Panel top at screen row 5: border=5, title=6, first agent=7, second=8.
+	panelY := 5
+	item, ok := m.ClickNearest(panelY+2+1, panelY) // click the second agent row
+	if !ok {
+		t.Fatal("ClickNearest returned not-ok with agents present")
+	}
+	if item.ID != "a1" {
+		t.Fatalf("clicked agent = %q, want a1", item.ID)
+	}
+	if got := m.SelectedAgentID(); got != "a1" {
+		t.Fatalf("selected after click = %q, want a1", got)
+	}
+}
+
+func TestClickNearestEmptyListReturnsFalse(t *testing.T) {
+	m := New()
+	m.SetHeight(10)
+	if _, ok := m.ClickNearest(7, 5); ok {
+		t.Fatal("ClickNearest should return false with no agents")
+	}
+}

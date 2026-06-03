@@ -1514,7 +1514,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.settings, _ = a.settings.Update(msg)
 
 	case tea.MouseMsg:
-		// Forward mouse events to conversation for scroll
+		// Left-click on an agent row selects that agent.
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			rx, ry, rw, rh := a.agentListPanelRect()
+			if rw > 0 && rh > 0 &&
+				msg.X >= rx && msg.X < rx+rw &&
+				msg.Y >= ry && msg.Y < ry+rh {
+				if item, ok := a.agentList.ClickNearest(msg.Y, ry); ok {
+					a.markAgentSelected(item.ID)
+					cmds = append(cmds, a.selectCurrentAgent())
+				}
+				return a, tea.Batch(cmds...)
+			}
+		}
+		// Forward mouse events (e.g. wheel scroll) to the conversation.
 		if a.focus == FocusConversation || a.inputMode == "chat" {
 			var cmd tea.Cmd
 			a.conversation, cmd = a.conversation.Update(msg)
@@ -2309,6 +2322,34 @@ type workbenchWidths struct {
 	left   int
 	center int
 	right  int
+}
+
+// agentListPanelRect returns the screen rectangle (x, y, w, h) of the agent-list
+// panel in the full workbench layout, mirroring View()'s layout math. Returns a
+// zero-width rect when the agent list isn't a clickable panel (compact layout).
+func (a App) agentListPanelRect() (int, int, int, int) {
+	if a.width <= 0 || a.height <= 0 {
+		return 0, 0, 0, 0
+	}
+	widths := resolveWorkbenchWidths(a.width, a.leftWidth, a.rightWidth)
+	bodyHeight := workbenchBodyHeight(a.height)
+	if a.useCompactWorkbench(widths, bodyHeight) {
+		return 0, 0, 0, 0
+	}
+	leftTop := a.leftSplit
+	leftBottom := bodyHeight - leftTop - 4
+	if leftBottom < 3 {
+		leftBottom = 3
+		leftTop = bodyHeight - leftBottom - 4
+	}
+	if leftTop < 3 {
+		leftTop = 3
+	}
+	// System-info panel occupies leftTop+2 rows (content + top/bottom border);
+	// the agent-list panel starts right below it.
+	ry := leftTop + 2
+	rh := leftBottom + 2
+	return 0, ry, widths.left + 2, rh
 }
 
 // conversationView renders the conversation, overlaying the inline slash-command

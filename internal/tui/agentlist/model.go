@@ -135,6 +135,39 @@ func (m Model) Agents() []AgentListItem {
 	return result
 }
 
+// ClickNearest selects the agent whose rendered row is nearest to a mouse
+// click at screen row clickY, given the agent-list panel's top screen row
+// panelY. Returns the selected item and true when an agent was hit.
+func (m *Model) ClickNearest(clickY, panelY int) (AgentListItem, bool) {
+	if len(m.agents) == 0 {
+		return AgentListItem{}, false
+	}
+	capacity := m.height - 1 // title (1); visibleAgentRange uses height-1 in View
+	if capacity < 1 {
+		capacity = len(m.agents)
+	}
+	start, end := visibleAgentRange(len(m.agents), m.selected, capacity)
+	if start >= end {
+		return AgentListItem{}, false
+	}
+	// Row layout: screen Y = panelY + 1 (border) + 1 (title) + (i - start).
+	bestIdx := start
+	bestDist := -1
+	for i := start; i < end && i < len(m.agents); i++ {
+		rowY := panelY + 2 + (i - start)
+		dist := clickY - rowY
+		if dist < 0 {
+			dist = -dist
+		}
+		if bestDist == -1 || dist < bestDist {
+			bestDist = dist
+			bestIdx = i
+		}
+	}
+	m.selected = bestIdx
+	return m.agents[bestIdx], true
+}
+
 // SelectIndex selects the agent at index i, returning true if i is in range.
 func (m *Model) SelectIndex(i int) bool {
 	if i < 0 || i >= len(m.agents) {
