@@ -522,8 +522,12 @@ func TestAgentCreatedKeepsChatLockedUntilAgentResponds(t *testing.T) {
 	if app.pendingChatFocusAgentID != agent.ID {
 		t.Fatalf("pendingChatFocusAgentID = %q, want %q", app.pendingChatFocusAgentID, agent.ID)
 	}
-	if view := app.conversation.View(); !strings.Contains(view, "Chat available after agent responds") {
-		t.Fatalf("expected startup lock message, got:\n%s", view)
+	view := app.conversation.View()
+	if !strings.Contains(view, "Type a message...") {
+		t.Fatalf("expected focused startup chat input, got:\n%s", view)
+	}
+	if strings.Contains(view, "Chat available after agent responds") {
+		t.Fatalf("startup chat should be visibly typable, got:\n%s", view)
 	}
 }
 
@@ -613,6 +617,9 @@ func TestStartupLockedChatAcceptsDraftButDoesNotSubmit(t *testing.T) {
 	_ = cmd
 	if got := app.conversation.TextInput().Value(); got != "h" {
 		t.Fatalf("locked startup input value = %q, want h", got)
+	}
+	if view := app.conversation.View(); !strings.Contains(view, "h") {
+		t.Fatalf("locked startup input draft should be visible, got:\n%s", view)
 	}
 
 	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1898,6 +1905,91 @@ func TestSelectedAssistantReplyRefocusesChatInput(t *testing.T) {
 	}
 	if !app.conversation.IsAwake() {
 		t.Fatal("conversation should stay awake after assistant reply")
+	}
+}
+
+func TestStreamConversationEntryDoesNotPersistOrUnlockTurn(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Streamer", "Stream a reply", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.AddEntry("user", "hello")
+	app.conversation.SetThinking(true)
+
+	model, _ := app.Update(shared.ConversationEntryMsg{
+		AgentID: agent.ID,
+		Role:    "stream",
+		Content: "partial",
+	})
+	app = model.(App)
+
+	if !app.conversation.IsThinking() {
+		t.Fatal("stream update should not unlock the turn before final outbound")
+	}
+	if !app.conversation.IsLastEntryStreaming() {
+		t.Fatal("stream update should mark the visible assistant entry as streaming")
+	}
+	msgs, err := db.GetRecentMessages(agent.ID, 10)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("stream update should not persist to vault, got %#v", msgs)
+	}
+}
+
+func TestActivityConversationEntryDoesNotPersistOrUnlockTurn(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Worker", "Fetch a page", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.AddEntry("user", "fetch site")
+	app.conversation.SetThinking(true)
+
+	model, _ := app.Update(shared.ConversationEntryMsg{
+		AgentID: agent.ID,
+		Role:    "activity",
+		Content: "Opening example.com",
+	})
+	app = model.(App)
+
+	if !app.conversation.IsThinking() {
+		t.Fatal("activity update should not unlock the turn before final outbound")
+	}
+	if app.conversation.Activity() != "Opening example.com" {
+		t.Fatalf("activity = %q, want Opening example.com", app.conversation.Activity())
+	}
+	msgs, err := db.GetRecentMessages(agent.ID, 10)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("activity update should not persist to vault, got %#v", msgs)
+	}
+
+	model, _ = app.Update(shared.ConversationEntryMsg{
+		AgentID: agent.ID,
+		Role:    "assistant",
+		Content: "Done",
+	})
+	app = model.(App)
+	if app.conversation.IsThinking() {
+		t.Fatal("final assistant should unlock the turn")
+	}
+	if app.conversation.Activity() != "" {
+		t.Fatalf("activity after final assistant = %q, want cleared", app.conversation.Activity())
 	}
 }
 

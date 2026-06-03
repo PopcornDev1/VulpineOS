@@ -55,6 +55,22 @@ func TestUpdateLastAssistant(t *testing.T) {
 	}
 }
 
+func TestUpdateLastAssistantFinalStreamSetsAwake(t *testing.T) {
+	m := New()
+	m.SetSize(80, 20)
+	m.AddEntry("user", "hello")
+
+	m.UpdateLastAssistant("partial", true)
+	if m.IsAwake() {
+		t.Fatal("active stream should not mark conversation awake before final assistant")
+	}
+
+	m.UpdateLastAssistant("final", false)
+	if !m.IsAwake() {
+		t.Fatal("final assistant should mark conversation awake after stream")
+	}
+}
+
 func TestTraceOnlyFiltersToSystemMessages(t *testing.T) {
 	m := New()
 	m.SetSize(80, 20)
@@ -95,6 +111,28 @@ func TestTraceOnlyShowsPlaceholderWhenEmpty(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "No action trace yet.") {
 		t.Fatalf("expected empty trace placeholder, got:\n%s", view)
+	}
+}
+
+func TestActivityRendersTransientlyAndClears(t *testing.T) {
+	m := New()
+	m.SetSize(80, 20)
+	m.SetAgentID("agent-1")
+	m.AddEntry("user", "fetch site")
+
+	m.SetActivity("Opening example.com")
+	view := m.View()
+	if !strings.Contains(view, "Opening example.com") {
+		t.Fatalf("activity missing from view:\n%s", view)
+	}
+	if m.Activity() != "Opening example.com" {
+		t.Fatalf("activity = %q, want Opening example.com", m.Activity())
+	}
+
+	m.ClearActivity()
+	view = m.View()
+	if strings.Contains(view, "Opening example.com") {
+		t.Fatalf("activity should clear from view:\n%s", view)
 	}
 }
 
@@ -192,6 +230,37 @@ func TestInputStatusLabelCapitalizesUnicodeStatus(t *testing.T) {
 
 	if got := m.inputStatusLabel(); got != "Échec" {
 		t.Fatalf("inputStatusLabel() = %q, want Unicode-safe capitalization", got)
+	}
+}
+
+func TestInputAreaShowsDraftOverStatusMessages(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status string
+		awake  bool
+		busy   bool
+		masked string
+	}{
+		{name: "starting", awake: false, busy: true, masked: "Chat available after agent responds"},
+		{name: "error", status: "error", awake: true, masked: "Agent failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New()
+			m.SetSize(60, 12)
+			m.SetAgentStatus(tc.status)
+			m.SetAwake(tc.awake)
+			m.SetThinking(tc.busy)
+			_ = m.Focus()
+			m.textInput.SetValue("draft")
+
+			view := m.inputArea()
+			if !strings.Contains(view, "draft") {
+				t.Fatalf("inputArea should show draft, got %q", view)
+			}
+			if strings.Contains(view, tc.masked) {
+				t.Fatalf("inputArea masked draft with %q: %q", tc.masked, view)
+			}
+		})
 	}
 }
 

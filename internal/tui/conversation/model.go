@@ -105,6 +105,7 @@ type Model struct {
 	agentName       string
 	modelLabel      string
 	agentStatus     string
+	activity        string
 	traceOnly       bool
 	thinking        bool // true while waiting for agent response
 	awake           bool // true after agent has sent its first message
@@ -179,6 +180,20 @@ func (m *Model) SetThinking(thinking bool) {
 			m.phraseIdx = rand.Intn(len(wakingPhrases))
 		}
 	}
+}
+
+func (m *Model) SetActivity(activity string) {
+	m.activity = strings.TrimSpace(activity)
+	m.scrollToBottom()
+}
+
+func (m *Model) ClearActivity() {
+	m.activity = ""
+	m.scrollToBottom()
+}
+
+func (m Model) Activity() string {
+	return m.activity
 }
 
 // IsThinking returns whether the conversation is waiting on an agent response.
@@ -322,6 +337,7 @@ func (m *Model) SetAgentID(id string) {
 	m.autoScroll = true
 	m.awake = false
 	m.pasteSnippets = nil
+	m.activity = ""
 	m.textInput.Reset()
 }
 
@@ -355,6 +371,7 @@ func (m *Model) LoadMessages(msgs []vault.AgentMessage) {
 	maxWidth := m.contentWidth()
 	m.entries = make([]Entry, 0, len(msgs))
 	m.awake = false
+	m.activity = ""
 	for _, msg := range msgs {
 		m.entries = append(m.entries, Entry{
 			Role:           msg.Role,
@@ -391,12 +408,12 @@ func (m *Model) AddEntryWithDisplay(role, content, displayContent string) {
 
 func (m *Model) UpdateLastAssistant(content string, streamActive bool) {
 	if len(m.entries) == 0 {
-		m.AddEntryWithDisplay("assistant", content, "")
+		m.addAssistantUpdate(content, streamActive)
 		return
 	}
 	last := &m.entries[len(m.entries)-1]
 	if last.Role != "assistant" && last.Role != "stream" {
-		m.AddEntryWithDisplay("assistant", content, "")
+		m.addAssistantUpdate(content, streamActive)
 		return
 	}
 	last.Role = "assistant"
@@ -407,10 +424,31 @@ func (m *Model) UpdateLastAssistant(content string, streamActive bool) {
 	last.StreamActive = streamActive
 	maxWidth := m.contentWidth()
 	last.renderedLines = renderMarkdown(messageDisplayText(content, last.DisplayContent), maxWidth)
+	if !streamActive {
+		m.awake = true
+	}
 
 	if streamActive && m.autoScroll {
 		m.scrollToBottom()
 	}
+}
+
+func (m *Model) addAssistantUpdate(content string, streamActive bool) {
+	role := "assistant"
+	if streamActive {
+		role = "stream"
+	}
+	maxWidth := m.contentWidth()
+	m.entries = append(m.entries, Entry{
+		Role:          role,
+		Content:       content,
+		StreamActive:  streamActive,
+		renderedLines: renderMarkdown(messageDisplayText(content, ""), maxWidth),
+	})
+	if !streamActive {
+		m.awake = true
+	}
+	m.scrollToBottom()
 }
 
 // ForceScrollToBottom re-enables auto-scroll and moves to the latest entry.
@@ -627,6 +665,22 @@ func (m Model) getDisplayLines() []string {
 	}
 	if m.traceOnly && len(rendered) == 0 {
 		rendered = append(rendered, shared.MutedStyle.Render("No action trace yet."))
+	}
+	if !m.traceOnly && m.activity != "" {
+		if len(rendered) > 0 {
+			rendered = append(rendered, "")
+		}
+		activityWidth := m.contentWidth() - 2
+		if activityWidth < 1 {
+			activityWidth = 1
+		}
+		for i, line := range renderMarkdown(m.activity, activityWidth) {
+			prefix := "  "
+			if i == 0 {
+				prefix = shared.WarmingStyle.Render("~ ")
+			}
+			rendered = append(rendered, prefix+shared.MutedStyle.Render(line))
+		}
 	}
 	return rendered
 }
@@ -883,14 +937,14 @@ func (m Model) inputBlock(inputArea string) string {
 }
 
 func (m Model) inputArea() string {
+	if m.textInput.Focused() || m.textInput.Value() != "" {
+		return m.inputTextView()
+	}
 	if m.agentStatus == "error" {
 		return inputMutedStyle.Render("Agent failed - press Enter to retry or x to remove")
 	}
 	if !m.awake && m.thinking {
 		return inputMutedStyle.Render("Chat available after agent responds")
-	}
-	if m.textInput.Focused() {
-		return m.inputTextView()
 	}
 	if m.awake {
 		return inputMutedStyle.Render("Press Enter to chat...")

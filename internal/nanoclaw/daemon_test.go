@@ -324,3 +324,34 @@ func TestLocalOneCLIShimReadsContainerEnvDynamically(t *testing.T) {
 		t.Fatalf("updated OPENCODE_MODEL = %q", got)
 	}
 }
+
+func TestCleanupOneCLICertificateTempPathsRemovesDirectories(t *testing.T) {
+	dir := t.TempDir()
+	badProxyPath := filepath.Join(dir, "onecli-proxy-ca.pem")
+	badCombinedPath := filepath.Join(dir, "onecli-combined-ca.pem")
+	goodFilePath := filepath.Join(dir, "onecli-existing-file.pem")
+	for _, path := range []string{badProxyPath, badCombinedPath} {
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	if err := os.WriteFile(goodFilePath, []byte("cert"), 0600); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+
+	originalPaths := oneCLICertificateTempPaths
+	oneCLICertificateTempPaths = []string{badProxyPath, badCombinedPath, goodFilePath}
+	t.Cleanup(func() { oneCLICertificateTempPaths = originalPaths })
+
+	if err := cleanupOneCLICertificateTempPaths(); err != nil {
+		t.Fatalf("cleanupOneCLICertificateTempPaths: %v", err)
+	}
+	for _, path := range []string{badProxyPath, badCombinedPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("directory %s still exists after cleanup: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(goodFilePath); err != nil {
+		t.Fatalf("existing file should remain: %v", err)
+	}
+}

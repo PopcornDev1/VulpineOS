@@ -140,6 +140,44 @@ VALUES ('out-1', 3, 'chat', ?, 'vulpine:agent-1', 'cli', '{"text":"done"}')`, no
 	}
 }
 
+func TestNanoClawSessionMirrorDoesNotEmitStaleOutboundRows(t *testing.T) {
+	nanoclawDir, sessionDir, logPath := createMirrorTestProfile(t)
+	now := time.Now().UTC()
+
+	outDB, err := sql.Open("sqlite", filepath.Join(sessionDir, "outbound.db"))
+	if err != nil {
+		t.Fatalf("open outbound: %v", err)
+	}
+	_, err = outDB.Exec(`INSERT INTO messages_out (id, seq, kind, timestamp, platform_id, channel_type, content)
+VALUES ('out-old', 3, 'chat', ?, 'vulpine:agent-1', 'cli', '{"text":"old reply"}')`, now.Add(-time.Minute).Format(time.RFC3339Nano))
+	outDB.Close()
+	if err != nil {
+		t.Fatalf("insert outbound: %v", err)
+	}
+
+	agent := newAgent("agent-1", "ctx", make(chan AgentStatus, 1))
+	mirror := NewNanoClawSessionMirror(nanoclawDir, "agent-1", logPath, agent)
+	completed, err := mirror.MirrorOnce(now)
+	if err != nil {
+		t.Fatalf("MirrorOnce: %v", err)
+	}
+	if completed {
+		t.Fatal("stale outbound row should not complete current turn")
+	}
+	select {
+	case msg := <-agent.conversationCh:
+		t.Fatalf("stale outbound should not emit conversation message, got %#v", msg)
+	default:
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(data), `"nanoclawMessageId":"out:out-old"`) {
+		t.Fatalf("stale outbound should still be marked in session log:\n%s", data)
+	}
+}
+
 func TestPollStreamFile(t *testing.T) {
 	dir := t.TempDir()
 
@@ -222,6 +260,60 @@ func TestPollStreamFile(t *testing.T) {
 	result = mirror.pollStreamFile(session)
 	if result {
 		t.Fatal("expected false after stream done")
+	}
+}
+
+func TestMirrorOnceDoesNotCompleteFromStreamOnly(t *testing.T) {
+	nanoclawDir, sessionDir, logPath := createMirrorTestProfile(t)
+	agent := newAgent("agent-1", "ctx", make(chan AgentStatus, 1))
+	mirror := NewNanoClawSessionMirror(nanoclawDir, "agent-1", logPath, agent)
+
+	streamPath := filepath.Join(sessionDir, "stream.jsonl")
+	if err := os.WriteFile(streamPath, []byte(`{"t":"partial"}`+"\n"), 0600); err != nil {
+		t.Fatalf("write stream: %v", err)
+	}
+
+	completed, err := mirror.MirrorOnce(time.Now().Add(-time.Second))
+	if err != nil {
+		t.Fatalf("MirrorOnce: %v", err)
+	}
+	if completed {
+		t.Fatal("MirrorOnce should not complete a turn from stream activity alone")
+	}
+	select {
+	case msg := <-agent.conversationCh:
+		if msg.Role != "stream" || msg.Content != "partial" || !msg.StreamActive {
+			t.Fatalf("stream conversation = %#v, want active partial stream", msg)
+		}
+	default:
+		t.Fatal("expected stream message to still be emitted")
+	}
+}
+
+func TestMirrorOnceEmitsActivityWithoutCompletingTurn(t *testing.T) {
+	nanoclawDir, sessionDir, logPath := createMirrorTestProfile(t)
+	agent := newAgent("agent-1", "ctx", make(chan AgentStatus, 1))
+	mirror := NewNanoClawSessionMirror(nanoclawDir, "agent-1", logPath, agent)
+
+	streamPath := filepath.Join(sessionDir, "stream.jsonl")
+	if err := os.WriteFile(streamPath, []byte(`{"activity":{"phase":"tool_start","tool":"web","text":"Opening example.com","status":"running"}}`+"\n"), 0600); err != nil {
+		t.Fatalf("write activity stream: %v", err)
+	}
+
+	completed, err := mirror.MirrorOnce(time.Now().Add(-time.Second))
+	if err != nil {
+		t.Fatalf("MirrorOnce: %v", err)
+	}
+	if completed {
+		t.Fatal("activity should not complete the current turn")
+	}
+	select {
+	case msg := <-agent.conversationCh:
+		if msg.Role != "activity" || msg.Content != "Opening example.com" {
+			t.Fatalf("activity conversation = %#v, want activity Opening example.com", msg)
+		}
+	default:
+		t.Fatal("expected activity message to be emitted")
 	}
 }
 

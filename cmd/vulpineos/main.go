@@ -988,9 +988,13 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 		// Show loading spinner while kernel starts
 		loader := loading.New("Launching VulpineOS")
 		loaderProg := tea.NewProgram(loader, tea.WithAltScreen())
+		sendLoadingStatus := func(status string) {
+			loaderProg.Send(loading.StatusMsg(status))
+		}
 
 		go func() {
 			// Open vault
+			sendLoadingStatus("Opening local vault...")
 			v, _ = vault.Open()
 			if v != nil {
 				if err := v.ReconcileNonTerminalAgents("interrupted"); err != nil {
@@ -1000,6 +1004,7 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 			}
 
 			// Start kernel
+			sendLoadingStatus("Starting browser kernel...")
 			k = kernel.New()
 			startErr = k.Start(kernel.Config{
 				BinaryPath: resolvedBinaryPath,
@@ -1075,6 +1080,7 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 			// Start foxbridge as an embedded CDP server sharing the kernel's Juggler client.
 			// This avoids launching a second Firefox — NanoClaw connects to the same kernel.
 			if startErr == nil && client != nil {
+				sendLoadingStatus("Starting NanoClaw browser bridge...")
 				fb = foxbridge.New()
 				fb.SetRuntimeAudit(audit)
 				fbErr := fb.StartEmbeddedMode(client, 9222)
@@ -1094,9 +1100,11 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 
 			// Start NanoClaw daemon for agent support.
 			if startErr == nil {
+				sendLoadingStatus("Preparing NanoClaw agents (first run may build Docker image)...")
 				daemon = startNanoClawDaemonIfAvailable(cfg, audit)
 			}
 
+			sendLoadingStatus("Opening VulpineOS TUI...")
 			loaderProg.Send(loading.DoneMsg{})
 		}()
 

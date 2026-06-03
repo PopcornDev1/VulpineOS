@@ -1440,8 +1440,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.waitForEvent())
 
 	case shared.ConversationEntryMsg:
-		// Save to vault always
-		if a.vault != nil {
+		// Streaming/activity chunks are UI-only; final outbound DB messages are persisted.
+		if a.vault != nil && msg.Role != "stream" && msg.Role != "activity" {
 			a.vault.AppendMessageWithDisplay(msg.AgentID, msg.Role, msg.Content, msg.DisplayContent, msg.Tokens)
 		}
 		// Check for rate limit / captcha / block patterns
@@ -1452,16 +1452,22 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if pendingAssistantReply {
 			a.pendingChatFocusAgentID = ""
 		}
-		// If matches selected agent, add to conversation panel + clear thinking
+		// If matches selected agent, update the conversation panel. Stream chunks
+		// keep the turn active until the final outbound message arrives.
 		if msg.AgentID == a.selectedAgentID {
-			a.conversation.SetThinking(false)
-			if msg.Role == "stream" {
+			if msg.Role == "activity" {
+				a.conversation.SetActivity(msg.Content)
+			} else if msg.Role == "stream" {
 				a.conversation.UpdateLastAssistant(msg.Content, true)
 			} else if msg.Role == "assistant" && a.conversation.IsLastEntryStreaming() {
+				a.conversation.SetThinking(false)
+				a.conversation.ClearActivity()
 				// Final authoritative message from outbound DB —
 				// replace the streaming entry with the complete message
 				a.conversation.UpdateLastAssistant(msg.Content, false)
 			} else {
+				a.conversation.SetThinking(false)
+				a.conversation.ClearActivity()
 				a.conversation.AddEntryWithDisplay(msg.Role, msg.Content, msg.DisplayContent)
 			}
 			if msg.Role == "assistant" {
@@ -1476,7 +1482,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if a.focus == FocusConversation && a.inputMode == "chat" && !a.conversation.Focused() {
 				cmds = append(cmds, a.conversation.Focus())
 			}
-		} else {
+		} else if msg.Role != "activity" {
 			a.agentList.MarkUnread(msg.AgentID)
 		}
 		cmds = append(cmds, a.waitForEvent())

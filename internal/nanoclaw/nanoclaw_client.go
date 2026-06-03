@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -196,7 +197,7 @@ func ensureVulpineAgentRoute(nanoclawDir, agentID string) error {
 	if err != nil {
 		return err
 	}
-	if err := ensureNanoClawContainerConfig(db, agentGroupID, "", ""); err != nil {
+	if _, err := ensureNanoClawContainerConfig(db, agentGroupID, "", ""); err != nil {
 		return err
 	}
 	hasAgentDestinations, err := tableExists(db, "agent_destinations")
@@ -326,6 +327,40 @@ func shortHash(value string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+func stopNanoClawInstallContainers(nanoclawDir string) {
+	dockerPath, err := exec.LookPath("docker")
+	if err != nil {
+		return
+	}
+	label := nanoClawInstallLabel(nanoclawDir)
+	if label == "" {
+		return
+	}
+	out, err := exec.Command(dockerPath, "ps", "--filter", "label="+label, "--format", "{{.Names}}").Output()
+	if err != nil {
+		return
+	}
+	names := strings.Fields(string(out))
+	if len(names) == 0 {
+		return
+	}
+	args := append([]string{"stop", "-t", "1"}, names...)
+	_ = exec.Command(dockerPath, args...).Run()
+}
+
+func nanoClawInstallLabel(nanoclawDir string) string {
+	nanoclawDir = strings.TrimSpace(nanoclawDir)
+	if nanoclawDir == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(nanoclawDir)
+	if err == nil {
+		nanoclawDir = abs
+	}
+	sum := sha1.Sum([]byte(nanoclawDir))
+	return "nanoclaw-install=" + hex.EncodeToString(sum[:])[:8]
+}
+
 func LookupNanoclawAgentGroupID(nanoclawDir string) (string, error) {
 	dbPath := filepath.Join(nanoclawDir, "data", "v2.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -356,7 +391,8 @@ func RepairVulpineProfileDatabase(nanoclawDir, provider, model, cdpURL string) e
 	if err != nil {
 		return err
 	}
-	if err := ensureNanoClawContainerConfig(db, agentGroupID, provider, model); err != nil {
+	changed, err := ensureNanoClawContainerConfig(db, agentGroupID, provider, model)
+	if err != nil {
 		return err
 	}
 	folder, err := nanoClawAgentGroupFolder(db, agentGroupID)
@@ -365,6 +401,9 @@ func RepairVulpineProfileDatabase(nanoclawDir, provider, model, cdpURL string) e
 	}
 	if err := writeAgentBrowserConfig(nanoclawDir, folder, cdpURL); err != nil {
 		return err
+	}
+	if changed {
+		stopNanoClawInstallContainers(nanoclawDir)
 	}
 	return nil
 }
@@ -453,23 +492,27 @@ func SetContainerConfig(nanoclawDir, agentGroupID, provider, model string) error
 	}
 	defer db.Close()
 
-	if err := ensureNanoClawContainerConfig(db, agentGroupID, provider, model); err != nil {
+	if _, err := ensureNanoClawContainerConfig(db, agentGroupID, provider, model); err != nil {
 		return fmt.Errorf("set container config: %w", err)
 	}
 	return nil
 }
 
-func ensureNanoClawContainerConfig(db *sql.DB, agentGroupID, provider, model string) error {
+func ensureNanoClawContainerConfig(db *sql.DB, agentGroupID, provider, model string) (bool, error) {
 	ok, err := tableExists(db, "container_configs")
 	if err != nil {
-		return fmt.Errorf("check nanoclaw container_configs table: %w", err)
+		return false, fmt.Errorf("check nanoclaw container_configs table: %w", err)
 	}
 	if !ok {
-		return nil
+		return false, nil
 	}
 
 	provider = nanoClawContainerProvider(provider)
 	model = strings.TrimSpace(model)
+	changed, err := nanoClawContainerConfigChanged(db, agentGroupID, provider, model)
+	if err != nil {
+		return false, err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	if _, err := db.Exec(`
 INSERT INTO container_configs (agent_group_id, provider, model, updated_at)
@@ -478,18 +521,30 @@ ON CONFLICT(agent_group_id) DO UPDATE SET
   provider = COALESCE(excluded.provider, container_configs.provider),
   model = COALESCE(excluded.model, container_configs.model),
   updated_at = excluded.updated_at`, agentGroupID, provider, model, now); err != nil {
-		return err
+		return false, err
 	}
-	return nil
+	return changed, nil
+}
+
+func nanoClawContainerConfigChanged(db *sql.DB, agentGroupID, provider, model string) (bool, error) {
+	var currentProvider, currentModel sql.NullString
+	err := db.QueryRow(`SELECT provider, model FROM container_configs WHERE agent_group_id = ?`, agentGroupID).Scan(&currentProvider, &currentModel)
+	if err == sql.ErrNoRows {
+		return provider != "" || model != "", nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return (provider != "" && currentProvider.String != provider) || (model != "" && currentModel.String != model), nil
 }
 
 func nanoClawContainerProvider(provider string) string {
 	provider = strings.TrimSpace(provider)
 	switch provider {
-	case "", "claude", "mock", "codex", "opencode":
+	case "", "claude", "mock", "opencode":
 		return provider
-	case "openai-oauth":
-		return "codex"
+	case "codex", "openai-oauth":
+		return "opencode"
 	default:
 		return "opencode"
 	}

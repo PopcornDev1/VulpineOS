@@ -18,18 +18,20 @@ import (
 const nanoclawMirrorPollInterval = 250 * time.Millisecond
 
 type NanoClawSessionMirror struct {
-	nanoclawDir       string
-	agentID           string
-	sessionLogPath    string
-	agent             *Agent
-	seen              map[string]struct{}
-	loadedSeen        bool
+	nanoclawDir    string
+	agentID        string
+	sessionLogPath string
+	agent          *Agent
+	seen           map[string]struct{}
+	loadedSeen     bool
 
 	streamDir         string            // resolved per-session
 	streamOffsets     map[string]int64  // sessionID → bytes read
 	streamAccumulated map[string]string // sessionID → accumulated text
+	streamActivity    map[string]string // sessionID → latest live activity text
 	streamDone        map[string]bool   // sessionID → stream completed
 	lastStreamEmit    time.Time         // throttle: max 1 emit per 50ms
+	lastActivityEmit  time.Time         // throttle: max 1 activity emit per 50ms
 }
 
 type nanoClawSessionRef struct {
@@ -71,6 +73,14 @@ type normalizedSessionLogContent struct {
 	Arguments map[string]interface{} `json:"arguments,omitempty"`
 }
 
+type streamActivityPayload struct {
+	Phase  string `json:"phase"`
+	Text   string `json:"text"`
+	Tool   string `json:"tool"`
+	Target string `json:"target"`
+	Status string `json:"status"`
+}
+
 func NewNanoClawSessionMirror(nanoclawDir, agentID, sessionLogPath string, agent *Agent) *NanoClawSessionMirror {
 	return &NanoClawSessionMirror{
 		nanoclawDir:       strings.TrimSpace(nanoclawDir),
@@ -80,6 +90,7 @@ func NewNanoClawSessionMirror(nanoclawDir, agentID, sessionLogPath string, agent
 		seen:              make(map[string]struct{}),
 		streamOffsets:     make(map[string]int64),
 		streamAccumulated: make(map[string]string),
+		streamActivity:    make(map[string]string),
 		streamDone:        make(map[string]bool),
 	}
 }
@@ -124,7 +135,7 @@ func (m *NanoClawSessionMirror) MirrorOnce(completionAfter time.Time) (bool, err
 		return false, err
 	}
 
-	streamActivity := m.pollStreamFile(session)
+	m.pollStreamFile(session)
 
 	assistantSeen, err := m.mirrorOutbound(session, completionAfter)
 	if err != nil {
@@ -133,7 +144,7 @@ func (m *NanoClawSessionMirror) MirrorOnce(completionAfter time.Time) (bool, err
 	if assistantSeen {
 		completed = true
 	}
-	return streamActivity || completed, nil
+	return completed, nil
 }
 
 func (m *NanoClawSessionMirror) loadSeenFromExistingLog() error {
@@ -279,12 +290,13 @@ func (m *NanoClawSessionMirror) mirrorOutbound(session nanoClawSessionRef, compl
 				Content: []normalizedSessionLogContent{{Type: "text", Text: text}},
 			},
 		}
-		if err := m.append(entry); err != nil {
+		fresh := messageAtOrAfter(msg.Timestamp, completionAfter)
+		if err := m.appendWithEmit(entry, fresh); err != nil {
 			return false, err
 		}
 		m.markSeen(seenID)
 		m.markSeen(msg.ID)
-		if messageAtOrAfter(msg.Timestamp, completionAfter) {
+		if fresh {
 			completed = true
 		}
 	}
@@ -488,6 +500,10 @@ func (i claudeContentItem) ContentText() string {
 }
 
 func (m *NanoClawSessionMirror) append(entry normalizedSessionLogEntry) error {
+	return m.appendWithEmit(entry, true)
+}
+
+func (m *NanoClawSessionMirror) appendWithEmit(entry normalizedSessionLogEntry, emit bool) error {
 	data, err := json.Marshal(entry)
 	if err != nil {
 		return err
@@ -506,7 +522,7 @@ func (m *NanoClawSessionMirror) append(entry normalizedSessionLogEntry) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if m.agent != nil {
+	if emit && m.agent != nil {
 		m.agent.handleSessionLogLine(string(data))
 	}
 	return nil
@@ -549,6 +565,7 @@ func (m *NanoClawSessionMirror) pollStreamFile(session nanoClawSessionRef) bool 
 		offset = 0
 		m.streamOffsets[sid] = 0
 		m.streamAccumulated[sid] = ""
+		m.streamActivity[sid] = ""
 	}
 	if offset > 0 {
 		if _, err := file.Seek(offset, io.SeekStart); err != nil {
@@ -559,6 +576,8 @@ func (m *NanoClawSessionMirror) pollStreamFile(session nanoClawSessionRef) bool 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
 	newContent := false
+	activityChanged := false
+	latestActivity := ""
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -568,9 +587,10 @@ func (m *NanoClawSessionMirror) pollStreamFile(session nanoClawSessionRef) bool 
 		offset += int64(len(line)) + 1
 
 		var entry struct {
-			T    string `json:"t"`
-			Done string `json:"done"`
-			Tool string `json:"tool"`
+			T        string                 `json:"t"`
+			Done     string                 `json:"done"`
+			Tool     string                 `json:"tool"`
+			Activity *streamActivityPayload `json:"activity"`
 		}
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
@@ -585,12 +605,22 @@ func (m *NanoClawSessionMirror) pollStreamFile(session nanoClawSessionRef) bool 
 			m.streamDone[sid] = true
 			newContent = true
 		}
+		if text := entry.Activity.displayText(); text != "" && text != m.streamActivity[sid] {
+			m.streamActivity[sid] = text
+			latestActivity = text
+			activityChanged = true
+		}
 	}
 
 	m.streamOffsets[sid] = offset
 
+	if activityChanged && m.agent != nil && time.Since(m.lastActivityEmit) >= 50*time.Millisecond {
+		m.lastActivityEmit = time.Now()
+		m.agent.handleActivityContent(latestActivity)
+	}
+
 	if !newContent {
-		return false
+		return activityChanged
 	}
 
 	accumulated := m.streamAccumulated[sid]
@@ -607,11 +637,26 @@ func (m *NanoClawSessionMirror) pollStreamFile(session nanoClawSessionRef) bool 
 		_ = os.Remove(path)
 		delete(m.streamOffsets, sid)
 		delete(m.streamAccumulated, sid)
+		delete(m.streamActivity, sid)
 		return true
 	}
 
 	m.agent.handleStreamContent(accumulated, true)
 	return true
+}
+
+func (a *streamActivityPayload) displayText() string {
+	if a == nil {
+		return ""
+	}
+	text := strings.TrimSpace(a.Text)
+	if text == "" {
+		return ""
+	}
+	if len(text) > 180 {
+		text = text[:177] + "..."
+	}
+	return text
 }
 
 func (m *NanoClawSessionMirror) isSeen(id string) bool {

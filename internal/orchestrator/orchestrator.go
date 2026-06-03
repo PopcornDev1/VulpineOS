@@ -672,7 +672,11 @@ func (o *Orchestrator) applyFingerprintToContext(contextID string, userContextID
 		if _, err := o.Client.Call("", "Browser.setContextFingerprint", map[string]interface{}{
 			"prefs": prefs,
 		}); err != nil {
-			return fmt.Errorf("set context fingerprint: %w", err)
+			if isUnsupportedJugglerMethod(err, "Browser.setContextFingerprint") {
+				log.Printf("orchestrator: warning: per-context fingerprint prefs unsupported by browser for ctx %d: %v", userContextID, err)
+			} else {
+				return fmt.Errorf("set context fingerprint: %w", err)
+			}
 		}
 	}
 
@@ -683,6 +687,14 @@ func (o *Orchestrator) applyFingerprintToContext(contextID string, userContextID
 	log.Printf("orchestrator: fingerprint applied to context %s (ua=%s, screen=%dx%d)",
 		contextID, uaSummary, width, height)
 	return nil
+}
+
+func isUnsupportedJugglerMethod(err error, method string) bool {
+	if err == nil || method == "" {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, method) && strings.Contains(message, "not supported")
 }
 
 // applySecurityToContext injects CSP headers and logs sandbox activation for a context.

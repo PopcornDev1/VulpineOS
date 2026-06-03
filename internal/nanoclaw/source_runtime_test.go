@@ -34,6 +34,51 @@ func TestRelaxBunFrozenLockfileNoop(t *testing.T) {
 	}
 }
 
+func TestStripDockerBuildKitMounts(t *testing.T) {
+	in := `RUN --mount=type=cache,target=/var/cache/apt,sharing=locked     --mount=type=cache,target=/var/lib/apt,sharing=locked     apt-get update
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install
+`
+	got, ok := stripDockerBuildKitMounts(in)
+	if !ok {
+		t.Fatal("stripDockerBuildKitMounts() ok = false, want true")
+	}
+	if strings.Contains(got, "--mount=") {
+		t.Fatalf("stripped Dockerfile still contains BuildKit mount:\n%s", got)
+	}
+	for _, want := range []string{"RUN apt-get update", "RUN bun install"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stripped Dockerfile missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestDockerBuildEnvForcesBuildKit(t *testing.T) {
+	got := dockerBuildEnv([]string{"PATH=/bin", "DOCKER_BUILDKIT=0", "HOME=/tmp"}, true)
+	assertDockerBuildKitEnv(t, got, "DOCKER_BUILDKIT=1")
+}
+
+func TestDockerBuildEnvDisablesBuildKit(t *testing.T) {
+	got := dockerBuildEnv([]string{"PATH=/bin", "DOCKER_BUILDKIT=1", "HOME=/tmp"}, false)
+	assertDockerBuildKitEnv(t, got, "DOCKER_BUILDKIT=0")
+}
+
+func assertDockerBuildKitEnv(t *testing.T, env []string, want string) {
+	t.Helper()
+	count := 0
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "DOCKER_BUILDKIT=") {
+			count++
+			if entry != want {
+				t.Fatalf("DOCKER_BUILDKIT entry = %q, want %s", entry, want)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("DOCKER_BUILDKIT entries = %d, want 1 in %#v", count, env)
+	}
+}
+
 func TestPrepareNanoClawSourceRuntimeFailsImageBuildByDefault(t *testing.T) {
 	srcDir := writeMinimalNanoClawSource(t)
 	t.Setenv("VULPINE_NANOCLAW_SRC", srcDir)
@@ -129,9 +174,27 @@ func TestPatchNanoClawSourceRuntimeCreatesOpenCodeProviderWhenMissing(t *testing
 		"OPENCODE_PROVIDER",
 		"OPENCODE_MODEL",
 		"OPENCODE_API_KEY",
+		"OPENAI_ACCESS_TOKEN",
 		"OPENCODE_FALLBACK_MODELS",
 		"DEFAULT_FALLBACK_MODELS",
 		"openrouter",
+		"openai-oauth",
+		"https://api.openai.com/v1",
+		"https://api.deepseek.com/v1",
+		"DEEPSEEK_API_KEY",
+		"sk-or-",
+		"DeepSeek via OpenRouter",
+		"visibleError",
+		"StreamActivity",
+		"scrubActivityText",
+		"target = activity.target ? scrubActivityText(activity.target)",
+		"streamActivity",
+		"activity",
+		"tool_start",
+		"tool_done",
+		"tool_error",
+		"summarizeCommand",
+		"summarizeURL",
 		"Switched to",
 		"res.status === 429 && i < models.length - 1",
 	} {
@@ -146,6 +209,12 @@ func TestPatchNanoClawSourceRuntimeCreatesOpenCodeProviderWhenMissing(t *testing
 	}
 	if strings.Count(string(index), "import './opencode.js';") != 1 {
 		t.Fatalf("provider index should import opencode once:\n%s", index)
+	}
+	if strings.Contains(string(provider), "only openrouter available") {
+		t.Fatalf("created provider should not reject non-OpenRouter providers:\n%s", provider)
+	}
+	if strings.Contains(string(provider), "parsed.pathname") {
+		t.Fatalf("created provider should not include URL paths in activity targets:\n%s", provider)
 	}
 }
 

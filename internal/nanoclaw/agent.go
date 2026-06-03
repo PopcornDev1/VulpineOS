@@ -553,6 +553,21 @@ func (a *Agent) handleStreamContent(content string, streamActive bool) {
 	})
 }
 
+func (a *Agent) handleActivityContent(content string) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return
+	}
+	a.mu.Lock()
+	agentID := a.ID
+	a.mu.Unlock()
+	a.emitConversation(ConversationMsg{
+		AgentID: agentID,
+		Role:    "activity",
+		Content: content,
+	})
+}
+
 func formatPostFailureWarning(toolName, status, errText string) string {
 	if toolName == "" {
 		toolName = "tool"

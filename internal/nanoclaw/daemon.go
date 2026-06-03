@@ -30,6 +30,11 @@ type Daemon struct {
 	waitReadyFunc func() error
 }
 
+var oneCLICertificateTempPaths = []string{
+	filepath.Join(os.TempDir(), "onecli-proxy-ca.pem"),
+	filepath.Join(os.TempDir(), "onecli-combined-ca.pem"),
+}
+
 // NewDaemon creates a daemon manager rooted in the VulpineOS-owned NanoClaw dir.
 func NewDaemon(binary string, nanoclawDir ...string) *Daemon {
 	dir := VulpineNanoclawDir()
@@ -113,6 +118,9 @@ func (d *Daemon) Start() error {
 
 	var oneCLIShim *LocalOneCLIShim
 	if useLocalOneCLIShim() {
+		if err := cleanupOneCLICertificateTempPaths(); err != nil {
+			return fmt.Errorf("prepare local OneCLI certificate paths: %w", err)
+		}
 		shim, err := StartDynamicLocalOneCLIShim(func() map[string]string {
 			cfg, err := config.Load()
 			if err == nil {
@@ -237,6 +245,29 @@ func (d *Daemon) waitReady() error {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("socket not available: %s", d.socketPath)
+}
+
+func cleanupOneCLICertificateTempPaths() error {
+	for _, path := range oneCLICertificateTempPaths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", path, err)
+		}
+		if !info.IsDir() {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove directory %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func ProviderRuntimeEnv(cfg *config.Config) map[string]string {

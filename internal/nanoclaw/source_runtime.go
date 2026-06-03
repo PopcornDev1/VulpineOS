@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"vulpineos/internal/config"
@@ -143,6 +144,14 @@ type ChatMessage = {
   tool_call_id?: string;
 };
 
+type StreamActivity = {
+  phase: string;
+  text: string;
+  tool?: string;
+  target?: string;
+  status?: string;
+};
+
 const DEFAULT_FALLBACK_MODELS = [
   'openai/gpt-oss-20b:free',
   'google/gemini-2.0-flash-exp:free',
@@ -185,25 +194,120 @@ const BASH_TOOL = {
   },
 };
 
-function fallbackModels(): string[] {
-  const env = process.env.OPENCODE_FALLBACK_MODELS;
-  if (env) {
-    return env.split(',').map(s => s.trim()).filter(Boolean);
-  }
-  return DEFAULT_FALLBACK_MODELS;
-}
-
-function normalizeOpenRouterModel(model: string | undefined): string {
-  const value = model || process.env.OPENCODE_MODEL || 'openai/gpt-oss-20b:free';
-  return value.replace(/^openrouter\//, '');
-}
-
 function providerName(): string {
-  return process.env.OPENCODE_PROVIDER || 'openrouter';
+  return (process.env.OPENCODE_PROVIDER || 'openrouter').toLowerCase();
 }
 
-function providerAPIKey(): string | undefined {
-  return process.env.OPENCODE_API_KEY || process.env.OPENROUTER_API_KEY;
+function isOpenRouterKey(apiKey: string | undefined): boolean {
+  return !!apiKey && apiKey.startsWith('sk-or-');
+}
+
+function usesOpenRouter(provider: string, apiKey: string | undefined): boolean {
+  return provider === 'openrouter' || (provider === 'deepseek' && isOpenRouterKey(apiKey));
+}
+
+function normalizeProviderModel(provider: string, model: string | undefined, apiKey?: string): string {
+  const value = model || process.env.OPENCODE_MODEL || (provider === 'openrouter' ? 'openai/gpt-oss-20b:free' : 'gpt-4.1');
+  if (usesOpenRouter(provider, apiKey)) return value.replace(/^openrouter\//, '');
+  if (provider === 'openai' || provider === 'openai-oauth') return value.replace(/^openai\//, '');
+  if (value.startsWith(provider + '/')) return value.slice(provider.length + 1);
+  return value;
+}
+
+function providerAPIKey(provider: string): string | undefined {
+  if (provider === 'openrouter') return process.env.OPENCODE_API_KEY || process.env.OPENROUTER_API_KEY;
+  if (provider === 'openai' || provider === 'openai-oauth') {
+    return process.env.OPENCODE_API_KEY || process.env.OPENAI_API_KEY || process.env.OPENAI_ACCESS_TOKEN;
+  }
+  if (provider === 'deepseek') return process.env.OPENCODE_API_KEY || process.env.DEEPSEEK_API_KEY;
+  return process.env.OPENCODE_API_KEY;
+}
+
+function providerURL(provider: string, apiKey?: string): string {
+  if (usesOpenRouter(provider, apiKey)) return 'https://openrouter.ai/api/v1/chat/completions';
+  if (provider === 'openai' || provider === 'openai-oauth') {
+    return (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '') + '/chat/completions';
+  }
+  if (provider === 'deepseek') return (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').replace(/\/+$/, '') + '/chat/completions';
+  return '';
+}
+
+function providerLabel(provider: string, apiKey?: string): string {
+  if (provider === 'openrouter') return 'OpenRouter';
+  if (provider === 'deepseek' && isOpenRouterKey(apiKey)) return 'DeepSeek via OpenRouter';
+  if (provider === 'openai' || provider === 'openai-oauth') return 'OpenAI';
+  if (provider === 'deepseek') return 'DeepSeek';
+  return provider;
+}
+
+function providerFallbackModels(provider: string, apiKey?: string): string[] {
+  const env = process.env.OPENCODE_FALLBACK_MODELS;
+  if (env) return env.split(',').map(s => normalizeProviderModel(provider, s.trim(), apiKey)).filter(Boolean);
+  return usesOpenRouter(provider, apiKey) ? DEFAULT_FALLBACK_MODELS : [];
+}
+
+function responseHeaders(provider: string, apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: ` + "`Bearer ${apiKey}`" + `,
+    'Content-Type': 'application/json',
+  };
+  if (usesOpenRouter(provider, apiKey)) {
+    headers['HTTP-Referer'] = 'https://vulpineos.com';
+    headers['X-Title'] = 'VulpineOS';
+  }
+  return headers;
+}
+
+function escapeMessageText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function visibleError(message: string): ProviderEvent {
+  return { type: 'result', text: ` + "`<message to=\"vulpine\">Error: ${escapeMessageText(message)}</message>`" + ` };
+}
+
+function execSyncText(command: string, options: { cwd: string; timeout: number; maxBuffer: number; signal: AbortSignal }): string {
+  return execSync(command, {
+    cwd: options.cwd,
+    timeout: options.timeout,
+    encoding: 'utf-8',
+    maxBuffer: options.maxBuffer,
+    signal: options.signal,
+  } as unknown as Parameters<typeof execSync>[1]) as string;
+}
+
+function trimActivityText(text: string, max = 140): string {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  return compact.length > max ? compact.slice(0, max - 3) + '...' : compact;
+}
+
+function scrubActivityText(text: string): string {
+  return trimActivityText(text)
+    .replace(/(bearer\s+)[^\s,;"]+/gi, '$1[redacted]')
+    .replace(/([?&](?:api[_-]?key|apikey|token|access[_-]?token|access[_-]?key|secret|password|credential|authorization)=)[^&#\s"]+/gi, '$1[redacted]')
+    .replace(/("(?:apiKey|api_key|apikey|token|access_token|access_key|secret|password|credential|authorization|cookie|session)"\s*:\s*")[^"]+(")/gi, '$1[redacted]$2')
+    .replace(/(^|[^?&A-Za-z0-9_])((?:api[_-]?key|apikey|token|access[_-]?token|access[_-]?key|secret|password|credential|authorization|cookie|session)\s*=\s*)[^\s,;"]+/gi, '$1$2[redacted]');
+}
+
+function summarizeCommand(command: string): string {
+  const scrubbed = scrubActivityText(command);
+  if (!scrubbed || scrubbed.includes('[redacted]')) return 'Running command...';
+  return 'Running command: ' + scrubbed;
+}
+
+function summarizeURL(raw: string): string | undefined {
+  try {
+    const parsed = new URL(raw);
+    return trimActivityText(parsed.hostname, 100);
+  } catch (_) {
+    return undefined;
+  }
+}
+
+function webActivityText(rawURL: string): { text: string; target?: string } {
+  const target = summarizeURL(rawURL);
+  if (!target) return { text: 'Opening website...' };
+  return { text: 'Opening ' + target, target };
 }
 
 class MessageStream {
@@ -254,21 +358,16 @@ class OpenCodeProvider implements AgentProvider {
     controller: AbortController,
     followups: MessageStream,
   ): AsyncGenerator<ProviderEvent> {
-    if (providerName() !== 'openrouter') {
-      yield {
-        type: 'error',
-        message: ` + "`" + `Unsupported OPENCODE_PROVIDER ${providerName()}; only openrouter available` + "`" + `,
-        retryable: false,
-      };
+    const provider = providerName();
+    const apiKey = providerAPIKey(provider);
+    const label = providerLabel(provider, apiKey);
+    const url = providerURL(provider, apiKey);
+    if (!url) {
+      yield visibleError(` + "`" + `Unsupported OPENCODE_PROVIDER ${provider}` + "`" + `);
       return;
     }
-    const apiKey = providerAPIKey();
     if (!apiKey) {
-      yield {
-        type: 'error',
-        message: 'OPENCODE_API_KEY or OPENROUTER_API_KEY not configured',
-        retryable: false,
-      };
+      yield visibleError(` + "`" + `${label} API key not configured` + "`" + `);
       return;
     }
 
@@ -280,9 +379,46 @@ class OpenCodeProvider implements AgentProvider {
 
     yield { type: 'init', continuation: ` + "`" + `opencode-${Date.now()}` + "`" + ` };
 
-    const primaryModel = normalizeOpenRouterModel(this.options.model);
-    const models = [primaryModel, ...fallbackModels().filter(m => m !== primaryModel)];
+    const primaryModel = normalizeProviderModel(provider, this.options.model, apiKey);
+    const models = [primaryModel, ...providerFallbackModels(provider, apiKey).filter(m => m !== primaryModel)];
     let usedModelIndex = 0;
+    const MAX_STREAM_FILE_SIZE = 256 * 1024;
+    const streamPath = process.env.STREAM_PATH || '/workspace/stream.jsonl';
+    let streamFileSize = 0;
+    let streamFd: number | null = null;
+    try {
+      fs.writeFileSync(streamPath, '');
+      streamFd = fs.openSync(streamPath, 'a');
+    } catch (_) {}
+    process.once('exit', () => {
+      try { fs.unlinkSync(streamPath); } catch (_) {}
+    });
+
+    function streamWriteSync(data: string) {
+      const line = data + '\n';
+      if (streamFileSize + Buffer.byteLength(line, 'utf8') > MAX_STREAM_FILE_SIZE) {
+        if (streamFd !== null) {
+          try { fs.ftruncateSync(streamFd, 0); fs.closeSync(streamFd); } catch (_) {}
+        }
+        streamFd = null;
+        return;
+      }
+      try {
+        if (streamFd === null) streamFd = fs.openSync(streamPath, 'a');
+        fs.writeSync(streamFd, line);
+        fs.fsyncSync(streamFd);
+        streamFileSize += Buffer.byteLength(line, 'utf8');
+      } catch (_) {}
+    }
+
+    function streamActivity(activity: StreamActivity) {
+      const text = scrubActivityText(activity.text);
+      if (!text) return;
+      const target = activity.target ? scrubActivityText(activity.target) : undefined;
+      streamWriteSync(JSON.stringify({ activity: { ...activity, text, target } }));
+    }
+
+    streamActivity({ phase: 'thinking', text: 'Thinking...', status: 'running' });
 
     while (true) {
       yield { type: 'activity' };
@@ -290,6 +426,7 @@ class OpenCodeProvider implements AgentProvider {
       // Drain follow-up messages pushed by poll-loop
       for (const msg of followups.drain()) {
         messages.push({ role: 'user', content: msg });
+        streamActivity({ phase: 'thinking', text: 'Reading follow-up message...', status: 'running' });
         yield { type: 'activity' };
       }
 
@@ -304,15 +441,11 @@ class OpenCodeProvider implements AgentProvider {
         }
 
         try {
-          const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          streamActivity({ phase: 'requesting_model', text: 'Asking ' + label + '...', status: 'running' });
+          const res = await fetch(url, {
             method: 'POST',
             signal: controller.signal,
-            headers: {
-              Authorization: ` + "`" + `Bearer ${apiKey}` + "`" + `,
-              'Content-Type': 'application/json',
-              'HTTP-Referer': 'https://vulpineos.com',
-              'X-Title': 'VulpineOS',
-            },
+            headers: responseHeaders(provider, apiKey),
             body: JSON.stringify({
               model,
               messages,
@@ -327,13 +460,15 @@ class OpenCodeProvider implements AgentProvider {
           if (!res.ok) {
             const body = await res.text();
             if (res.status === 429 && i < models.length - 1) {
+              streamActivity({ phase: 'requesting_model', text: 'Model rate limited, trying fallback...', status: 'retrying' });
               continue;
             }
-            yield {
-              type: 'error',
-              message: ` + "`" + `OpenRouter returned ${res.status}: ${body}` + "`" + `,
-              retryable: res.status >= 500 || res.status === 429,
-            };
+            yield visibleError(` + "`" + `${label} returned ${res.status}: ${body}` + "`" + `);
+            return;
+          }
+
+          if (!res.body) {
+            yield visibleError(` + "`" + `${label} returned an empty response body` + "`" + `);
             return;
           }
 
@@ -343,30 +478,6 @@ class OpenCodeProvider implements AgentProvider {
           let streamContent = '';
           let streamToolCalls: ChatMessage['tool_calls'] = [];
           let streamToolCallAccum: Map<number, { id?: string; name?: string; args?: string }> = new Map();
-          const MAX_STREAM_FILE_SIZE = 256 * 1024;
-          let streamFileSize = 0;
-          const streamPath = process.env.STREAM_PATH || '/workspace/stream.jsonl';
-          let streamFd: number | null = null;
-          try { streamFd = fs.openSync(streamPath, 'w'); } catch (_) {}
-
-          process.on('exit', () => {
-            try { fs.unlinkSync(streamPath); } catch (_) {}
-          });
-
-          function streamWriteSync(data: string) {
-            if (streamFd === null) return;
-            const line = data + '\n';
-            if (streamFileSize + Buffer.byteLength(line, 'utf8') > MAX_STREAM_FILE_SIZE) {
-              try { fs.ftruncateSync(streamFd, 0); fs.closeSync(streamFd); } catch (_) {}
-              streamFd = null;
-              return;
-            }
-            try {
-              fs.writeSync(streamFd, line);
-              fs.fsyncSync(streamFd);
-              streamFileSize += Buffer.byteLength(line, 'utf8');
-            } catch (_) {}
-          }
 
           readLoop: while (true) {
             const { done, value } = await streamReader.read();
@@ -414,11 +525,9 @@ class OpenCodeProvider implements AgentProvider {
           }
 
           // Write done marker with full accumulated text
-          if (streamContent) {
+          if (streamContent && streamToolCalls.length === 0) {
             streamWriteSync(JSON.stringify({ done: streamContent }));
           }
-          if (streamFd !== null) { try { fs.closeSync(streamFd); } catch (_) {} }
-
           // Build response object compatible with the rest of the tool-call loop
           response = {
             choices: [{
@@ -439,11 +548,7 @@ class OpenCodeProvider implements AgentProvider {
             return;
           }
           if (i < models.length - 1) continue;
-          yield {
-            type: 'error',
-            message: err instanceof Error ? err.message : String(err),
-            retryable: false,
-          };
+          yield visibleError(err instanceof Error ? err.message : String(err));
           return;
         }
       }
@@ -453,7 +558,7 @@ class OpenCodeProvider implements AgentProvider {
       const choices = (response as { choices?: Array<{ finish_reason: string; message: ChatMessage & { tool_calls?: ChatMessage['tool_calls'] } }> }).choices;
       const choice = choices?.[0];
       if (!choice) {
-        yield { type: 'error', message: 'Empty response from OpenRouter', retryable: false };
+        yield visibleError(` + "`" + `Empty response from ${label}` + "`" + `);
         return;
       }
 
@@ -490,13 +595,14 @@ class OpenCodeProvider implements AgentProvider {
             if (tc.function.name === 'bash') {
               const command = String(args.command ?? '');
               const timeout = typeof args.timeout === 'number' ? args.timeout : 30000;
-              result = execSync(command, {
+              streamActivity({ phase: 'tool_start', tool: 'bash', text: summarizeCommand(command), status: 'running' });
+              result = execSyncText(command, {
                 cwd: '/workspace/agent',
                 timeout,
-                encoding: 'utf-8',
                 maxBuffer: 50 * 1024 * 1024,
                 signal: controller.signal,
               });
+              streamActivity({ phase: 'tool_done', tool: 'bash', text: 'Command completed', status: 'done' });
               if (result.length > 50000) {
                 result = result.slice(0, 50000) + ` + "`" + `\n... [truncated ${result.length - 50000} more bytes]` + "`" + `;
               }
@@ -504,6 +610,8 @@ class OpenCodeProvider implements AgentProvider {
               const url = String(args.url ?? '');
               const viewportOnly = args.viewportOnly !== false;
               const profile = String(args.profile || 'compact');
+              const webActivity = webActivityText(url);
+              streamActivity({ phase: 'tool_start', tool: 'web', text: webActivity.text, target: webActivity.target, status: 'running' });
               try {
                 const cdpUrl = process.env.AGENT_BROWSER_CDP || process.env.AGENT_BROWSER_CDP_URL;
                 const flags = [];
@@ -512,27 +620,28 @@ class OpenCodeProvider implements AgentProvider {
                 if (typeof args.maxNodes === 'number' && args.maxNodes > 0) flags.push('--max-nodes ' + args.maxNodes);
                 const flagStr = flags.length > 0 ? ' ' + flags.join(' ') : '';
                 const cmd = 'agent-browser connect ' + cdpUrl + ' && agent-browser open ' + JSON.stringify(url) + ' && agent-browser wait --load networkidle && agent-browser snapshot -i' + flagStr;
-                result = execSync(cmd, {
+                result = execSyncText(cmd, {
                   cwd: '/workspace/agent',
                   timeout: 60000,
-                  encoding: 'utf-8',
                   maxBuffer: 50 * 1024 * 1024,
                   signal: controller.signal,
                 });
+                streamActivity({ phase: 'tool_done', tool: 'web', text: 'Website snapshot captured', target: webActivity.target, status: 'done' });
               } catch (_err) {
                 // Retry without flags if CLI rejected them
                 try {
                   const cdpUrl = process.env.AGENT_BROWSER_CDP || process.env.AGENT_BROWSER_CDP_URL;
                   const cmd = 'agent-browser connect ' + cdpUrl + ' && agent-browser open ' + JSON.stringify(url) + ' && agent-browser wait --load networkidle && agent-browser snapshot -i';
-                  result = execSync(cmd, {
+                  result = execSyncText(cmd, {
                     cwd: '/workspace/agent',
                     timeout: 60000,
-                    encoding: 'utf-8',
                     maxBuffer: 50 * 1024 * 1024,
                     signal: controller.signal,
                   });
+                  streamActivity({ phase: 'tool_done', tool: 'web', text: 'Website snapshot captured', target: webActivity.target, status: 'done' });
                 } catch (_retryErr) {
                   const errMsg = _retryErr instanceof Error ? _retryErr.message : String(_retryErr);
+                  streamActivity({ phase: 'tool_error', tool: 'web', text: 'Website request failed', target: webActivity.target, status: 'error' });
                   result = 'agent-browser failed: ' + errMsg;
                 }
               }
@@ -540,9 +649,11 @@ class OpenCodeProvider implements AgentProvider {
                 result = result.slice(0, 50000) + '\n... [truncated ' + (result.length - 50000) + ' more bytes]';
               }
             } else {
+              streamActivity({ phase: 'tool_error', tool: tc.function.name, text: 'Unknown tool: ' + tc.function.name, status: 'error' });
               result = ` + "`" + `Unknown tool: ${tc.function.name}` + "`" + `;
             }
           } catch (err) {
+            streamActivity({ phase: 'tool_error', tool: tc.function.name, text: tc.function.name + ' failed', status: 'error' });
             result = ` + "`" + `Error: ${err instanceof Error ? err.message : String(err)}` + "`" + `;
           }
 
@@ -553,13 +664,15 @@ class OpenCodeProvider implements AgentProvider {
         // Compress older tool results -- keep last 2 full, use structured summaries for older ones
         let recentToolResults = 0;
         for (let i = messages.length - 1; i >= 0; i--) {
-          if (messages[i].role === 'tool') {
+          const item = messages[i];
+          if (item.role === 'tool') {
             recentToolResults++;
-            if (recentToolResults > 2 && messages[i].content.length > 2000) {
-              const info = toolInfo.get(messages[i].tool_call_id ?? '');
+            const content = item.content;
+            if (recentToolResults > 2 && content && content.length > 2000) {
+              const info = toolInfo.get(item.tool_call_id ?? '');
               const tag = info?.name || 'tool';
               const detail = info?.url || info?.command || '';
-              messages[i].content = ` + "`" + `[${tag}] ${detail} -- returned ${messages[i].content.length} bytes -- full content already processed above` + "`" + `;
+              item.content = ` + "`" + `[${tag}] ${detail} -- returned ${content.length} bytes -- full content already processed above` + "`" + `;
             }
           }
         }
@@ -572,6 +685,7 @@ class OpenCodeProvider implements AgentProvider {
       if (usedModelIndex > 0) {
         text = ` + "`" + `[Switched to ${models[usedModelIndex]}]\n\n${text}` + "`" + `;
       }
+      try { if (streamFd !== null) fs.closeSync(streamFd); } catch (_) {}
       yield { type: 'result', text };
       return;
     }
@@ -1081,7 +1195,7 @@ func buildNanoClawAgentImage(profileDir, image string) error {
 	defer logFile.Close()
 
 	cmd := exec.Command(dockerPath, "build", "-t", image, ".")
-	if err := runDockerBuild(cmd, containerDir, logFile); err != nil {
+	if err := runDockerBuild(cmd, containerDir, logFile, true); err != nil {
 		_, _ = io.WriteString(logFile, "\nVulpineOS: docker build failed: "+err.Error()+"\n")
 		if retryErr := buildNanoClawAgentImageWithRelaxedLockfile(dockerPath, containerDir, image, logFile); retryErr == nil {
 			return nil
@@ -1093,11 +1207,27 @@ func buildNanoClawAgentImage(profileDir, image string) error {
 	return nil
 }
 
-func runDockerBuild(cmd *exec.Cmd, dir string, output io.Writer) error {
+func runDockerBuild(cmd *exec.Cmd, dir string, output io.Writer, buildKit bool) error {
 	cmd.Dir = dir
+	cmd.Env = dockerBuildEnv(os.Environ(), buildKit)
 	cmd.Stdout = output
 	cmd.Stderr = output
 	return cmd.Run()
+}
+
+func dockerBuildEnv(env []string, buildKit bool) []string {
+	result := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "DOCKER_BUILDKIT=") {
+			continue
+		}
+		result = append(result, entry)
+	}
+	value := "0"
+	if buildKit {
+		value = "1"
+	}
+	return append(result, "DOCKER_BUILDKIT="+value)
 }
 
 func buildNanoClawAgentImageWithRelaxedLockfile(dockerPath, containerDir, image string, logFile *os.File) error {
@@ -1116,20 +1246,29 @@ func buildNanoClawAgentImageWithRelaxedLockfile(dockerPath, containerDir, image 
 	if err != nil {
 		return fmt.Errorf("read relaxed NanoClaw Dockerfile: %w", err)
 	}
-	relaxed, ok := relaxBunFrozenLockfile(string(data))
-	if !ok {
-		return fmt.Errorf("Dockerfile does not contain frozen Bun install command")
+	content := string(data)
+	relaxed, relaxedLockfile := relaxBunFrozenLockfile(content)
+	legacy, strippedMounts := stripDockerBuildKitMounts(relaxed)
+	if !relaxedLockfile && !strippedMounts {
+		return fmt.Errorf("Dockerfile does not contain a known relaxed-build fallback target")
 	}
-	if err := os.WriteFile(dockerfilePath, []byte(relaxed), 0600); err != nil {
+	if err := os.WriteFile(dockerfilePath, []byte(legacy), 0600); err != nil {
 		return fmt.Errorf("write relaxed NanoClaw Dockerfile: %w", err)
 	}
 	cmd := exec.Command(dockerPath, "build", "-t", image, ".")
-	return runDockerBuild(cmd, tmpDir, logFile)
+	return runDockerBuild(cmd, tmpDir, logFile, false)
 }
 
 func relaxBunFrozenLockfile(dockerfile string) (string, bool) {
 	relaxed := strings.ReplaceAll(dockerfile, "bun install --frozen-lockfile", "bun install")
 	return relaxed, relaxed != dockerfile
+}
+
+var dockerBuildKitMountPattern = regexp.MustCompile(`RUN[ \t]+(?:--mount=[^ \t\r\n]+(?:[ \t]*\\\r?\n[ \t]*|[ \t]+))+`)
+
+func stripDockerBuildKitMounts(dockerfile string) (string, bool) {
+	stripped := dockerBuildKitMountPattern.ReplaceAllString(dockerfile, "RUN ")
+	return stripped, stripped != dockerfile
 }
 
 func copyDirectory(src, dst string) error {

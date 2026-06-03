@@ -242,6 +242,30 @@ func TestOrchestratorAppliesFingerprintViaJuggler(t *testing.T) {
 	}
 }
 
+func TestApplyFingerprintContinuesWhenContextFingerprintMethodUnsupported(t *testing.T) {
+	fake := testutil.NewFakeJugglerTransport(t)
+	fake.RespondError("Browser.setContextFingerprint", "ERROR: method 'Browser.setContextFingerprint' is not supported")
+
+	client := juggler.NewClient(fake)
+	defer client.Close()
+
+	fp := vault.FingerprintData{
+		Platform:      "MacIntel",
+		UserAgent:     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+		WebGLVendor:   "Apple",
+		WebGLRenderer: "Apple M1",
+	}
+	fpJSON, _ := json.Marshal(fp)
+
+	o := New(nil, client, nil, pool.Config{PreWarm: 0, MaxActive: 1, MaxUsesPerSlot: 50}, "")
+	if err := o.applyFingerprintToContext("ctx-old-browser", 12, string(fpJSON), "", ""); err != nil {
+		t.Fatalf("applyFingerprintToContext should not fail on unsupported Browser.setContextFingerprint: %v", err)
+	}
+	if got := len(fake.CallsByMethod("Browser.setContextFingerprint")); got != 1 {
+		t.Fatalf("setContextFingerprint calls = %d, want 1", got)
+	}
+}
+
 func TestOrchestratorSanitizesCamoufoxUserAgent(t *testing.T) {
 	fake := testutil.NewFakeJugglerTransport(t)
 	fake.RespondJSON("Browser.setCookies", map[string]any{})

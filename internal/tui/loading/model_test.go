@@ -23,3 +23,28 @@ func TestLoadingViewFitsTinyTerminal(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadingStatusMsgUpdatesSecondaryLine(t *testing.T) {
+	m := New("Launching VulpineOS")
+	model, _ := m.Update(StatusMsg("Preparing NanoClaw agents..."))
+	m = model.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "Preparing NanoClaw agents...") {
+		t.Fatalf("view missing updated status:\n%s", view)
+	}
+	if strings.Contains(view, "Starting VulpineOS kernel...") {
+		t.Fatalf("view still contains default status:\n%s", view)
+	}
+}
+
+func TestLoadingStatusMsgIgnoresBlankStatus(t *testing.T) {
+	m := New("Launching VulpineOS")
+	model, _ := m.Update(StatusMsg("   "))
+	m = model.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "Starting VulpineOS kernel...") {
+		t.Fatalf("view should keep default status for blank update:\n%s", view)
+	}
+}

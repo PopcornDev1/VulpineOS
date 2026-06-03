@@ -2,7 +2,9 @@ package nanoclaw
 
 import (
 	"bufio"
+	"crypto/sha1"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"os"
@@ -503,5 +505,59 @@ INSERT INTO agent_groups (id, name, folder, created_at) VALUES ('ag-1', 'existin
 	}
 	if provider != "opencode" || gotModel != model {
 		t.Fatalf("provider/model = %q/%q, want opencode/%s", provider, gotModel, model)
+	}
+}
+
+func TestNanoClawContainerProviderRoutesUnsupportedProvidersThroughOpenCode(t *testing.T) {
+	for _, provider := range []string{"openai-oauth", "codex", "openrouter", "opencode-go"} {
+		if got := nanoClawContainerProvider(provider); got != "opencode" {
+			t.Fatalf("nanoClawContainerProvider(%q) = %q, want opencode", provider, got)
+		}
+	}
+}
+
+func TestEnsureNanoClawContainerConfigReportsProviderModelChanges(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "v2.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE container_configs (agent_group_id TEXT PRIMARY KEY, provider TEXT, model TEXT, updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+
+	changed, err := ensureNanoClawContainerConfig(db, "ag-1", "openai-oauth", "openai/gpt-4.1")
+	if err != nil {
+		t.Fatalf("first ensure: %v", err)
+	}
+	if !changed {
+		t.Fatal("first ensure should report config change")
+	}
+	changed, err = ensureNanoClawContainerConfig(db, "ag-1", "openai-oauth", "openai/gpt-4.1")
+	if err != nil {
+		t.Fatalf("second ensure: %v", err)
+	}
+	if changed {
+		t.Fatal("second ensure with same config should not report change")
+	}
+	changed, err = ensureNanoClawContainerConfig(db, "ag-1", "deepseek", "deepseek/deepseek-v4-flash")
+	if err != nil {
+		t.Fatalf("deepseek ensure: %v", err)
+	}
+	if !changed {
+		t.Fatal("provider/model switch should report config change")
+	}
+}
+
+func TestNanoClawInstallLabelUsesProfileHash(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nanoclaw")
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("abs dir: %v", err)
+	}
+	sum := sha1.Sum([]byte(abs))
+	want := "nanoclaw-install=" + hex.EncodeToString(sum[:])[:8]
+	if got := nanoClawInstallLabel(dir); got != want {
+		t.Fatalf("nanoClawInstallLabel() = %q, want %q", got, want)
 	}
 }

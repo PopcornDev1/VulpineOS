@@ -240,7 +240,7 @@ func (db *DB) AppendMessageWithDisplay(agentID, role, content, displayContent st
 func (db *DB) GetMessages(agentID string) ([]AgentMessage, error) {
 	rows, err := db.conn.Query(
 		`SELECT id, agent_id, role, content, COALESCE(display_content, ''), tokens, timestamp
-		 FROM agent_messages WHERE agent_id = ? ORDER BY timestamp ASC, id ASC`, agentID,
+		 FROM agent_messages WHERE agent_id = ? AND role NOT IN ('stream', 'activity') ORDER BY timestamp ASC, id ASC`, agentID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get messages: %w", err)
@@ -264,7 +264,7 @@ func (db *DB) GetMessages(agentID string) ([]AgentMessage, error) {
 func (db *DB) GetRecentMessages(agentID string, limit int) ([]AgentMessage, error) {
 	rows, err := db.conn.Query(
 		`SELECT id, agent_id, role, content, COALESCE(display_content, ''), tokens, timestamp
-		 FROM agent_messages WHERE agent_id = ?
+		 FROM agent_messages WHERE agent_id = ? AND role NOT IN ('stream', 'activity')
 		 ORDER BY timestamp DESC, id DESC LIMIT ?`, agentID, limit,
 	)
 	if err != nil {

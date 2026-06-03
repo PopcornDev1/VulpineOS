@@ -180,6 +180,50 @@ func TestAppendAndGetMessages(t *testing.T) {
 	}
 }
 
+func TestTransientMessagesAreHiddenFromHistoryReads(t *testing.T) {
+	db := openTestDB(t)
+
+	agent, err := db.CreateAgent("ChatBot", "chat", "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.AppendMessage(agent.ID, "user", "Hello", 1); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	if err := db.AppendMessage(agent.ID, "stream", "partial raw chunk", 0); err != nil {
+		t.Fatalf("append stream: %v", err)
+	}
+	if err := db.AppendMessage(agent.ID, "activity", "Opening example.com", 0); err != nil {
+		t.Fatalf("append activity: %v", err)
+	}
+	if err := db.AppendMessage(agent.ID, "assistant", "Final reply", 2); err != nil {
+		t.Fatalf("append assistant: %v", err)
+	}
+
+	for name, read := range map[string]func() ([]AgentMessage, error){
+		"all": func() ([]AgentMessage, error) { return db.GetMessages(agent.ID) },
+		"recent": func() ([]AgentMessage, error) {
+			return db.GetRecentMessages(agent.ID, 10)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			msgs, err := read()
+			if err != nil {
+				t.Fatalf("read messages: %v", err)
+			}
+			if len(msgs) != 2 {
+				t.Fatalf("messages = %d, want 2: %#v", len(msgs), msgs)
+			}
+			for _, msg := range msgs {
+				if msg.Role == "stream" || msg.Role == "activity" {
+					t.Fatalf("transient message should be hidden: %#v", msgs)
+				}
+			}
+		})
+	}
+}
+
 func TestAppendMessageWithDisplayPersistsCanonicalAndDisplayContent(t *testing.T) {
 	db := openTestDB(t)
 

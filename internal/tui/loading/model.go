@@ -19,10 +19,14 @@ var (
 // DoneMsg signals that background work is complete.
 type DoneMsg struct{}
 
+// StatusMsg updates the secondary loading status line.
+type StatusMsg string
+
 // Model is a loading spinner shown while the kernel starts.
 type Model struct {
 	spinner spinner.Model
 	message string
+	status  string
 	width   int
 	height  int
 	done    bool
@@ -33,7 +37,7 @@ func New(message string) Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(purple)
-	return Model{spinner: s, message: message}
+	return Model{spinner: s, message: message, status: "Starting VulpineOS kernel..."}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -52,6 +56,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case DoneMsg:
 		m.done = true
 		return m, tea.Quit
+	case StatusMsg:
+		if status := strings.TrimSpace(string(msg)); status != "" {
+			m.status = status
+		}
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -71,7 +79,7 @@ func (m Model) View() string {
 	}
 	lines := []string{
 		fitLoadingLine(m.spinner.View()+" "+textStyle.Render(m.message), width),
-		fitLoadingLine(hintStyle.Render("Starting VulpineOS kernel..."), width),
+		fitLoadingLine(hintStyle.Render(m.status), width),
 	}
 	if m.height > 0 && len(lines) > m.height {
 		lines = lines[:m.height]
