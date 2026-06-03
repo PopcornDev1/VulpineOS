@@ -195,7 +195,7 @@ index 7a076768d0..a6f0d96a36 100644
 
 +// Timezone interface for per-context timezone spoofing
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::TimezoneManager::IsFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setTimezone(DOMString timezone);
 +};
 +

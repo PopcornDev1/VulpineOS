@@ -1,22 +1,28 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"vulpineos/internal/agentbus"
 	"vulpineos/internal/agentcore"
 	"vulpineos/internal/costtrack"
+	"vulpineos/internal/extensions"
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/kernel"
 	"vulpineos/internal/pagecache"
 	"vulpineos/internal/pool"
 	"vulpineos/internal/proxy"
 	"vulpineos/internal/recording"
+	"vulpineos/internal/rendercohort"
 	"vulpineos/internal/security"
 	"vulpineos/internal/vault"
 	"vulpineos/internal/webhooks"
@@ -67,6 +73,21 @@ type Orchestrator struct {
 	agentToSlot          map[string]*pool.ContextSlot
 	persistentAgentSlots map[string]bool
 	agentToSlotMu        sync.Mutex
+
+	// Central per-context network-identity registry keyed by userContextId.
+	// The full set is flushed to the networklab shmem as a ctx-<id> map so the
+	// NSS NetworkIdentityManager applies the right TLS identity per context.
+	netIdentities   map[uint32]*networklab.Identity
+	netIdentitiesMu sync.Mutex
+
+	// Per-context render cohorts (optional, private-provider backed). The
+	// shared cohort config blobs are delivered once; each agent context is then
+	// pinned to one cohort by key. Empty when no provider is available, in which
+	// case per-context render isolation stays off and agents fall back to the
+	// synthetic per-context fingerprint surfaces.
+	renderCohorts     []extensions.RenderCohort
+	renderCohortReady bool
+	renderCohortMu    sync.Mutex
 }
 
 // Opts holds optional subsystem dependencies for the orchestrator.
@@ -150,7 +171,7 @@ func (o *Orchestrator) SpawnCitizen(citizenID, templateID string) (string, error
 	}
 
 	// Apply citizen identity to context
-	if err := o.applyCitizenToContext(slot.ContextID, citizen); err != nil {
+	if err := o.applyCitizenToContext(slot.ContextID, slot.UserContextID, citizen); err != nil {
 		o.Pool.Release(slot)
 		return "", fmt.Errorf("apply citizen: %w", err)
 	}
@@ -210,7 +231,7 @@ func (o *Orchestrator) SpawnNomad(templateID string) (string, error) {
 	}
 
 	// Apply default network identity based on host OS
-	o.applyDefaultNetworkIdentity(slot.ContextID, session.ID)
+	o.applyDefaultNetworkIdentity(slot.ContextID, slot.UserContextID, session.ID)
 
 	// Write SOP and spawn agent
 	sopFile, err := writeSOPFile(tmpl.SOP)
@@ -283,7 +304,7 @@ func (o *Orchestrator) EnsureAgentBrowserContext(agent *vault.Agent) (string, er
 		return "", fmt.Errorf("parse agent metadata: %w", err)
 	}
 	if meta.ContextID != "" {
-		if err := o.applyAgentToContext(meta.ContextID, agent); err == nil {
+		if err := o.applyAgentToContext(meta.ContextID, meta.UserContextID, agent); err == nil {
 			o.agentToSlotMu.Lock()
 			o.persistentAgentSlots[agent.ID] = true
 			o.agentToSlotMu.Unlock()
@@ -297,12 +318,13 @@ func (o *Orchestrator) EnsureAgentBrowserContext(agent *vault.Agent) (string, er
 	if err != nil {
 		return "", fmt.Errorf("acquire agent context: %w", err)
 	}
-	if err := o.applyAgentToContext(slot.ContextID, agent); err != nil {
+	if err := o.applyAgentToContext(slot.ContextID, slot.UserContextID, agent); err != nil {
 		o.Pool.Discard(slot)
 		return "", fmt.Errorf("apply agent identity: %w", err)
 	}
 
 	meta.ContextID = slot.ContextID
+	meta.UserContextID = slot.UserContextID
 	metadata := vault.MarshalAgentMetadata(meta)
 	if o.Vault != nil {
 		if err := o.Vault.UpdateAgentMetadata(agent.ID, metadata); err != nil {
@@ -335,6 +357,10 @@ func (o *Orchestrator) ReleaseAgentContext(agentID string) {
 	}
 	delete(o.persistentAgentSlots, agentID)
 	o.agentToSlotMu.Unlock()
+
+	if ok {
+		o.unregisterNetworkIdentity(slot.UserContextID)
+	}
 
 	var meta vault.AgentMetadata
 	var hasMetadata bool
@@ -416,7 +442,7 @@ func (o *Orchestrator) Close() {
 	o.PageCache = nil
 }
 
-func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Citizen) error {
+func (o *Orchestrator) applyCitizenToContext(contextID string, userContextID uint32, citizen *vault.Citizen) error {
 	// Restore cached page state if resuming
 	if o.PageCache != nil {
 		if state := o.PageCache.Load(citizen.ID); state != nil {
@@ -443,13 +469,13 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Ci
 	}
 
 	if citizen.Fingerprint != "" {
-		if err := o.applyFingerprintToContext(contextID, citizen.Fingerprint, citizen.Locale, citizen.Timezone); err != nil {
+		if err := o.applyFingerprintToContext(contextID, userContextID, citizen.Fingerprint, citizen.Locale, citizen.Timezone, citizen.ID); err != nil {
 			return err
 		}
 	}
 
 	// Apply network identity (TLS fingerprint) and proxy for this citizen
-	o.applyCitizenNetworkIdentity(contextID, citizen)
+	o.applyCitizenNetworkIdentity(contextID, userContextID, citizen)
 
 	// Apply security protections (CSP + sandbox) when enabled
 	if o.SecurityEnabled {
@@ -459,16 +485,16 @@ func (o *Orchestrator) applyCitizenToContext(contextID string, citizen *vault.Ci
 	return nil
 }
 
-func (o *Orchestrator) applyAgentToContext(contextID string, agent *vault.Agent) error {
+func (o *Orchestrator) applyAgentToContext(contextID string, userContextID uint32, agent *vault.Agent) error {
 	if agent == nil {
 		return fmt.Errorf("agent not found")
 	}
 	if agent.Fingerprint != "" {
-		if err := o.applyFingerprintToContext(contextID, agent.Fingerprint, agent.Locale, agent.Timezone); err != nil {
+		if err := o.applyFingerprintToContext(contextID, userContextID, agent.Fingerprint, agent.Locale, agent.Timezone, agent.ID); err != nil {
 			return err
 		}
 	}
-	if err := o.applyNetworkIdentity(contextID, agent); err != nil {
+	if err := o.applyNetworkIdentity(contextID, userContextID, agent); err != nil {
 		log.Printf("orchestrator: warning: failed to apply network identity for agent %s: %v", agent.ID, err)
 	}
 	if agent.ProxyConfig != "" {
@@ -482,7 +508,67 @@ func (o *Orchestrator) applyAgentToContext(contextID string, agent *vault.Agent)
 	return nil
 }
 
-func (o *Orchestrator) applyFingerprintToContext(contextID, fpJSON, explicitLocale, explicitTimezone string) error {
+// buildContextFingerprintPrefs builds the privileged-side per-context
+// fingerprint delivery: roverfox.s.<key>_<userContextId> prefs for the
+// high-entropy surfaces NOT covered by the stock per-context Browser.*Override
+// calls (webgl vendor/renderer, audio seed, font-spacing seed, oscpu, hardware
+// concurrency, WebRTC IP). The C++ managers read these prefs per-context on
+// every page load, so no content-world window.set* call is needed and those
+// setters stay invisible to web content (ChromeOnly). Returns nil when there
+// is nothing to set. (Font list and the WebGL 147-param set are not pref-backed
+// — see FINGERPRINT_SECURE_PLAN.md Phase 2.1.)
+func buildContextFingerprintPrefs(fp vault.FingerprintData, userContextID uint32) []map[string]interface{} {
+	type kv struct{ key, val string }
+	var items []kv
+	addStr := func(key, val string) {
+		if val != "" {
+			items = append(items, kv{key, val})
+		}
+	}
+	addStr("webgl_vendor", fp.WebGLVendor)
+	addStr("webgl_renderer", fp.WebGLRenderer)
+	if fp.AudioSeed != 0 {
+		items = append(items, kv{"audioFingerprintSeed", strconv.FormatUint(uint64(fp.AudioSeed), 10)})
+	}
+	if fp.FontSpacingSeed != 0 {
+		items = append(items, kv{"seed", strconv.FormatUint(uint64(fp.FontSpacingSeed), 10)})
+	}
+	addStr("nav_oscpu", fp.OsCPU)
+	if fp.HardwareConcurrency > 0 {
+		items = append(items, kv{"nav_hwc", strconv.Itoa(fp.HardwareConcurrency)})
+	}
+	addStr("webrtc_ipv4", fp.WebRTCIPv4)
+	addStr("webrtc_ipv6", fp.WebRTCIPv6)
+	// The 147-param WebGL set, delivered per-context as a JSON blob the C++
+	// WebGLParamsManager reads (roverfox.s.webgl_params_<ucid> / webgl2_params).
+	if len(fp.WebGLParams) > 0 {
+		items = append(items, kv{"webgl_params", string(fp.WebGLParams)})
+	}
+	if len(fp.WebGL2Params) > 0 {
+		items = append(items, kv{"webgl2_params", string(fp.WebGL2Params)})
+	}
+	// Per-context WebGL extension lists (JSON arrays) the C++ WebGLParamsManager
+	// reads (roverfox.s.webgl_extensions_<ucid> / webgl2_extensions_<ucid>).
+	if len(fp.WebGLExtensions) > 0 {
+		items = append(items, kv{"webgl_extensions", string(fp.WebGLExtensions)})
+	}
+	if len(fp.WebGL2Extensions) > 0 {
+		items = append(items, kv{"webgl2_extensions", string(fp.WebGL2Extensions)})
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	prefs := make([]map[string]interface{}, 0, len(items))
+	for _, it := range items {
+		prefs = append(prefs, map[string]interface{}{
+			"name":  fmt.Sprintf("roverfox.s.%s_%d", it.key, userContextID),
+			"value": it.val,
+		})
+	}
+	return prefs
+}
+
+func (o *Orchestrator) applyFingerprintToContext(contextID string, userContextID uint32, fpJSON, explicitLocale, explicitTimezone, seed string) error {
 	raw := map[string]interface{}{}
 	if err := json.Unmarshal([]byte(fpJSON), &raw); err != nil {
 		return fmt.Errorf("parse fingerprint: %w", err)
@@ -596,6 +682,33 @@ func (o *Orchestrator) applyFingerprintToContext(contextID, fpJSON, explicitLoca
 		}
 	}
 
+	// Clear any per-context fingerprint prefs left from a prior agent on this
+	// (possibly reused) userContextId so it cannot inherit a stale identity,
+	// then deliver this context's values.
+	if _, err := o.Client.Call("", "Browser.clearContextFingerprint", map[string]interface{}{
+		"userContextId": userContextID,
+	}); err != nil {
+		log.Printf("orchestrator: warning: clear context fingerprint failed for ctx %d: %v", userContextID, err)
+	}
+
+	// Per-context high-entropy surfaces (webgl/audio/font-spacing/oscpu/hwconc/
+	// webrtc) that the stock overrides above do not cover: deliver them from the
+	// privileged side as roverfox.s.<key>_<userContextId> prefs, which the C++
+	// managers read per-context on every page load. No content-world setter is
+	// involved, so the window.set* methods stay invisible to web content.
+	if prefs := buildContextFingerprintPrefs(fp, userContextID); len(prefs) > 0 {
+		if _, err := o.Client.Call("", "Browser.setContextFingerprint", map[string]interface{}{
+			"prefs": prefs,
+		}); err != nil {
+			return fmt.Errorf("set context fingerprint: %w", err)
+		}
+	}
+
+	// Per-context render isolation: pin this context to one real-device render
+	// cohort (matched to the claimed OS) when a private provider supplies them.
+	// Best-effort — render coherence must not block the rest of the identity.
+	o.applyRenderCohort(userContextID, seed, firstNonEmpty(fp.Platform, stringField(raw, "navigator.platform")))
+
 	uaSummary := ua
 	if len(uaSummary) > 40 {
 		uaSummary = uaSummary[:40] + "..."
@@ -603,6 +716,119 @@ func (o *Orchestrator) applyFingerprintToContext(contextID, fpJSON, explicitLoca
 	log.Printf("orchestrator: fingerprint applied to context %s (ua=%s, screen=%dx%d)",
 		contextID, uaSummary, width, height)
 	return nil
+}
+
+// renderCohortPrefChunkSize bounds each cohort-config pref chunk below the
+// browser's 1 MB per-pref limit (MAX_PREF_LENGTH), leaving generous headroom.
+const renderCohortPrefChunkSize = 512 * 1024
+
+// chunkRenderCohortBlob splits an (already gzip+base64) cohort blob into pieces
+// no larger than size, in order. The content process concatenates the
+// renderlab_cfg_<key>_<i> chain back together before decoding.
+func chunkRenderCohortBlob(blob string, size int) []string {
+	if size <= 0 {
+		return []string{blob}
+	}
+	var chunks []string
+	for len(blob) > size {
+		chunks = append(chunks, blob[:size])
+		blob = blob[size:]
+	}
+	if len(blob) > 0 {
+		chunks = append(chunks, blob)
+	}
+	return chunks
+}
+
+// ensureRenderCohorts lazily delivers the shared per-cohort render config blobs
+// (and the per-context mode flag) to the browser exactly once, and returns the
+// available cohorts. The blobs are shared cohort data (one copy per cohort,
+// ref-counted in the content process), so they are set with ucid-independent
+// pref names that survive clearContextFingerprint. Returns ok=false (and leaves
+// per-context render isolation off) when no provider, no cohorts, or delivery
+// fails — the attempt is made only once regardless of outcome.
+func (o *Orchestrator) ensureRenderCohorts() ([]extensions.RenderCohort, bool) {
+	o.renderCohortMu.Lock()
+	defer o.renderCohortMu.Unlock()
+	if o.renderCohortReady {
+		return o.renderCohorts, len(o.renderCohorts) > 0
+	}
+	o.renderCohortReady = true // attempt once; on failure stay empty (feature off)
+
+	provider := extensions.Registry.RenderCohort()
+	if provider == nil || !provider.Available() {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cohorts, err := provider.Cohorts(ctx)
+	if err != nil {
+		if !errors.Is(err, extensions.ErrUnavailable) {
+			log.Printf("orchestrator: render cohorts unavailable: %v", err)
+		}
+		return nil, false
+	}
+
+	// Turn on per-context render mode, then deliver each cohort's config blob in
+	// its own call so a single oversized RPC frame is never sent.
+	if _, err := o.Client.Call("", "Browser.setContextFingerprint", map[string]interface{}{
+		"prefs": []map[string]interface{}{{"name": "roverfox.s.renderlab_pc_enabled", "value": "1"}},
+	}); err != nil {
+		log.Printf("orchestrator: warning: enable per-context render mode failed: %v", err)
+		return nil, false
+	}
+	valid := make([]extensions.RenderCohort, 0, len(cohorts))
+	for _, c := range cohorts {
+		if strings.TrimSpace(c.Key) == "" || strings.TrimSpace(c.ConfigBlob) == "" {
+			continue
+		}
+		// The cohort blob routinely exceeds the browser's 1 MB per-pref limit, so
+		// deliver it as a chunk chain renderlab_cfg_<key>_1, _2, ... that the
+		// content process reassembles. Each chunk stays well under the limit.
+		chunks := chunkRenderCohortBlob(c.ConfigBlob, renderCohortPrefChunkSize)
+		prefs := make([]map[string]interface{}, 0, len(chunks))
+		for i, chunk := range chunks {
+			prefs = append(prefs, map[string]interface{}{
+				"name":  fmt.Sprintf("roverfox.s.renderlab_cfg_%s_%d", c.Key, i+1),
+				"value": chunk,
+			})
+		}
+		if _, err := o.Client.Call("", "Browser.setContextFingerprint", map[string]interface{}{
+			"prefs": prefs,
+		}); err != nil {
+			log.Printf("orchestrator: warning: deliver render cohort %s failed: %v", c.Key, err)
+			continue
+		}
+		valid = append(valid, c)
+	}
+	o.renderCohorts = valid
+	log.Printf("orchestrator: per-context render isolation: delivered %d cohort(s)", len(valid))
+	return o.renderCohorts, len(valid) > 0
+}
+
+// applyRenderCohort pins a single browser context to one render cohort matched
+// to the claimed OS, by setting the small per-context selector pref the content
+// process reads. No-op when per-context render isolation is unavailable or no
+// cohort matches the claimed OS.
+func (o *Orchestrator) applyRenderCohort(userContextID uint32, seed, claimedOS string) {
+	cohorts, ok := o.ensureRenderCohorts()
+	if !ok {
+		return
+	}
+	cohort, ok := rendercohort.Assign(cohorts, seed, claimedOS)
+	if !ok {
+		return
+	}
+	if _, err := o.Client.Call("", "Browser.setContextFingerprint", map[string]interface{}{
+		"prefs": []map[string]interface{}{{
+			"name":  fmt.Sprintf("roverfox.s.renderlab_cohort_%d", userContextID),
+			"value": cohort.Key,
+		}},
+	}); err != nil {
+		log.Printf("orchestrator: warning: render cohort assign failed for ctx %d: %v", userContextID, err)
+		return
+	}
+	log.Printf("orchestrator: render cohort %s pinned to context %d", cohort.Key, userContextID)
 }
 
 // applySecurityToContext injects CSP headers and logs sandbox activation for a context.
@@ -661,6 +887,7 @@ func (o *Orchestrator) handleTerminalAgentStatus(agentID string) {
 	}
 	o.agentToSlotMu.Unlock()
 	if ok {
+		o.unregisterNetworkIdentity(slot.UserContextID)
 		o.Pool.Release(slot)
 	}
 }
@@ -880,18 +1107,56 @@ func (o *Orchestrator) AgentRuntimeConfig(contextID string) (func(), error) {
 func profileFamilyForPlatform(platform string) string {
 	switch {
 	case strings.Contains(platform, "Win"), strings.Contains(platform, "Windows"):
-		return "firefox131_windows"
+		return "firefox146_windows"
 	case strings.Contains(platform, "Linux"), strings.Contains(platform, "linux"):
-		return "firefox131_linux"
+		return "firefox146_linux"
 	default:
-		return "firefox131_macos"
+		return "firefox146_macos"
 	}
 }
 
 // createNetworklabIdentity creates a networklab identity from a fingerprint string
 // and writes it to shared memory for the Camoufox NetworkIdentityManager to consume.
 // Returns the identity, computed hashes, and the profile family name.
-func (o *Orchestrator) createNetworklabIdentity(fingerprint string, contextID string) (*networklab.Identity, *networklab.IdentityHashes, string, error) {
+// registerNetworkIdentity records the identity for a context (keyed by the
+// numeric userContextId) and flushes the full set to the networklab shmem as a
+// ctx-<id> map, so each context's TLS identity is applied independently.
+func (o *Orchestrator) registerNetworkIdentity(userContextID uint32, nid *networklab.Identity) {
+	o.netIdentitiesMu.Lock()
+	defer o.netIdentitiesMu.Unlock()
+	if o.netIdentities == nil {
+		o.netIdentities = make(map[uint32]*networklab.Identity)
+	}
+	o.netIdentities[userContextID] = nid
+	o.flushNetworkIdentitiesLocked()
+}
+
+// unregisterNetworkIdentity drops a context's identity and rewrites the shmem so
+// a torn-down context's TLS identity is not left applying to a reused id.
+func (o *Orchestrator) unregisterNetworkIdentity(userContextID uint32) {
+	o.netIdentitiesMu.Lock()
+	defer o.netIdentitiesMu.Unlock()
+	if o.netIdentities == nil {
+		return
+	}
+	delete(o.netIdentities, userContextID)
+	o.flushNetworkIdentitiesLocked()
+}
+
+// flushNetworkIdentitiesLocked writes the current registry to shmem. Caller
+// must hold netIdentitiesMu. A single entry serializes to the top-level form
+// (applies to every context); multiple entries serialize to the ctx-<id> map.
+func (o *Orchestrator) flushNetworkIdentitiesLocked() {
+	m := make(map[string]*networklab.Identity, len(o.netIdentities))
+	for ucid, nid := range o.netIdentities {
+		m[fmt.Sprintf("ctx-%d", ucid)] = nid
+	}
+	if err := networklab.WriteIdentities(m); err != nil {
+		log.Printf("orchestrator: failed to flush %d network identities to shmem: %v", len(m), err)
+	}
+}
+
+func (o *Orchestrator) createNetworklabIdentity(fingerprint string, contextID string, userContextID uint32) (*networklab.Identity, *networklab.IdentityHashes, string, error) {
 	var fp vault.FingerprintData
 	if err := json.Unmarshal([]byte(fingerprint), &fp); err != nil {
 		return nil, nil, "", fmt.Errorf("parse fingerprint: %w", err)
@@ -905,20 +1170,18 @@ func (o *Orchestrator) createNetworklabIdentity(fingerprint string, contextID st
 	if err != nil {
 		return nil, nil, family, fmt.Errorf("hashes on %s: %w", family, err)
 	}
-	if err := networklab.WriteCurrentIdentity(nid); err != nil {
-		log.Printf("orchestrator: failed to write network identity to shmem for context %s: %v", contextID, err)
-	}
+	o.registerNetworkIdentity(userContextID, nid)
 	return nid, hashes, family, nil
 }
 
 // applyNetworkIdentity creates a networklab identity for the agent and stores
 // its metadata in the vault. The identity is also written to shared memory so
 // the Camoufox NetworkIdentityManager applies TLS parameters per socket.
-func (o *Orchestrator) applyNetworkIdentity(contextID string, agent *vault.Agent) error {
+func (o *Orchestrator) applyNetworkIdentity(contextID string, userContextID uint32, agent *vault.Agent) error {
 	if agent == nil || agent.Fingerprint == "" {
 		return nil
 	}
-	_, hashes, family, err := o.createNetworklabIdentity(agent.Fingerprint, contextID)
+	_, hashes, family, err := o.createNetworklabIdentity(agent.Fingerprint, contextID, userContextID)
 	if err != nil {
 		log.Printf("orchestrator: networklab identity unavailable for %s on %s: %v", agent.ID, family, err)
 		return nil
@@ -957,11 +1220,11 @@ func (o *Orchestrator) applyNetworkIdentity(contextID string, agent *vault.Agent
 
 // applyCitizenNetworkIdentity applies networklab identity and proxy for a citizen
 // context. Called from SpawnCitizen since citizens have fingerprints and proxies.
-func (o *Orchestrator) applyCitizenNetworkIdentity(contextID string, citizen *vault.Citizen) {
+func (o *Orchestrator) applyCitizenNetworkIdentity(contextID string, userContextID uint32, citizen *vault.Citizen) {
 	if citizen.Fingerprint == "" {
 		return
 	}
-	_, hashes, family, err := o.createNetworklabIdentity(citizen.Fingerprint, contextID)
+	_, hashes, family, err := o.createNetworklabIdentity(citizen.Fingerprint, contextID, userContextID)
 	if err != nil {
 		log.Printf("orchestrator: citizen networklab identity unavailable for %s: %v", citizen.ID, err)
 		return
@@ -979,7 +1242,7 @@ func (o *Orchestrator) applyCitizenNetworkIdentity(contextID string, citizen *va
 // applyDefaultNetworkIdentity creates a default networklab identity based on the
 // host OS platform and writes it to shared memory. Used by nomad sessions and
 // other ephemeral contexts that lack a stored fingerprint.
-func (o *Orchestrator) applyDefaultNetworkIdentity(contextID, ownerID string) {
+func (o *Orchestrator) applyDefaultNetworkIdentity(contextID string, userContextID uint32, ownerID string) {
 	family := profileFamilyForPlatform(vault.DefaultPlatformForHostOS())
 	nid, err := networklab.NewIdentity(family)
 	if err != nil {
@@ -991,9 +1254,7 @@ func (o *Orchestrator) applyDefaultNetworkIdentity(contextID, ownerID string) {
 		log.Printf("orchestrator: default networklab hashes unavailable for %s on %s: %v", ownerID, family, err)
 		return
 	}
-	if err := networklab.WriteCurrentIdentity(nid); err != nil {
-		log.Printf("orchestrator: failed to write default network identity to shmem for %s on context %s: %v", ownerID, contextID, err)
-	}
+	o.registerNetworkIdentity(userContextID, nid)
 	log.Printf("orchestrator: nomad %s default network identity %s → JA3=%s JA4=%s (context=%s)",
 		ownerID, family, hashes.JA3, hashes.JA4, contextID)
 }

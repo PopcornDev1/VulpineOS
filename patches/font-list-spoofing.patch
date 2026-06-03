@@ -218,7 +218,7 @@ index xxxxxxxxxx..yyyyyyyyyy 100644
 
 +// Per-context font list
 +partial interface Window {
-+  [Throws, Func="mozilla::dom::FontListManager::IsFunctionEnabledForWebIDL"]
++  [Throws, ChromeOnly]
 +  undefined setFontList(DOMString fontList);
 +};
 +

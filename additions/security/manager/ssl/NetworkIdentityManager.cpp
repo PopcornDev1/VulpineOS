@@ -1,3 +1,11 @@
+// PUBLIC DEFAULT — see NetworkIdentityManager.h.
+//
+// Self-contained open-source default. Alternate builds replace this file (and
+// its header) via their build overlay at build time. Do NOT paste an
+// overlay-provided implementation here: the public and overlay headers declare
+// different signatures, so copying the overlay .cpp over this one will fail to
+// compile against the public header — and would leak build-specific code into
+// the public repository.
 #include "NetworkIdentityManager.h"
 
 #include "mozilla/Logging.h"

@@ -42,7 +42,9 @@ type registry struct {
 	credentials CredentialProvider
 	audio       AudioCapturer
 	mobile      MobileBridge
-	sentinel    SentinelProvider
+	sentinel     SentinelProvider
+	fingerprint  FingerprintProvider
+	renderCohort RenderCohortProvider
 }
 
 // Credentials returns the currently-registered credential provider.
@@ -121,13 +123,53 @@ func (r *registry) SetSentinel(p SentinelProvider) {
 	r.sentinel = p
 }
 
+// Fingerprint returns the currently-registered fingerprint provider.
+// Always non-nil; returns the no-op default when nothing is registered.
+func (r *registry) Fingerprint() FingerprintProvider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.fingerprint
+}
+
+// SetFingerprint registers a fingerprint provider. Intended to be called
+// from init() in build-tagged extension files.
+func (r *registry) SetFingerprint(p FingerprintProvider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p == nil {
+		p = defaultFingerprintProvider
+	}
+	r.fingerprint = p
+}
+
+// RenderCohort returns the currently-registered render cohort provider.
+// Always non-nil; returns the no-op default when nothing is registered.
+func (r *registry) RenderCohort() RenderCohortProvider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.renderCohort
+}
+
+// SetRenderCohort registers a render cohort provider. Intended to be called
+// from init() in build-tagged extension files.
+func (r *registry) SetRenderCohort(p RenderCohortProvider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p == nil {
+		p = defaultRenderCohortProvider
+	}
+	r.renderCohort = p
+}
+
 // Registry is the global provider registry. It is a pointer so that
 // alternate builds can mutate it from their own init() functions.
 var Registry = &registry{
 	credentials: defaultCredentialProvider,
 	audio:       defaultAudioCapturer,
 	mobile:      defaultMobileBridge,
-	sentinel:    defaultSentinelProvider,
+	sentinel:     defaultSentinelProvider,
+	fingerprint:  defaultFingerprintProvider,
+	renderCohort: defaultRenderCohortProvider,
 }
 
 // privateProviders holds constructors supplied by local build-tagged
@@ -136,10 +178,12 @@ var Registry = &registry{
 // the struct zero-valued so every entry is nil and InitWithClient becomes
 // a no-op.
 var privateProviders = struct {
-	Vault    func(jc JugglerCallable) CredentialProvider
-	Audio    func(jc JugglerCallable) AudioCapturer
-	Mobile   func(jc JugglerCallable) MobileBridge
-	Sentinel func(jc JugglerCallable) SentinelProvider
+	Vault       func(jc JugglerCallable) CredentialProvider
+	Audio       func(jc JugglerCallable) AudioCapturer
+	Mobile      func(jc JugglerCallable) MobileBridge
+	Sentinel     func(jc JugglerCallable) SentinelProvider
+	Fingerprint  func() FingerprintProvider
+	RenderCohort func() RenderCohortProvider
 }{}
 
 // Init is called once at startup before a juggler client is available.
@@ -157,6 +201,20 @@ func Init() {
 // Passing a nil jc is allowed and skips registration entirely — that
 // is the default-build path.
 func InitWithClient(jc JugglerCallable) {
+	// The fingerprint provider generates identity config offline and needs no
+	// juggler client, so wire it regardless of jc (including the Init()/nil path).
+	if privateProviders.Fingerprint != nil {
+		if p := privateProviders.Fingerprint(); p != nil {
+			Registry.SetFingerprint(p)
+		}
+	}
+	// Render cohorts are produced offline from verified runtime bundles and need
+	// no juggler client, so wire the provider on the Init()/nil path too.
+	if privateProviders.RenderCohort != nil {
+		if p := privateProviders.RenderCohort(); p != nil {
+			Registry.SetRenderCohort(p)
+		}
+	}
 	if jc == nil {
 		return
 	}
