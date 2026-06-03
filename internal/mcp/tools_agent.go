@@ -420,56 +420,85 @@ func handleScreenshotDiff(client *juggler.Client, tracker *ScreenshotTracker, ar
 }
 
 // handlePageSettled waits until the page is fully loaded and stable.
-// Combines network idle + DOM stability + no pending animations.
+// Uses two success conditions:
+//   - Network idle: performance resource count stable for 600ms (works for SPAs)
+//   - DOM stability: full state snapshot identical for 600ms (fast path for static pages)
+// Accepts as soon as EITHER condition is met, preventing timeout on modern SPAs.
 func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
 	var p struct {
 		SessionID string `json:"sessionId"`
-		Timeout   int    `json:"timeout"` // seconds, default 10
+		Timeout   int    `json:"timeout"` // seconds, default 30
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return errorResult(err), nil
 	}
 
-	timeout := 10
+	timeout := 30
 	if p.Timeout > 0 {
 		timeout = p.Timeout
 	}
 
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
-	stableCount := 0
-	requiredStable := 3 // need 3 consecutive stable checks (900ms of stability)
-	var lastSize string
+	var lastSnapshot string
+	var lastResourceCount string
+	var networkIdleCount int
+	var domStableCount int
 
 	for time.Now().Before(deadline) {
-		js := `JSON.stringify({
-			readyState: document.readyState,
-			bodyLen: document.body ? document.body.innerHTML.length : 0,
-			images: Array.from(document.images).filter(i => !i.complete).length,
-			url: window.location.href,
-		})`
+		js := `(() => {
+			let rc = 0;
+			try { rc = performance.getEntriesByType('resource').length; } catch(e) {}
+			return JSON.stringify({
+				readyState: document.readyState,
+				bodyLen: document.body ? document.body.innerHTML.length : 0,
+				resourceCount: rc,
+				url: window.location.href
+			});
+		})()`
 		result, err := evalJS(client, tracker, p.SessionID, js)
 		if err != nil {
 			time.Sleep(300 * time.Millisecond)
 			continue
 		}
 
-		if result == lastSize {
-			stableCount++
-		} else {
-			stableCount = 0
-			lastSize = result
+		var state struct {
+			ReadyState    string `json:"readyState"`
+			BodyLen       int    `json:"bodyLen"`
+			ResourceCount int    `json:"resourceCount"`
+			URL           string `json:"url"`
+		}
+		json.Unmarshal([]byte(result), &state)
+
+		// Don't proceed until readyState is complete
+		if state.ReadyState != "complete" {
+			lastSnapshot = ""
+			lastResourceCount = ""
+			networkIdleCount = 0
+			domStableCount = 0
+			time.Sleep(300 * time.Millisecond)
+			continue
 		}
 
-		if stableCount >= requiredStable {
-			var state struct {
-				ReadyState string `json:"readyState"`
-				BodyLen    int    `json:"bodyLen"`
-				Images     int    `json:"images"`
-				URL        string `json:"url"`
-			}
-			json.Unmarshal([]byte(result), &state)
-			return textResult(fmt.Sprintf("Page settled: readyState=%s, bodyLen=%d, pendingImages=%d, url=%s",
-				state.ReadyState, state.BodyLen, state.Images, state.URL)), nil
+		// Condition A: network idle — resource count unchanged for 2 polls
+		rc := fmt.Sprintf("%d", state.ResourceCount)
+		if rc == lastResourceCount {
+			networkIdleCount++
+		} else {
+			networkIdleCount = 0
+			lastResourceCount = rc
+		}
+
+		// Condition B: DOM stability — full snapshot unchanged for 2 polls
+		if result == lastSnapshot {
+			domStableCount++
+		} else {
+			domStableCount = 0
+			lastSnapshot = result
+		}
+
+		if networkIdleCount >= 2 || domStableCount >= 2 {
+			return textResult(fmt.Sprintf("Page settled: readyState=%s, bodyLen=%d, url=%s",
+				state.ReadyState, state.BodyLen, state.URL)), nil
 		}
 
 		time.Sleep(300 * time.Millisecond)
