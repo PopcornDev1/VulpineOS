@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -99,15 +100,20 @@ func TestLivePerContextFingerprintIsolation(t *testing.T) {
 		t.Fatalf("two contexts share userContextId %d — not isolated", a.UserContextID)
 	}
 
-	// C delivery: register per-context init scripts seeding audio differently.
+	// C delivery: seed audio per-context via the privileged roverfox pref path —
+	// the same path production uses (orchestrator buildContextFingerprintPrefs)
+	// and that AudioFingerprintManager::GetSeed reads. The older content-world
+	// window.setAudioFingerprintSeed setter is now [ChromeOnly], so init-script
+	// delivery from content no longer reaches it.
 	const seedA, seedB = 111111, 222222
 	setSeed := func(c ctxInfo, seed int) {
-		script := fmt.Sprintf("(function(){try{if(typeof window.setAudioFingerprintSeed==='function')window.setAudioFingerprintSeed(%d);}catch(e){}})();", seed)
-		if _, err := client.Call("", "Browser.setInitScripts", mustJSON(map[string]interface{}{
-			"browserContextId": c.BrowserContextID,
-			"scripts":          []map[string]interface{}{{"script": script}},
+		if _, err := client.Call("", "Browser.setContextFingerprint", mustJSON(map[string]interface{}{
+			"prefs": []map[string]interface{}{{
+				"name":  fmt.Sprintf("roverfox.s.audioFingerprintSeed_%d", c.UserContextID),
+				"value": strconv.Itoa(seed),
+			}},
 		})); err != nil {
-			t.Fatalf("setInitScripts(ctx=%s): %v", c.BrowserContextID, err)
+			t.Fatalf("setContextFingerprint(ctx=%d): %v", c.UserContextID, err)
 		}
 	}
 	setSeed(a, seedA)
