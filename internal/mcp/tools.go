@@ -562,17 +562,6 @@ func handleNavigate(client *juggler.Client, tracker *ContextTracker, args json.R
 	globalLabels.Clear(p.SessionID)
 	resetSnapshotProfile(p.SessionID)
 
-	// Wait up to 15s for the new execution context to appear. This way
-	// the next tool call (e.g. vulpine_page_settled) can immediately
-	// evaluate JS instead of spending the first several seconds in
-	// ContextTracker.Resolve's AX tree probe.
-	for waitStart := time.Now(); time.Since(waitStart) < 15*time.Second; {
-		if ctx := tracker.Get(p.SessionID); ctx != nil && ctx.ExecutionContextID != "" {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-
 	return textResult(fmt.Sprintf("Navigated to %s", p.URL)), nil
 }
 
@@ -748,7 +737,7 @@ func handleScroll(client *juggler.Client, tracker *ContextTracker, args json.Raw
 		return errorResult(err), nil
 	}
 
-	result, err := evalJS(client, tracker, p.SessionID, fmt.Sprintf(`(() => {
+	result, err := evalJS(client, p.SessionID, fmt.Sprintf(`(() => {
 		window.scrollBy(0, %f);
 		return Math.round(window.scrollY);
 	})()`, p.DeltaY))

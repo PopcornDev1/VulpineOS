@@ -65,7 +65,7 @@ func checkCondition(client *juggler.Client, tracker *ContextTracker, sessionID, 
 				window.getComputedStyle(el).visibility !== 'hidden';
 			return JSON.stringify({found: true, visible: visible, text: el.textContent.substring(0, 100)});
 		})()`, selector)
-		result, err := evalJS(client, tracker, sessionID, js)
+		result, err := evalJS(client, sessionID, js)
 		if err != nil {
 			return false, "", nil // page might not be ready yet
 		}
@@ -83,7 +83,7 @@ func checkCondition(client *juggler.Client, tracker *ContextTracker, sessionID, 
 	case "text":
 		// Check if page body contains specific text
 		js := `document.body.innerText`
-		result, err := evalJS(client, tracker, sessionID, js)
+		result, err := evalJS(client, sessionID, js)
 		if err != nil {
 			return false, "", nil
 		}
@@ -99,7 +99,7 @@ func checkCondition(client *juggler.Client, tracker *ContextTracker, sessionID, 
 			const recent = entries.filter(e => (performance.now() - e.startTime) < 500 && e.duration === 0);
 			return JSON.stringify({pending: recent.length});
 		})()`
-		result, err := evalJS(client, tracker, sessionID, js)
+		result, err := evalJS(client, sessionID, js)
 		if err != nil {
 			return false, "", nil
 		}
@@ -115,12 +115,12 @@ func checkCondition(client *juggler.Client, tracker *ContextTracker, sessionID, 
 	case "domStable":
 		// Take two snapshots 300ms apart and compare
 		js := `document.documentElement.innerHTML.length`
-		result1, err := evalJS(client, tracker, sessionID, js)
+		result1, err := evalJS(client, sessionID, js)
 		if err != nil {
 			return false, "", nil
 		}
 		time.Sleep(300 * time.Millisecond)
-		result2, err := evalJS(client, tracker, sessionID, js)
+		result2, err := evalJS(client, sessionID, js)
 		if err != nil {
 			return false, "", nil
 		}
@@ -131,7 +131,7 @@ func checkCondition(client *juggler.Client, tracker *ContextTracker, sessionID, 
 
 	case "urlContains":
 		js := `window.location.href`
-		result, err := evalJS(client, tracker, sessionID, js)
+		result, err := evalJS(client, sessionID, js)
 		if err != nil {
 			return false, "", nil
 		}
@@ -214,7 +214,7 @@ func handleFind(client *juggler.Client, tracker *ContextTracker, args json.RawMe
 		return JSON.stringify(results);
 	})()`, p.Query, p.Role, maxResults)
 
-	result, err := evalJS(client, tracker, p.SessionID, js)
+	result, err := evalJS(client, p.SessionID, js)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -271,7 +271,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 	switch p.Check {
 	case "exists":
 		js := fmt.Sprintf(`!!document.querySelector(%q)`, p.Selector)
-		result, err := evalJS(client, tracker, p.SessionID, js)
+		result, err := evalJS(client, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -288,7 +288,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 			const style = window.getComputedStyle(el);
 			return (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') ? "visible" : "hidden";
 		})()`, p.Selector)
-		result, err := evalJS(client, tracker, p.SessionID, js)
+		result, err := evalJS(client, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -302,7 +302,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 			const el = document.querySelector(%q);
 			return el ? String(el.checked) : "not_found";
 		})()`, p.Selector)
-		result, err := evalJS(client, tracker, p.SessionID, js)
+		result, err := evalJS(client, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -316,7 +316,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 			const el = document.querySelector(%q);
 			return el ? el.value : "not_found";
 		})()`, p.Selector)
-		result, err := evalJS(client, tracker, p.SessionID, js)
+		result, err := evalJS(client, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -330,7 +330,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 			const el = document.querySelector(%q);
 			return el ? el.textContent.trim() : "not_found";
 		})()`, p.Selector)
-		result, err := evalJS(client, tracker, p.SessionID, js)
+		result, err := evalJS(client, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -341,7 +341,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 
 	case "url":
 		js := `window.location.href`
-		result, err := evalJS(client, tracker, p.SessionID, js)
+		result, err := evalJS(client, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -352,7 +352,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 
 	case "title":
 		js := `document.title`
-		result, err := evalJS(client, tracker, p.SessionID, js)
+		result, err := evalJS(client, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -455,7 +455,7 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 				url: window.location.href
 			});
 		})()`
-		result, err := evalJS(client, tracker, p.SessionID, js)
+		result, err := evalJS(client, p.SessionID, js)
 		if err != nil {
 			time.Sleep(300 * time.Millisecond)
 			continue
@@ -542,7 +542,7 @@ func handleSelectOption(client *juggler.Client, tracker *ContextTracker, args js
 		return errorResult(fmt.Errorf("either value or text is required")), nil
 	}
 
-	result, err := evalJS(client, tracker, p.SessionID, js)
+	result, err := evalJS(client, p.SessionID, js)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -584,7 +584,7 @@ func handleFillForm(client *juggler.Client, tracker *ContextTracker, args json.R
 			return "ok";
 		})()`, selector, value)
 
-		result, err := evalJS(client, tracker, p.SessionID, js)
+		result, err := evalJS(client, p.SessionID, js)
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("%s: %v", selector, err))
 			continue
@@ -631,7 +631,7 @@ func handleGetPageInfo(client *juggler.Client, tracker *ContextTracker, args jso
 		alerts: 0,
 	})`
 
-	result, err := evalJS(client, tracker, p.SessionID, js)
+	result, err := evalJS(client, p.SessionID, js)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -716,7 +716,7 @@ func handleClearInput(client *juggler.Client, tracker *ContextTracker, args json
 			el.dispatchEvent(new Event('change', {bubbles: true}));
 			return "ok";
 		})()`, p.Selector)
-		result, err := evalJS(client, tracker, p.SessionID, js)
+		result, err := evalJS(client, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -734,7 +734,7 @@ func handleClearInput(client *juggler.Client, tracker *ContextTracker, args json
 		el.dispatchEvent(new Event('change', {bubbles: true}));
 		return "ok";
 	})()`
-	result, err := evalJS(client, tracker, p.SessionID, js)
+	result, err := evalJS(client, p.SessionID, js)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -789,7 +789,7 @@ func handleGetFormErrors(client *juggler.Client, tracker *ContextTracker, args j
 		return JSON.stringify({errors: errors, count: errors.length});
 	})()`, sel)
 
-	result, err := evalJS(client, tracker, p.SessionID, js)
+	result, err := evalJS(client, p.SessionID, js)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -799,21 +799,18 @@ func handleGetFormErrors(client *juggler.Client, tracker *ContextTracker, args j
 // --- Helper functions ---
 
 // evalJS evaluates JavaScript and returns the string result.
-func evalJS(client *juggler.Client, tracker *ContextTracker, sessionID, expression string) (string, error) {
+// Fully resolves the execution context when possible for determinism,
+// but falls back to calling Runtime.evaluate without a context ID so
+// that SPAs which create new targets on navigation (e.g. cross-origin
+// redirects in Fission) don't permanently break tool loops.
+func evalJS(client *juggler.Client, sessionID, expression string) (string, error) {
 	if client == nil {
 		return "", fmt.Errorf("no browser connection")
 	}
-	if tracker == nil {
-		return "", fmt.Errorf("no context tracker")
-	}
-	ctx, err := tracker.Resolve(sessionID)
-	if err != nil {
-		return "", err
-	}
+
 	result, err := client.Call(sessionID, "Runtime.evaluate", map[string]interface{}{
-		"expression":         expression,
-		"returnByValue":      true,
-		"executionContextId": ctx.ExecutionContextID,
+		"expression":    expression,
+		"returnByValue": true,
 	})
 	if err != nil {
 		return "", err

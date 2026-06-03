@@ -227,7 +227,7 @@ func handleHumanType(client *juggler.Client, tracker *ContextTracker, args json.
 		key := string(ks.Char)
 
 		if ks.IsCorrection {
-			result, err := evalJS(client, tracker, p.SessionID, humaninput.BackspaceExpression())
+			result, err := evalJS(client, p.SessionID, humaninput.BackspaceExpression())
 			if err != nil {
 				return errorResult(err), nil
 			}
@@ -240,7 +240,7 @@ func handleHumanType(client *juggler.Client, tracker *ContextTracker, args json.
 			continue
 		}
 
-		result, err := evalJS(client, tracker, p.SessionID, humaninput.InsertTextExpression(key))
+		result, err := evalJS(client, p.SessionID, humaninput.InsertTextExpression(key))
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -292,7 +292,7 @@ func handleHumanScroll(client *juggler.Client, tracker *ContextTracker, args jso
 			delta = remaining
 		}
 
-		_, err := evalJS(client, tracker, p.SessionID, fmt.Sprintf(`(() => {
+		_, err := evalJS(client, p.SessionID, fmt.Sprintf(`(() => {
 			window.scrollBy(0, %f);
 			return Math.round(window.scrollY);
 		})()`, delta))

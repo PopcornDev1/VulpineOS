@@ -113,7 +113,7 @@ func TestEvalJSHelper_NotPanicsOnNilClient(t *testing.T) {
 			t.Errorf("evalJS panicked: %v", r)
 		}
 	}()
-	_, err := evalJS(nil, nil, "session", "1+1")
+	_, err := evalJS(nil, "session", "1+1")
 	if err == nil {
 		t.Error("expected error with nil client")
 	}
