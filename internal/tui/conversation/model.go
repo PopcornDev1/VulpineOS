@@ -646,7 +646,22 @@ func (m *Model) clampScroll() {
 // Messages are bottom-aligned: empty space at top, messages grow upward from the input box.
 // Input box is framed by dividers above and below.
 func (m Model) View() string {
+	return m.view("")
+}
+
+// ViewWithCommandPalette renders the conversation with an inline command palette
+// shown just above the chat input. Pass an empty string for no palette.
+func (m Model) ViewWithCommandPalette(palette string) string {
+	return m.view(palette)
+}
+
+func (m Model) view(palette string) string {
 	var b strings.Builder
+
+	var paletteLines []string
+	if strings.TrimSpace(palette) != "" {
+		paletteLines = strings.Split(palette, "\n")
+	}
 
 	dividerWidth := m.width - 2
 	if dividerWidth < 1 {
@@ -656,7 +671,8 @@ func (m Model) View() string {
 
 	// No agent selected — show centered prompt
 	if m.agentID == "" {
-		for i := 0; i < m.height/2-2; i++ {
+		topPad := m.height/2 - 2 - len(paletteLines)
+		for i := 0; i < topPad; i++ {
 			b.WriteString("\n")
 		}
 		b.WriteString(shared.MutedStyle.Render("  Press "))
@@ -666,6 +682,10 @@ func (m Model) View() string {
 		b.WriteString(shared.MutedStyle.Render("  Or use the "))
 		b.WriteString(shared.KeyStyle.Render("↑/↓"))
 		b.WriteString(shared.MutedStyle.Render(" arrow keys to select an agent"))
+		for _, line := range paletteLines {
+			b.WriteString("\n")
+			b.WriteString(line)
+		}
 		return b.String()
 	}
 
@@ -698,8 +718,8 @@ func (m Model) View() string {
 	}
 
 	// Calculate available lines for messages
-	// Layout (bottom to top): divider(1) + input(1) + divider(1) + thinking(0-1) + messages + title(1)
-	bottomLines := 3 // divider + input + divider
+	// Layout (bottom to top): divider(1) + input(1) + divider(1) + palette(0-n) + thinking(0-1) + messages + title(1)
+	bottomLines := 3 + len(paletteLines) // divider + input + divider + palette
 	if m.thinking {
 		bottomLines++
 	}
@@ -760,6 +780,12 @@ func (m Model) View() string {
 	// 4. Thinking indicator
 	if m.thinking {
 		b.WriteString(thinkingLine)
+		b.WriteString("\n")
+	}
+
+	// 4b. Inline command palette (above the input)
+	for _, line := range paletteLines {
+		b.WriteString(line)
 		b.WriteString("\n")
 	}
 

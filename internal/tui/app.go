@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,8 @@ import (
 	"vulpineos/internal/runtimeaudit"
 	"vulpineos/internal/tui/agentdetail"
 	"vulpineos/internal/tui/agentlist"
+	"vulpineos/internal/tui/agentpicker"
+	"vulpineos/internal/tui/commandpalette"
 	"vulpineos/internal/tui/contextlist"
 	"vulpineos/internal/tui/conversation"
 	"vulpineos/internal/tui/settings"
@@ -188,14 +191,16 @@ type App struct {
 	focus         int // 0=agentlist, 1=conversation, 2=agentdetail, 3=contexts
 
 	// Panels
-	systemInfo   systeminfo.Model
-	agentList    agentlist.Model
-	agentDetail  agentdetail.Model
-	conversation conversation.Model
-	contextList  contextlist.Model
-	settings     settings.Model
-	setupWizard  *setup.Model
-	setupActive  bool
+	systemInfo     systeminfo.Model
+	agentList      agentlist.Model
+	agentDetail    agentdetail.Model
+	conversation   conversation.Model
+	contextList    contextlist.Model
+	settings       settings.Model
+	setupWizard    *setup.Model
+	setupActive    bool
+	commandPalette commandpalette.Model
+	agentPicker    *agentpicker.Model
 
 	// State
 	selectedAgentID         string
@@ -275,6 +280,7 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		conversation:      conversation.New(),
 		contextList:       contextlist.New(),
 		settings:          settings.New(),
+		commandPalette:    commandpalette.New(),
 		liveAgentContexts: make(map[string]string),
 		eventCh:           eventCh,
 		eventIn:           eventIn,
@@ -836,8 +842,25 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Agent picker modal owns key/size input while open; it emits
+	// AgentPickerPickedMsg / AgentPickerCancelledMsg (handled in the switch below).
+	if a.agentPicker != nil {
+		switch msg.(type) {
+		case tea.KeyMsg, tea.WindowSizeMsg:
+			model, cmd := a.agentPicker.Update(msg)
+			if p, ok := model.(*agentpicker.Model); ok {
+				a.agentPicker = p
+			}
+			return a, cmd
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// The slash-command palette owns key input whenever it is open.
+		if a.commandPalette.Active() {
+			return a.updateCommandPaletteInput(msg)
+		}
 		// Handle input modes first
 		switch a.inputMode {
 		case "new-agent-name":
@@ -1005,48 +1028,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.contextList.MoveDown()
 			}
 		case "S":
-			if a.control != nil {
-				a.notice = "Loading remote settings..."
-				a.noticeTTL = 3
-				return a, a.loadRemoteSettings()
+			return a, a.openSettings()
+		case "/":
+			if a.selectedAgentID != "" {
+				a.focus = FocusConversation
+				a.inputMode = "chat"
+				a.conversation.Focus()
 			}
-			a.focus = FocusSettings
-			a.settings.SetActive(true)
-			a.settings.SetConfig(a.cfg)
-			// Load proxies from vault
-			if a.vault != nil {
-				storedProxies, err := a.vault.ListProxies()
-				if err == nil {
-					items := make([]settings.ProxyItem, len(storedProxies))
-					for i, sp := range storedProxies {
-						items[i] = settings.ProxyItem{
-							ID:      sp.ID,
-							Label:   safeProxyLabel(sp.Label),
-							Config:  sp.Config,
-							Latency: "untested",
-						}
-						// Try to parse config for display
-						var pc struct {
-							Type string `json:"type"`
-							Host string `json:"host"`
-							Port int    `json:"port"`
-						}
-						if json.Unmarshal([]byte(sp.Config), &pc) == nil {
-							items[i].Type = pc.Type
-							items[i].Host = pc.Host
-							items[i].Port = pc.Port
-						}
-						// Try to parse geo for country
-						var geo struct {
-							Country string `json:"country"`
-						}
-						if json.Unmarshal([]byte(sp.Geo), &geo) == nil {
-							items[i].Country = geo.Country
-						}
-					}
-					a.settings.SetProxies(items)
-				}
-			}
+			a.syncCommandPaletteAgents()
+			a.commandPalette.Activate()
 			return a, nil
 		case "c":
 			return a, a.startEmbeddedReconfigure()
@@ -1056,6 +1046,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width = msg.Width
 		a.height = msg.Height
 		a.updatePanelSizes()
+
+	case commandpalette.ExecuteCommandMsg:
+		return a, a.dispatchCommand(msg.Name, msg.RawInput)
+
+	case shared.AgentPickerPickedMsg:
+		a.agentPicker = nil
+		if msg.AgentID != "" {
+			a.agentList.SelectAgentID(msg.AgentID)
+			cmds = append(cmds, a.selectCurrentAgent())
+			a.markAgentSelected(msg.AgentID)
+		}
+
+	case shared.AgentPickerCancelledMsg:
+		a.agentPicker = nil
 
 	case shared.TickMsg:
 		// Decrement notice TTL; only clear when it reaches 0
@@ -1706,12 +1710,24 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// The command palette owns input while open (it filters from the chat box).
+	if a.commandPalette.Active() {
+		return a.updateCommandPaletteInput(msg)
+	}
+
 	if msg.Type == tea.KeyRunes && msg.Paste {
 		if !a.conversation.Focused() {
 			a.conversation.Focus()
 		}
 		a.conversation.InsertPastedContent(string(msg.Runes))
 		return a, nil
+	}
+
+	// "/" on an empty input opens the slash-command palette.
+	if msg.String() == "/" && strings.TrimSpace(a.conversation.TextInput().Value()) == "" {
+		a.syncCommandPaletteAgents()
+		a.commandPalette.Activate()
+		return a.updateCommandPaletteInput(msg)
 	}
 
 	switch msg.String() {
@@ -1762,6 +1778,197 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		*ti, cmd = ti.Update(msg)
 		return a, cmd
 	}
+}
+
+// updateCommandPaletteInput routes keys while the slash-command palette is open.
+// The chat textinput keeps the typed query (so the user sees "/foo") and each
+// keystroke re-filters the palette; navigation/selection keys drive the palette.
+func (a App) updateCommandPaletteInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return a, a.shutdown()
+	case "esc", "enter":
+		var cmd tea.Cmd
+		a.commandPalette, cmd = a.commandPalette.Update(msg)
+		a.conversation.TextInput().Reset()
+		return a, cmd
+	case "up", "down":
+		var cmd tea.Cmd
+		a.commandPalette, cmd = a.commandPalette.Update(msg)
+		return a, cmd
+	}
+
+	ti := a.conversation.TextInput()
+	if !a.conversation.Focused() {
+		a.conversation.Focus()
+	}
+	var cmd tea.Cmd
+	*ti, cmd = ti.Update(msg)
+	if strings.TrimSpace(ti.Value()) == "" {
+		a.commandPalette.Deactivate()
+		return a, cmd
+	}
+	a.commandPalette.SetQuery(ti.Value())
+	return a, cmd
+}
+
+// syncCommandPaletteAgents loads the most-recently-selected agents into the
+// palette as quick-switch shortcuts (top 3 by last-selected time).
+func (a *App) syncCommandPaletteAgents() {
+	a.commandPalette.SetAgents(a.topRecentAgents(3))
+}
+
+// topRecentAgents returns up to n agents ordered by most-recently selected.
+func (a App) topRecentAgents(n int) []commandpalette.Agent {
+	items := a.agentList.Agents()
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].LastSelectedAt.After(items[j].LastSelectedAt)
+	})
+	if len(items) > n {
+		items = items[:n]
+	}
+	out := make([]commandpalette.Agent, 0, len(items))
+	for _, it := range items {
+		out = append(out, commandpalette.Agent{ID: it.ID, Name: it.Name, Status: it.Status})
+	}
+	return out
+}
+
+// markAgentSelected records a switch to the given agent for recency ranking.
+func (a *App) markAgentSelected(agentID string) {
+	if a.vault != nil {
+		_ = a.vault.MarkAgentSelected(agentID, time.Now())
+	}
+	a.syncCommandPaletteAgents()
+}
+
+// openAgentPicker opens the full agent-picker modal over all agents.
+func (a *App) openAgentPicker() {
+	items := a.agentList.Agents()
+	agents := make([]commandpalette.Agent, 0, len(items))
+	for _, it := range items {
+		agents = append(agents, commandpalette.Agent{ID: it.ID, Name: it.Name, Status: it.Status})
+	}
+	picker := agentpicker.New(agents)
+	if a.width > 0 && a.height > 0 {
+		picker.SetSize(a.width, a.height)
+	}
+	a.agentPicker = picker
+}
+
+// openSettings opens the settings panel (remote or local) and loads proxies.
+func (a *App) openSettings() tea.Cmd {
+	if a.control != nil {
+		a.notice = "Loading remote settings..."
+		a.noticeTTL = 3
+		return a.loadRemoteSettings()
+	}
+	a.focus = FocusSettings
+	a.settings.SetActive(true)
+	a.settings.SetConfig(a.cfg)
+	if a.vault != nil {
+		if storedProxies, err := a.vault.ListProxies(); err == nil {
+			items := make([]settings.ProxyItem, len(storedProxies))
+			for i, sp := range storedProxies {
+				items[i] = settings.ProxyItem{
+					ID:      sp.ID,
+					Label:   safeProxyLabel(sp.Label),
+					Config:  sp.Config,
+					Latency: "untested",
+				}
+				var pc struct {
+					Type string `json:"type"`
+					Host string `json:"host"`
+					Port int    `json:"port"`
+				}
+				if json.Unmarshal([]byte(sp.Config), &pc) == nil {
+					items[i].Type = pc.Type
+					items[i].Host = pc.Host
+					items[i].Port = pc.Port
+				}
+				var geo struct {
+					Country string `json:"country"`
+				}
+				if json.Unmarshal([]byte(sp.Geo), &geo) == nil {
+					items[i].Country = geo.Country
+				}
+			}
+			a.settings.SetProxies(items)
+		}
+	}
+	return nil
+}
+
+// dispatchCommand runs a command selected from the slash-command palette,
+// mapping each name to the same action as its keyboard shortcut.
+func (a *App) dispatchCommand(name, rawInput string) tea.Cmd {
+	switch name {
+	case "help":
+		a.syncCommandPaletteAgents()
+		a.commandPalette.Activate()
+	case "quit":
+		return a.shutdown()
+	case "new":
+		if a.orch != nil || a.control != nil {
+			a.newAgentContext = ""
+			a.inputMode = "new-agent-name"
+			a.nameInput.Focus()
+			return textinput.Blink
+		}
+		a.notice = "No orchestrator available"
+		a.noticeTTL = 3
+	case "rename":
+		if a.selectedAgentID == "" {
+			a.notice = "No agent selected"
+			a.noticeTTL = 3
+			break
+		}
+		if a.vault == nil {
+			a.notice = "Rename unavailable without local vault access"
+			a.noticeTTL = 3
+			break
+		}
+		agent, err := a.vault.GetAgent(a.selectedAgentID)
+		if err != nil {
+			a.notice = "Failed to get agent: " + err.Error()
+			a.noticeTTL = 3
+			break
+		}
+		a.renameAgentID = a.selectedAgentID
+		a.renameInput.SetValue(agent.Name)
+		a.inputMode = "rename"
+		a.renameInput.Focus()
+		return textinput.Blink
+	case "delete":
+		if a.selectedAgentID == "" {
+			a.notice = "No agent selected"
+			a.noticeTTL = 3
+			break
+		}
+		if a.control != nil && !isLiveAgentStatus(a.selectedAgentStatus()) {
+			a.notice = "Remote kill is only available for live agents"
+			a.noticeTTL = 3
+			break
+		}
+		return a.deleteAgent(a.selectedAgentID)
+	case "copy":
+		return a.handleYankResponse()
+	case "view":
+		return a.handleBrowserToggle()
+	case "hide":
+		return a.handleHideAll()
+	case "log":
+		return a.handleOpenSessionLog()
+	case "trace":
+		a.handleTraceToggle()
+	case "settings":
+		return a.openSettings()
+	case "config", "model":
+		return a.startEmbeddedReconfigure()
+	case "agents":
+		a.openAgentPicker()
+	}
+	return nil
 }
 
 func (a App) allowFocusedChatShortcut(msg tea.KeyMsg) bool {
@@ -2092,6 +2299,23 @@ type workbenchWidths struct {
 	right  int
 }
 
+// conversationView renders the conversation, overlaying the inline slash-command
+// palette above the input when it is open.
+func (a App) conversationView(width, height int) string {
+	if !a.commandPalette.Active() {
+		return a.conversation.View()
+	}
+	paletteWidth := width - 4
+	if paletteWidth < 6 {
+		paletteWidth = width
+	}
+	maxHeight := height / 2
+	if maxHeight < 4 {
+		maxHeight = 4
+	}
+	return a.conversation.ViewWithCommandPalette(a.commandPalette.InlineView(paletteWidth, maxHeight))
+}
+
 func (a App) View() string {
 	if a.width == 0 {
 		return "Loading..."
@@ -2107,6 +2331,9 @@ func (a App) View() string {
 		}
 		a.setupWizard = wizard
 		return fitTerminalBlock(wizard.View(), a.width, a.height)
+	}
+	if a.agentPicker != nil {
+		return fitTerminalBlock(a.agentPicker.View(), a.width, a.height)
 	}
 	if a.height < 4 {
 		if a.notice != "" {
@@ -2156,7 +2383,7 @@ func (a App) View() string {
 		case "new-agent-name", "new-agent-desc":
 			convView = a.newAgentInputView()
 		default:
-			convView = a.conversation.View()
+			convView = a.conversationView(centerWidth, bodyHeight)
 		}
 
 		// Full-height conversation panel
@@ -2240,7 +2467,7 @@ func (a App) renderCompactWorkbench() string {
 		content = a.agentDetail.View()
 	case a.focus == FocusConversation:
 		a.conversation.SetSize(contentWidth, contentHeight)
-		content = a.conversation.View()
+		content = a.conversationView(contentWidth, contentHeight)
 	default:
 		panel = FocusAgentList
 		a.agentList.SetWidth(contentWidth)

@@ -170,6 +170,9 @@ func migrateVault(conn *sql.DB) error {
 	if err := ensureColumn(conn, "agent_messages", "display_content", "TEXT DEFAULT ''"); err != nil {
 		return fmt.Errorf("migrate vault agent_messages.display_content: %w", err)
 	}
+	if err := ensureColumn(conn, "agents", "last_selected_at", "INTEGER DEFAULT 0"); err != nil {
+		return fmt.Errorf("migrate vault agents.last_selected_at: %w", err)
+	}
 	return nil
 }
 

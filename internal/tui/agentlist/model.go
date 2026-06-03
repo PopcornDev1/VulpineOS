@@ -14,16 +14,17 @@ import (
 
 // AgentListItem represents one agent in the list.
 type AgentListItem struct {
-	ID          string
-	Name        string
-	Task        string
-	Status      string
-	Tokens      int
-	Fingerprint string
-	ProxyConfig string
-	Metadata    string
-	CreatedAt   time.Time
-	Unread      int
+	ID             string
+	Name           string
+	Task           string
+	Status         string
+	Tokens         int
+	Fingerprint    string
+	ProxyConfig    string
+	Metadata       string
+	CreatedAt      time.Time
+	LastSelectedAt time.Time
+	Unread         int
 }
 
 // Model holds the selectable agent list state.
@@ -80,15 +81,16 @@ func (m *Model) SetAgents(agents []vault.Agent) {
 	m.agents = make([]AgentListItem, len(agents))
 	for i, a := range agents {
 		m.agents[i] = AgentListItem{
-			ID:          a.ID,
-			Name:        a.Name,
-			Task:        a.Task,
-			Status:      a.Status,
-			Tokens:      a.TotalTokens,
-			Fingerprint: a.Fingerprint,
-			ProxyConfig: a.ProxyConfig,
-			Metadata:    a.Metadata,
-			CreatedAt:   a.CreatedAt,
+			ID:             a.ID,
+			Name:           a.Name,
+			Task:           a.Task,
+			Status:         a.Status,
+			Tokens:         a.TotalTokens,
+			Fingerprint:    a.Fingerprint,
+			ProxyConfig:    a.ProxyConfig,
+			Metadata:       a.Metadata,
+			CreatedAt:      a.CreatedAt,
+			LastSelectedAt: a.LastSelectedAt,
 		}
 	}
 	if m.selected >= len(m.agents) {
@@ -126,6 +128,30 @@ func (m Model) SelectedAgent() (AgentListItem, bool) {
 	return m.agents[m.selected], true
 }
 
+// Agents returns a copy of the current agent list items.
+func (m Model) Agents() []AgentListItem {
+	result := make([]AgentListItem, len(m.agents))
+	copy(result, m.agents)
+	return result
+}
+
+// SelectIndex selects the agent at index i, returning true if i is in range.
+func (m *Model) SelectIndex(i int) bool {
+	if i < 0 || i >= len(m.agents) {
+		return false
+	}
+	m.selected = i
+	return true
+}
+
+// SelectedIndex returns the index of the currently selected agent (-1 if none).
+func (m Model) SelectedIndex() int {
+	if len(m.agents) == 0 || m.selected >= len(m.agents) {
+		return -1
+	}
+	return m.selected
+}
+
 // Agent returns an item by ID.
 func (m Model) Agent(id string) (AgentListItem, bool) {
 	for _, agent := range m.agents {
@@ -150,15 +176,16 @@ func (m *Model) SelectAgentID(id string) bool {
 // AddAgent adds a new agent to the list.
 func (m *Model) AddAgent(a vault.Agent) {
 	m.agents = append(m.agents, AgentListItem{
-		ID:          a.ID,
-		Name:        a.Name,
-		Task:        a.Task,
-		Status:      a.Status,
-		Tokens:      a.TotalTokens,
-		Fingerprint: a.Fingerprint,
-		ProxyConfig: a.ProxyConfig,
-		Metadata:    a.Metadata,
-		CreatedAt:   a.CreatedAt,
+		ID:             a.ID,
+		Name:           a.Name,
+		Task:           a.Task,
+		Status:         a.Status,
+		Tokens:         a.TotalTokens,
+		Fingerprint:    a.Fingerprint,
+		ProxyConfig:    a.ProxyConfig,
+		Metadata:       a.Metadata,
+		CreatedAt:      a.CreatedAt,
+		LastSelectedAt: a.LastSelectedAt,
 	})
 }
 
