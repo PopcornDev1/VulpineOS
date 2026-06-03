@@ -700,7 +700,7 @@ func (o *Orchestrator) applyFingerprintToContext(contextID string, userContextID
 		if _, err := o.Client.Call("", "Browser.setContextFingerprint", map[string]interface{}{
 			"prefs": prefs,
 		}); err != nil {
-			return fmt.Errorf("set context fingerprint: %w", err)
+			log.Printf("orchestrator: warning: set context fingerprint failed for ctx %d: %v", userContextID, err)
 		}
 	}
 
