@@ -558,6 +558,10 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		}
 	}()
 
+	if cfg != nil {
+		app.conversation.SetModelLabel(cfg.Model)
+	}
+
 	return app
 }
 
@@ -566,6 +570,7 @@ func (a App) Init() tea.Cmd {
 		a.waitForEvent(),
 		a.tick(),
 		a.replayBrowserTargets(),
+		conversation.InputPulseTick(),
 	}
 	if a.control != nil {
 		cmds = append(cmds, a.loadRemoteAgents())
@@ -1519,6 +1524,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case conversation.ThinkingTickMsg:
+		var cmd tea.Cmd
+		a.conversation, cmd = a.conversation.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
+	case conversation.InputPulseTickMsg:
 		var cmd tea.Cmd
 		a.conversation, cmd = a.conversation.Update(msg)
 		if cmd != nil {
@@ -2799,6 +2811,7 @@ func (a *App) applySetupConfig(updated *config.Config) error {
 			return err
 		}
 		a.cfg = configFromRemoteSummary(result)
+		a.conversation.SetModelLabel(a.cfg.Model)
 		return nil
 	}
 	if a.cfg == nil {
@@ -2808,6 +2821,7 @@ func (a *App) applySetupConfig(updated *config.Config) error {
 	a.cfg.Provider = updated.Provider
 	a.cfg.APIKey = updated.APIKey
 	a.cfg.Model = updated.Model
+	a.conversation.SetModelLabel(updated.Model)
 	a.cfg.SetupComplete = updated.SetupComplete
 	a.cfg.BinaryPath = updated.BinaryPath
 	a.cfg.GlobalSkills = append([]config.SkillEntry(nil), updated.GlobalSkills...)
