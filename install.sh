@@ -274,13 +274,36 @@ install_browser() {
     log "Installed Camoufox: ${browser_bin}"
 }
 
+build_cli_from_source() {
+    local bin_dir="$1"
+    local src_dir="${VULPINEOS_HOME}/src.tmp.$$"
+    local repo_url="https://github.com/${VULPINEOS_REPO}.git"
+
+    log "Building vulpineos CLI from source (git clone + go build)..."
+    rm -rf "${src_dir}"
+    git clone --depth 1 "${repo_url}" "${src_dir}" || fatal "Failed to clone ${VULPINEOS_REPO}."
+    local goos goarch
+    goos="$(detect_goos)"
+    goarch="$(detect_goarch)"
+    (cd "${src_dir}" && go build -o "vulpineos-${goos}-${goarch}" .) || {
+        local exit_code=$?
+        rm -rf "${src_dir}"
+        return ${exit_code}
+    }
+    cp "${src_dir}/vulpineos-${goos}-${goarch}" "${bin_dir}/vulpineos"
+    chmod 0755 "${bin_dir}/vulpineos"
+    rm -rf "${src_dir}"
+    log "Installed CLI (built from source): ${bin_dir}/vulpineos"
+    return 0
+}
+
 main() {
     log "Installing VulpineOS..."
     have python3 || fatal "python3 is required to resolve release assets and update local config."
     have unzip || fatal "unzip is required to extract the Camoufox browser bundle."
     have curl || have wget || fatal "curl or wget is required to download release assets."
 
-    local goos goarch browser_os browser_arch bin_dir asset_env cli_tmp
+    local goos goarch browser_os browser_arch bin_dir asset_env
     goos="$(detect_goos)"
     goarch="$(detect_goarch)"
     browser_os="$(browser_os_for_goos "${goos}")"
@@ -288,16 +311,33 @@ main() {
     bin_dir="$(select_bin_dir)"
 
     mkdir -p "${VULPINEOS_HOME}" "${bin_dir}"
+
+    # Resolve release assets (needed for Camoufox browser, optionally for CLI fallback)
     asset_env="$(resolve_release_assets "${goos}" "${goarch}" "${browser_os}" "${browser_arch}")"
     eval "${asset_env}"
 
     log "Installing VulpineOS release ${VULPINEOS_RELEASE_TAG}..."
-    cli_tmp="${VULPINEOS_HOME}/vulpineos.tmp.$$"
-    rm -f "${cli_tmp}"
-    download_to "${VULPINEOS_CLI_URL}" "${cli_tmp}"
-    chmod 0755 "${cli_tmp}"
-    mv "${cli_tmp}" "${bin_dir}/vulpineos"
-    log "Installed CLI: ${bin_dir}/vulpineos"
+
+    # Install CLI: prefer building from source (always latest), fall back to release binary
+    if have go && have git; then
+        build_cli_from_source "${bin_dir}" || {
+            log "Source build failed, falling back to release binary..."
+            local cli_tmp="${VULPINEOS_HOME}/vulpineos.tmp.$$"
+            rm -f "${cli_tmp}"
+            download_to "${VULPINEOS_CLI_URL}" "${cli_tmp}"
+            chmod 0755 "${cli_tmp}"
+            mv "${cli_tmp}" "${bin_dir}/vulpineos"
+            log "Installed CLI (from release): ${bin_dir}/vulpineos"
+        }
+    else
+        log "Go or git not found, downloading prebuilt CLI from release..."
+        local cli_tmp="${VULPINEOS_HOME}/vulpineos.tmp.$$"
+        rm -f "${cli_tmp}"
+        download_to "${VULPINEOS_CLI_URL}" "${cli_tmp}"
+        chmod 0755 "${cli_tmp}"
+        mv "${cli_tmp}" "${bin_dir}/vulpineos"
+        log "Installed CLI (from release): ${bin_dir}/vulpineos"
+    fi
 
     install_browser "${bin_dir}"
     ensure_bin_dir_on_path "${bin_dir}"
