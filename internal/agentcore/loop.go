@@ -76,7 +76,7 @@ func NewLoop(model Completer, tools ToolDispatcher, events Events, cfg LoopConfi
 		events = NopEvents{}
 	}
 	if cfg.MaxIterations <= 0 {
-		cfg.MaxIterations = 24
+		cfg.MaxIterations = 100
 	}
 	if cfg.KeepFullToolResults <= 0 {
 		cfg.KeepFullToolResults = 3

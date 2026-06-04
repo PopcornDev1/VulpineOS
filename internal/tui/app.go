@@ -891,6 +891,36 @@ func (a App) handleCtrlC() (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+func (a App) handleKillAgent() (tea.Model, tea.Cmd) {
+	if a.selectedAgentID == "" {
+		return a, nil
+	}
+	if a.control != nil {
+		if !isLiveAgentStatus(a.selectedAgentStatus()) {
+			a.notice = "Agent is not running"
+			a.noticeTTL = 3
+			return a, nil
+		}
+		return a, a.remoteAgentStatusCommand("agents.kill", a.selectedAgentID, "interrupted", "Remote agent killed: ")
+	}
+	if a.orch != nil && isLiveAgentStatus(a.selectedAgentStatus()) {
+		if err := a.orch.KillAgent(a.selectedAgentID); err != nil && !strings.Contains(err.Error(), "not found") {
+			a.notice = "Kill failed: " + err.Error()
+			a.noticeTTL = 4
+			return a, nil
+		}
+		a.quitConfirmArmed = false
+		a.conversation.AddEntry("system", "Agent interrupted")
+		a.conversation.SetThinking(false)
+		a.notice = "Agent interrupted"
+		a.noticeTTL = 3
+	} else {
+		a.notice = "No running agent to kill"
+		a.noticeTTL = 3
+	}
+	return a, nil
+}
+
 func (a App) handleCopySelection() (tea.Model, tea.Cmd) {
 	selected := a.conversation.SelectedText()
 	if strings.TrimSpace(selected) == "" {
@@ -1813,6 +1843,8 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			return a.handleCtrlC()
+		case "ctrl+k":
+			return a.handleKillAgent()
 		case "enter":
 			a.notice = "Agent is still working — wait for the current response"
 			a.noticeTTL = 3

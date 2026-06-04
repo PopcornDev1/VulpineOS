@@ -1041,6 +1041,187 @@ func handleGetAXTree(client *juggler.Client, args json.RawMessage) (*ToolCallRes
 	return textResult(string(result)), nil
 }
 
+// resolveRef resolves an AX tree ref to {x, y, found} coordinates. Tries the
+// native Juggler Page.resolveRef first (VulpineOS-enhanced browsers). Falls
+// back to a JS-based approach using Runtime.evaluate when the browser doesn't
+// support the custom Juggler method (stock Camoufox).
+func resolveRef(client *juggler.Client, sessionID, ref string) (x, y float64, found bool, err error) {
+	result, err := client.Call(sessionID, "Page.resolveRef", map[string]interface{}{
+		"ref": ref,
+	})
+	if err == nil {
+		var resolved struct {
+			X     float64 `json:"x"`
+			Y     float64 `json:"y"`
+			Found bool    `json:"found"`
+		}
+		if uerr := json.Unmarshal(result, &resolved); uerr == nil {
+			return resolved.X, resolved.Y, resolved.Found, nil
+		} else {
+			return 0, 0, false, fmt.Errorf("decode Page.resolveRef: %w", uerr)
+		}
+	}
+
+	if !isMethodNotSupported(err) {
+		return 0, 0, false, err
+	}
+
+	// Fallback: re-fetch AX tree, find node by ref, resolve via JS.
+	return resolveRefByJS(client, sessionID, ref)
+}
+
+// resolveRefByJS is the JS-based fallback for Page.resolveRef. It re-fetches
+// the AX tree, finds the node matching ref, extracts identifying properties,
+// and uses Runtime.evaluate to find the matching DOM element's coordinates.
+func resolveRefByJS(client *juggler.Client, sessionID, ref string) (x, y float64, found bool, err error) {
+	axRaw, axErr := client.Call(sessionID, "Accessibility.getFullAXTree", nil)
+	if axErr != nil {
+		return 0, 0, false, fmt.Errorf("resolveRef fallback: getFullAXTree: %w", axErr)
+	}
+
+	var nodes []map[string]interface{}
+	if uerr := json.Unmarshal(axRaw, &nodes); uerr != nil {
+		return 0, 0, false, fmt.Errorf("resolveRef fallback: decode AX tree: %w", uerr)
+	}
+
+	var targetNode map[string]interface{}
+	for _, node := range nodes {
+		r, _ := node["ref"].(string)
+		if r == "" {
+			if rf, ok := node["ref"].(float64); ok {
+				r = fmt.Sprintf("%.0f", rf)
+			}
+		}
+		if r == ref {
+			targetNode = node
+			break
+		}
+	}
+	if targetNode == nil {
+		return 0, 0, false, fmt.Errorf("element ref %s not found in AX tree (stale snapshot?)", ref)
+	}
+
+	role, _ := targetNode["role"].(string)
+	name, _ := targetNode["name"].(string)
+	value, _ := targetNode["value"].(string)
+	tag, _ := targetNode["tag"].(string)
+	if tag == "" {
+		tag = roleToTag(role)
+	}
+
+	// Use JS to find the element by its accessible properties
+	js := fmt.Sprintf(`(() => {
+		const targetRole = %q;
+		const targetName = %q;
+		const targetValue = %q;
+		const targetTag = %q;
+
+		function getAccessibleName(el) {
+			return (el.getAttribute('aria-label') || el.textContent || '').trim();
+		}
+
+		function getAccessibleRole(el) {
+			const role = el.getAttribute('role');
+			if (role) return role;
+			const tag = el.tagName.toLowerCase();
+			const map = {
+				'a': 'link', 'button': 'button', 'input': getInputRole(el),
+				'select': 'combobox', 'textarea': 'textbox', 'h1': 'heading',
+				'h2': 'heading', 'h3': 'heading', 'h4': 'heading', 'h5': 'heading',
+				'h6': 'heading', 'img': 'img', 'nav': 'navigation',
+				'main': 'main', 'header': 'banner', 'footer': 'contentinfo',
+				'table': 'table', 'form': 'form',
+			};
+			return map[tag] || tag;
+		}
+
+		function getInputRole(el) {
+			const t = (el.type || 'text').toLowerCase();
+			if (t === 'checkbox') return 'checkbox';
+			if (t === 'radio') return 'radio';
+			if (t === 'submit' || t === 'button') return 'button';
+			return 'textbox';
+		}
+
+		function matches(el) {
+			const role = getAccessibleRole(el);
+			const name = getAccessibleName(el);
+
+			if (targetRole && role !== targetRole && el.tagName.toLowerCase() !== targetRole) return false;
+
+			if (targetName) {
+				const lowerName = targetName.toLowerCase();
+				const elName = name.toLowerCase();
+				if (!elName.includes(lowerName) && !lowerName.includes(elName)) return false;
+			}
+
+			const rect = el.getBoundingClientRect();
+			return rect.width > 0 && rect.height > 0 && rect.x >= 0 && rect.y >= 0;
+		}
+
+		const interactive = 'a, button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [role="switch"], [role="option"], [tabindex], label, h1, h2, h3, h4, h5, h6, p, span, div, img, nav, main, header, footer, table, form, li, td, th';
+		const elements = document.querySelectorAll(interactive);
+		for (const el of elements) {
+			if (matches(el)) {
+				const rect = el.getBoundingClientRect();
+				return JSON.stringify({
+					x: Math.round(rect.x + rect.width / 2),
+					y: Math.round(rect.y + rect.height / 2),
+					found: true,
+					tag: el.tagName.toLowerCase(),
+				});
+			}
+		}
+
+		// Try all elements if interactive selectors didn't match
+		const all = document.querySelectorAll('*');
+		for (const el of all) {
+			if (matches(el)) {
+				const rect = el.getBoundingClientRect();
+				return JSON.stringify({
+					x: Math.round(rect.x + rect.width / 2),
+					y: Math.round(rect.y + rect.height / 2),
+					found: true,
+					tag: el.tagName.toLowerCase(),
+				});
+			}
+		}
+
+		return JSON.stringify({x: 0, y: 0, found: false});
+	})()`, role, name, value, tag)
+
+	jsResult, jsErr := evalJS(client, sessionID, js)
+	if jsErr != nil {
+		return 0, 0, false, fmt.Errorf("resolveRef fallback JS: %w", jsErr)
+	}
+
+	var jsResolved struct {
+		X     float64 `json:"x"`
+		Y     float64 `json:"y"`
+		Found bool    `json:"found"`
+	}
+	if uerr := json.Unmarshal([]byte(jsResult), &jsResolved); uerr != nil {
+		return 0, 0, false, fmt.Errorf("resolveRef fallback decode JS result: %w", uerr)
+	}
+	return jsResolved.X, jsResolved.Y, jsResolved.Found, nil
+}
+
+// roleToTag maps common AX roles to their HTML tag equivalents for DOM search.
+func roleToTag(role string) string {
+	m := map[string]string{
+		"button": "button", "link": "a", "textbox": "input",
+		"combobox": "select", "checkbox": "input", "radio": "input",
+		"heading": "h1", "img": "img", "navigation": "nav",
+		"banner": "header", "contentinfo": "footer", "main": "main",
+		"form": "form", "table": "table", "list": "ul",
+		"listitem": "li", "text": "p",
+	}
+	if t, ok := m[strings.ToLower(role)]; ok {
+		return t
+	}
+	return role
+}
+
 func handleClickRef(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
 	var p struct {
 		SessionID string `json:"sessionId"`
@@ -1050,29 +1231,17 @@ func handleClickRef(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 		return errorResult(err), nil
 	}
 
-	// Resolve ref to coordinates
-	result, err := client.Call(p.SessionID, "Page.resolveRef", map[string]interface{}{
-		"ref": p.Ref,
-	})
+	x, y, found, err := resolveRef(client, p.SessionID, p.Ref)
 	if err != nil {
 		return errorResult(err), nil
 	}
-
-	var resolved struct {
-		X     float64 `json:"x"`
-		Y     float64 `json:"y"`
-		Found bool    `json:"found"`
-	}
-	if err := json.Unmarshal(result, &resolved); err != nil {
-		return errorResult(err), nil
-	}
-	if !resolved.Found {
+	if !found {
 		return errorResult(fmt.Errorf("element ref %s not found (stale snapshot?)", p.Ref)), nil
 	}
 
 	// mousedown
 	_, err = client.Call(p.SessionID, "Page.dispatchMouseEvent", map[string]interface{}{
-		"type": "mousedown", "x": resolved.X, "y": resolved.Y,
+		"type": "mousedown", "x": x, "y": y,
 		"button": 0, "clickCount": 1, "modifiers": 0, "buttons": 1,
 	})
 	if err != nil {
@@ -1081,14 +1250,14 @@ func handleClickRef(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 
 	// mouseup
 	_, err = client.Call(p.SessionID, "Page.dispatchMouseEvent", map[string]interface{}{
-		"type": "mouseup", "x": resolved.X, "y": resolved.Y,
+		"type": "mouseup", "x": x, "y": y,
 		"button": 0, "clickCount": 1, "modifiers": 0, "buttons": 0,
 	})
 	if err != nil {
 		return errorResult(err), nil
 	}
 
-	return textResult(fmt.Sprintf("Clicked %s at (%v, %v)", p.Ref, resolved.X, resolved.Y)), nil
+	return textResult(fmt.Sprintf("Clicked %s at (%v, %v)", p.Ref, x, y)), nil
 }
 
 func handleTypeRef(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
@@ -1101,35 +1270,23 @@ func handleTypeRef(client *juggler.Client, args json.RawMessage) (*ToolCallResul
 		return errorResult(err), nil
 	}
 
-	// Resolve the element and click it to focus before inserting text.
-	result, err := client.Call(p.SessionID, "Page.resolveRef", map[string]interface{}{
-		"ref": p.Ref,
-	})
+	x, y, found, err := resolveRef(client, p.SessionID, p.Ref)
 	if err != nil {
 		return errorResult(err), nil
 	}
-
-	var resolved struct {
-		X     float64 `json:"x"`
-		Y     float64 `json:"y"`
-		Found bool    `json:"found"`
-	}
-	if err := json.Unmarshal(result, &resolved); err != nil {
-		return errorResult(err), nil
-	}
-	if !resolved.Found {
+	if !found {
 		return errorResult(fmt.Errorf("element ref %s not found (stale snapshot?)", p.Ref)), nil
 	}
 
 	_, err = client.Call(p.SessionID, "Page.dispatchMouseEvent", map[string]interface{}{
-		"type": "mousedown", "x": resolved.X, "y": resolved.Y,
+		"type": "mousedown", "x": x, "y": y,
 		"button": 0, "clickCount": 1, "modifiers": 0, "buttons": 1,
 	})
 	if err != nil {
 		return errorResult(err), nil
 	}
 	_, err = client.Call(p.SessionID, "Page.dispatchMouseEvent", map[string]interface{}{
-		"type": "mouseup", "x": resolved.X, "y": resolved.Y,
+		"type": "mouseup", "x": x, "y": y,
 		"button": 0, "clickCount": 1, "modifiers": 0, "buttons": 0,
 	})
 	if err != nil {
@@ -1156,34 +1313,22 @@ func handleHoverRef(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 		return errorResult(err), nil
 	}
 
-	// Resolve ref to coordinates
-	result, err := client.Call(p.SessionID, "Page.resolveRef", map[string]interface{}{
-		"ref": p.Ref,
-	})
+	x, y, found, err := resolveRef(client, p.SessionID, p.Ref)
 	if err != nil {
 		return errorResult(err), nil
 	}
-
-	var resolved struct {
-		X     float64 `json:"x"`
-		Y     float64 `json:"y"`
-		Found bool    `json:"found"`
-	}
-	if err := json.Unmarshal(result, &resolved); err != nil {
-		return errorResult(err), nil
-	}
-	if !resolved.Found {
+	if !found {
 		return errorResult(fmt.Errorf("element ref %s not found (stale snapshot?)", p.Ref)), nil
 	}
 
 	// mousemove
 	_, err = client.Call(p.SessionID, "Page.dispatchMouseEvent", map[string]interface{}{
-		"type": "mousemove", "x": resolved.X, "y": resolved.Y,
+		"type": "mousemove", "x": x, "y": y,
 		"button": 0, "clickCount": 0, "modifiers": 0, "buttons": 0,
 	})
 	if err != nil {
 		return errorResult(err), nil
 	}
 
-	return textResult(fmt.Sprintf("Hovered %s at (%v, %v)", p.Ref, resolved.X, resolved.Y)), nil
+	return textResult(fmt.Sprintf("Hovered %s at (%v, %v)", p.Ref, x, y)), nil
 }
