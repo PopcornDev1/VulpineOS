@@ -618,6 +618,12 @@ func (a *App) focusChatComposer() tea.Cmd {
 	return a.conversation.Focus()
 }
 
+func (a *App) cancelChatSelectionAndFocus() tea.Cmd {
+	a.conversation.ClearSelection()
+	a.stopConversationSelectionAutoScroll()
+	return a.focusChatComposer()
+}
+
 func (a *App) createDefaultAgent() tea.Cmd {
 	return a.createAgent(defaultAgentName, defaultAgentName, "")
 }
@@ -982,7 +988,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return a.handleCtrlC()
 		case "esc":
-			cmds = append(cmds, a.focusChatComposer())
+			cmds = append(cmds, a.cancelChatSelectionAndFocus())
 		case "/":
 			if a.selectedAgentID != "" {
 				a.focus = FocusConversation
@@ -1783,7 +1789,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.notice = "Agent is still working — wait for the current response"
 			a.noticeTTL = 3
 		case "esc":
-			return a, a.focusChatComposer()
+			return a, a.cancelChatSelectionAndFocus()
 		}
 		return a, nil
 	}
@@ -1829,7 +1835,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 	case "esc":
-		return a, a.focusChatComposer()
+		return a, a.cancelChatSelectionAndFocus()
 	default:
 		if !a.conversation.Focused() {
 			a.conversation.Focus()
@@ -2445,7 +2451,10 @@ func (a *App) handleConversationSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd)
 			return false, nil
 		}
 		a.stopConversationSelectionAutoScroll()
-		if msg.Shift && a.conversation.HasSelection() {
+		// Some terminals reserve Shift-click for native selection or omit the
+		// Shift modifier from mouse reports. Once the chat has an active
+		// selection, treat the next click in the conversation as an extension.
+		if a.conversation.HasSelection() {
 			if !a.conversation.ExtendSelectionAtViewCell(msg.Y-ry, msg.X-rx) {
 				return false, nil
 			}

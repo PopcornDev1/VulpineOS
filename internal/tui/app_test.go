@@ -1205,6 +1205,107 @@ func TestShiftClickExtendsExistingChatSelection(t *testing.T) {
 	}
 }
 
+func TestClickExtendsExistingChatSelectionWhenTerminalOmitsShift(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 24
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.selectedAgentID = "agent-1"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Agent 1")
+	app.conversation.SetAwake(true)
+	app.conversation.AddEntry("assistant", "start anchor")
+	app.conversation.AddEntry("assistant", "middle selected")
+	app.conversation.AddEntry("assistant", "finish target")
+	app.updatePanelSizes()
+
+	copied := ""
+	app.clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	view := app.conversation.View()
+	lines := strings.Split(view, "\n")
+	startRow, startCol := findChatCell(t, lines, "start")
+	middleRow, middleCol := findChatCell(t, lines, "middle")
+	finishRow, finishCol := findChatCell(t, lines, "finish")
+	rx, ry, _, _ := app.conversationContentRect()
+
+	model, _ := app.Update(tea.MouseMsg{X: rx + startCol, Y: ry + startRow, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + middleCol + lipgloss.Width("middle"), Y: ry + middleRow, Type: tea.MouseMotion, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + middleCol + lipgloss.Width("middle"), Y: ry + middleRow, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	app = model.(App)
+
+	if !app.conversation.HasSelection() {
+		t.Fatal("initial drag should create a chat selection")
+	}
+
+	model, _ = app.Update(tea.MouseMsg{
+		X:      rx + finishCol + lipgloss.Width("finish"),
+		Y:      ry + finishRow,
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	app = model.(App)
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("ctrl+c after modifierless extension returned no copy command")
+	}
+	_ = cmd()
+	if !strings.Contains(copied, "start anchor") || !strings.Contains(copied, "finish") {
+		t.Fatalf("copied = %q, want existing selection extended through click target", copied)
+	}
+}
+
+func TestEscClearsChatSelection(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 24
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.selectedAgentID = "agent-1"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Agent 1")
+	app.conversation.SetAwake(true)
+	app.conversation.AddEntry("assistant", "start anchor")
+	app.conversation.AddEntry("assistant", "finish target")
+	app.updatePanelSizes()
+
+	view := app.conversation.View()
+	lines := strings.Split(view, "\n")
+	startRow, startCol := findChatCell(t, lines, "start")
+	finishRow, finishCol := findChatCell(t, lines, "finish")
+	rx, ry, _, _ := app.conversationContentRect()
+
+	model, _ := app.Update(tea.MouseMsg{X: rx + startCol, Y: ry + startRow, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + finishCol + lipgloss.Width("finish"), Y: ry + finishRow, Type: tea.MouseMotion, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + finishCol + lipgloss.Width("finish"), Y: ry + finishRow, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	app = model.(App)
+	if !app.conversation.HasSelection() {
+		t.Fatal("initial drag should create a chat selection")
+	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	app = model.(App)
+	if app.conversation.HasSelection() {
+		t.Fatal("esc should clear chat selection")
+	}
+	if app.focus != FocusConversation || app.inputMode != "chat" {
+		t.Fatalf("focus/inputMode = %d/%q, want conversation chat", app.focus, app.inputMode)
+	}
+}
+
 func TestDraggingSelectionAboveConversationAutoscrollsUp(t *testing.T) {
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
