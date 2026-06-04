@@ -2451,10 +2451,7 @@ func (a *App) handleConversationSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd)
 			return false, nil
 		}
 		a.stopConversationSelectionAutoScroll()
-		// Some terminals reserve Shift-click for native selection or omit the
-		// Shift modifier from mouse reports. Once the chat has an active
-		// selection, treat the next click in the conversation as an extension.
-		if a.conversation.HasSelection() {
+		if msg.Shift && a.conversation.HasSelection() {
 			if !a.conversation.ExtendSelectionAtViewCell(msg.Y-ry, msg.X-rx) {
 				return false, nil
 			}

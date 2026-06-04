@@ -1205,7 +1205,7 @@ func TestShiftClickExtendsExistingChatSelection(t *testing.T) {
 	}
 }
 
-func TestClickExtendsExistingChatSelectionWhenTerminalOmitsShift(t *testing.T) {
+func TestPlainClickClearsExistingChatSelection(t *testing.T) {
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.width = 100
@@ -1254,14 +1254,31 @@ func TestClickExtendsExistingChatSelectionWhenTerminalOmitsShift(t *testing.T) {
 	})
 	app = model.(App)
 
+	if app.conversation.HasSelection() {
+		t.Fatal("plain click should clear existing chat selection instead of extending it")
+	}
+
+	model, _ = app.Update(tea.MouseMsg{
+		X:      rx + finishCol + lipgloss.Width("finish"),
+		Y:      ry + finishRow,
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionRelease,
+	})
+	app = model.(App)
+
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	app = model.(App)
-	if cmd == nil {
-		t.Fatal("ctrl+c after modifierless extension returned no copy command")
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("first ctrl+c after clearing selection should not quit")
+		}
 	}
-	_ = cmd()
-	if !strings.Contains(copied, "start anchor") || !strings.Contains(copied, "finish") {
-		t.Fatalf("copied = %q, want existing selection extended through click target", copied)
+	if copied != "" {
+		t.Fatalf("copied = %q, want no clipboard write after plain click clears selection", copied)
+	}
+	if !strings.Contains(app.notice, "Press Ctrl+C again") {
+		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
 	}
 }
 
