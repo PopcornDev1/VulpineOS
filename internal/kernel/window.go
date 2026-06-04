@@ -16,6 +16,10 @@ var runWindowCommand = func(name string, args ...string) (string, error) {
 	return string(out), err
 }
 
+var setLinuxWindowVisible = func(w *WindowController, visible bool) error {
+	return w.linuxSetVisible(visible)
+}
+
 // WindowController manages browser window visibility.
 type WindowController struct {
 	visible        bool
@@ -266,7 +270,7 @@ func (w *WindowController) IsContextVisible(contextID string) bool {
 
 func (w *WindowController) show() error {
 	if runtime.GOOS == "linux" {
-		return w.linuxSetVisible(true)
+		return setLinuxWindowVisible(w, true)
 	}
 	if runtime.GOOS != "darwin" {
 		return nil
@@ -296,7 +300,7 @@ func (w *WindowController) show() error {
 
 func (w *WindowController) hide() error {
 	if runtime.GOOS == "linux" {
-		return w.linuxSetVisible(false)
+		return setLinuxWindowVisible(w, false)
 	}
 	if runtime.GOOS != "darwin" {
 		return nil

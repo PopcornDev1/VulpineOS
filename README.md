@@ -246,7 +246,8 @@ deployments, pass `--api-key` to use an explicit bearer access key instead.
 
 The installer downloads the latest published VulpineOS CLI and matching
 VulpineOS Camoufox browser bundle, installs `vulpineos` onto your PATH, and
-configures the browser path under `~/.vulpineos/config.json`.
+configures the browser path under `~/.vulpineos/config.json`. Developers can
+force a source build with `VULPINEOS_BUILD_FROM_SOURCE=1`.
 
 ```bash
 curl -sL https://raw.githubusercontent.com/VulpineOS/VulpineOS/main/install.sh | bash

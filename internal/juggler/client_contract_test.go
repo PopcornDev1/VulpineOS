@@ -68,23 +68,21 @@ func TestClientCallSendsSessionMethodAndTypedParams(t *testing.T) {
 
 func TestClientCallReturnsProtocolError(t *testing.T) {
 	mt := newMemTransport()
-	ready := make(chan struct{})
 	go func() {
-		close(ready)
 		for {
 			select {
 			case <-mt.closed:
 				return
-			case mt.incoming <- &Message{
-				ID:    1,
-				Error: &Error{Message: "no such browser instance"},
-			}:
+			case req := <-mt.outgoing:
+				mt.incoming <- &Message{
+					ID:    req.ID,
+					Error: &Error{Message: "no such browser instance"},
+				}
 				return
 			}
 		}
 	}()
 
-	<-ready
 	client := NewClient(mt)
 	defer client.Close()
 

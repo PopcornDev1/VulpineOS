@@ -190,6 +190,12 @@ func TestCachedStatusDoesNotRunWindowCommands(t *testing.T) {
 }
 
 func TestContextWindowActionsUpdateCachedStatus(t *testing.T) {
+	originalLinuxVisible := setLinuxWindowVisible
+	defer func() { setLinuxWindowVisible = originalLinuxVisible }()
+	setLinuxWindowVisible = func(w *WindowController, visible bool) error {
+		return nil
+	}
+
 	if runtime.GOOS == "darwin" {
 		original := runWindowCommand
 		defer func() { runWindowCommand = original }()

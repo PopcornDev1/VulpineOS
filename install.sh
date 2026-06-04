@@ -336,6 +336,27 @@ build_cli_from_source() {
     return 0
 }
 
+install_cli_from_release() {
+    local bin_dir="$1"
+    local cli_tmp="${VULPINEOS_HOME}/vulpineos.tmp.$$"
+    rm -f "${cli_tmp}"
+    log "Downloading prebuilt VulpineOS CLI..."
+    download_to "${VULPINEOS_CLI_URL}" "${cli_tmp}" || {
+        rm -f "${cli_tmp}"
+        return 1
+    }
+    chmod 0755 "${cli_tmp}" || {
+        rm -f "${cli_tmp}"
+        return 1
+    }
+    mv "${cli_tmp}" "${bin_dir}/vulpineos" || {
+        rm -f "${cli_tmp}"
+        return 1
+    }
+    log "Installed CLI (from release): ${bin_dir}/vulpineos"
+    return 0
+}
+
 main() {
     log "Installing VulpineOS..."
     have python3 || fatal "python3 is required to resolve release assets and update local config."
@@ -361,25 +382,19 @@ main() {
 
     log "Installing VulpineOS release ${VULPINEOS_RELEASE_TAG}..."
 
-    # Install CLI: prefer building from source (always latest), fall back to release binary
-    if have go && have git; then
-        build_cli_from_source "${bin_dir}" || {
-            log "Source build failed, falling back to release binary..."
-            local cli_tmp="${VULPINEOS_HOME}/vulpineos.tmp.$$"
-            rm -f "${cli_tmp}"
-            download_to "${VULPINEOS_CLI_URL}" "${cli_tmp}"
-            chmod 0755 "${cli_tmp}"
-            mv "${cli_tmp}" "${bin_dir}/vulpineos"
-            log "Installed CLI (from release): ${bin_dir}/vulpineos"
-        }
-    else
-        log "Go or git not found, downloading prebuilt CLI from release..."
-        local cli_tmp="${VULPINEOS_HOME}/vulpineos.tmp.$$"
-        rm -f "${cli_tmp}"
-        download_to "${VULPINEOS_CLI_URL}" "${cli_tmp}"
-        chmod 0755 "${cli_tmp}"
-        mv "${cli_tmp}" "${bin_dir}/vulpineos"
-        log "Installed CLI (from release): ${bin_dir}/vulpineos"
+    # Install CLI: one-line installs should be fast and release-based. Developers
+    # can force a source build with VULPINEOS_BUILD_FROM_SOURCE=1.
+    if [ "${VULPINEOS_BUILD_FROM_SOURCE:-}" = "1" ]; then
+        have go || fatal "go is required when VULPINEOS_BUILD_FROM_SOURCE=1."
+        have git || fatal "git is required when VULPINEOS_BUILD_FROM_SOURCE=1."
+        build_cli_from_source "${bin_dir}" || fatal "Failed to build VulpineOS CLI from source."
+    elif ! install_cli_from_release "${bin_dir}"; then
+        if have go && have git; then
+            log "Release CLI download failed, falling back to source build..."
+            build_cli_from_source "${bin_dir}" || fatal "Failed to install VulpineOS CLI."
+        else
+            fatal "Failed to download prebuilt CLI, and go/git are unavailable for source build."
+        fi
     fi
 
     install_browser "${bin_dir}"
