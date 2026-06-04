@@ -108,6 +108,36 @@ func TestNoAgentViewDoesNotShowCreateInstructions(t *testing.T) {
 	}
 }
 
+func TestInputBlockUsesRoundedOpenCodeBox(t *testing.T) {
+	m := New()
+	m.SetSize(60, 14)
+	m.SetAgentID("agent-1")
+	m.SetAgentName("Agent 1")
+	m.SetModelLabel("opencode/claude-sonnet")
+	m.SetAwake(true)
+
+	view := m.View()
+	for _, border := range []string{"╭", "╮", "╰", "╯"} {
+		if !strings.Contains(view, border) {
+			t.Fatalf("chat input should use rounded border %q, got:\n%s", border, view)
+		}
+	}
+	if strings.Contains(view, "▀") {
+		t.Fatalf("chat input should not use half-block bottom border, got:\n%s", view)
+	}
+	if strings.Contains(view, "▌") {
+		t.Fatalf("chat input should not use rail-only border, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Agent 1") || !strings.Contains(view, "opencode/claude-sonnet") {
+		t.Fatalf("chat input should keep agent/model metadata, got:\n%s", view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > 60 {
+			t.Fatalf("line %d width = %d, want <= 60:\n%s", i+1, width, view)
+		}
+	}
+}
+
 func TestSetSizeRewrapsRenderedEntries(t *testing.T) {
 	m := New()
 	m.SetSize(80, 20)
