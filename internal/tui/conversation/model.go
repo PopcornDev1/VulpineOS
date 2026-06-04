@@ -74,6 +74,7 @@ const (
 	inputBlockChromeLines = 4 // top spacer, spacer, metadata, bottom half-border
 	messageInputGapLines  = 1
 	thinkingGapLines      = 1
+	pasteMarkerThreshold  = 200
 )
 
 // ThinkingTickMsg triggers animation updates for the thinking indicator.
@@ -821,9 +822,19 @@ func (m *Model) InputValue() string {
 	return v
 }
 
-// InsertPastedContent inserts a compact paste marker while retaining the raw payload.
+// InsertPastedContent inserts short pastes visibly and long pastes as compact
+// markers, while retaining the raw payload for the agent.
 func (m *Model) InsertPastedContent(raw string) {
 	if raw == "" {
+		return
+	}
+	if utf8.RuneCountInString(raw) <= pasteMarkerThreshold {
+		visible := visiblePasteText(raw)
+		if visible != raw {
+			m.pasteSnippets = append(m.pasteSnippets, pasteSnippet{Marker: visible, Raw: raw})
+		}
+		m.insertDraftText(visible)
+		m.syncDraftInputSize()
 		return
 	}
 	marker := pasteMarker(raw)
@@ -885,6 +896,12 @@ func pasteMarker(raw string) string {
 		label = "Char"
 	}
 	return fmt.Sprintf("[Pasted Content %d %s]", count, label)
+}
+
+func visiblePasteText(raw string) string {
+	visible := strings.ReplaceAll(raw, "\r\n", " ")
+	visible = strings.ReplaceAll(visible, "\r", " ")
+	return strings.ReplaceAll(visible, "\n", " ")
 }
 
 func messageDisplayText(content, displayContent string) string {

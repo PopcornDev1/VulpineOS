@@ -2469,7 +2469,7 @@ func TestFocusedChatIgnoresCtrlViewShortcut(t *testing.T) {
 	}
 }
 
-func TestChatPasteDisplaysMarkerAndPersistsRawContent(t *testing.T) {
+func TestChatShortPasteDisplaysRawAndPersistsRawContent(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -2491,7 +2491,58 @@ func TestChatPasteDisplaysMarkerAndPersistsRawContent(t *testing.T) {
 	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(raw), Paste: true})
 	app = model.(App)
 
-	if got := app.conversation.TextInput().Value(); got != "[Pasted Content 29 Chars]" {
+	if got := app.conversation.TextInput().Value(); got != raw {
+		t.Fatalf("visible input = %q, want raw paste", got)
+	}
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+
+	msgs, err := db.GetMessages(agent.ID)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %d, want 1 user message", len(msgs))
+	}
+	if msgs[0].Content != raw {
+		t.Fatalf("persisted content = %q, want raw paste", msgs[0].Content)
+	}
+	if msgs[0].DisplayContent != "" {
+		t.Fatalf("display content = %q, want empty raw-display override", msgs[0].DisplayContent)
+	}
+	view := app.conversation.View()
+	if !strings.Contains(view, raw) {
+		t.Fatalf("conversation missing raw paste:\n%s", view)
+	}
+	if strings.Contains(view, "[Pasted Content") {
+		t.Fatalf("conversation used paste marker for short paste:\n%s", view)
+	}
+}
+
+func TestChatLongPasteDisplaysMarkerAndPersistsRawContent(t *testing.T) {
+	db := openTestVault(t)
+	cfg := &config.Config{}
+	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Scraper", "Scrape prices", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.SetAgentName(agent.Name)
+	app.conversation.SetAwake(true)
+	app.conversation.Focus()
+
+	raw := strings.Repeat("x", 201)
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(raw), Paste: true})
+	app = model.(App)
+
+	if got := app.conversation.TextInput().Value(); got != "[Pasted Content 201 Chars]" {
 		t.Fatalf("visible input = %q, want paste marker", got)
 	}
 
@@ -2508,14 +2559,14 @@ func TestChatPasteDisplaysMarkerAndPersistsRawContent(t *testing.T) {
 	if msgs[0].Content != raw {
 		t.Fatalf("persisted content = %q, want raw paste", msgs[0].Content)
 	}
-	if msgs[0].DisplayContent != "[Pasted Content 29 Chars]" {
+	if msgs[0].DisplayContent != "[Pasted Content 201 Chars]" {
 		t.Fatalf("display content = %q, want paste marker", msgs[0].DisplayContent)
 	}
 	view := app.conversation.View()
 	if strings.Contains(view, raw) {
 		t.Fatalf("conversation leaked raw paste:\n%s", view)
 	}
-	if !strings.Contains(view, "[Pasted Content 29 Chars]") {
+	if !strings.Contains(view, "[Pasted Content 201 Chars]") {
 		t.Fatalf("conversation missing paste marker:\n%s", view)
 	}
 }
@@ -2566,7 +2617,7 @@ func TestFocusedChatIgnoresLeakedMouseReports(t *testing.T) {
 	}
 }
 
-func TestChatPasteWithMouseLikeTextStillUsesPasteMarker(t *testing.T) {
+func TestChatPasteWithMouseLikeTextShowsRawWhenShort(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -2588,12 +2639,12 @@ func TestChatPasteWithMouseLikeTextStillUsesPasteMarker(t *testing.T) {
 	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(raw), Paste: true})
 	app = model.(App)
 
-	if got := app.conversation.TextInput().Value(); got != "[Pasted Content 26 Chars]" {
-		t.Fatalf("visible input = %q, want paste marker", got)
+	if got := app.conversation.TextInput().Value(); got != raw {
+		t.Fatalf("visible input = %q, want raw paste", got)
 	}
 }
 
-func TestChatPasteWithLegacyMouseLikeTextStillUsesPasteMarker(t *testing.T) {
+func TestChatPasteWithLegacyMouseLikeTextShowsRawWhenShort(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -2615,8 +2666,8 @@ func TestChatPasteWithLegacyMouseLikeTextStillUsesPasteMarker(t *testing.T) {
 	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(raw), Paste: true})
 	app = model.(App)
 
-	if got := app.conversation.TextInput().Value(); got != "[Pasted Content 20 Chars]" {
-		t.Fatalf("visible input = %q, want paste marker", got)
+	if got := app.conversation.TextInput().Value(); got != raw {
+		t.Fatalf("visible input = %q, want raw paste", got)
 	}
 }
 

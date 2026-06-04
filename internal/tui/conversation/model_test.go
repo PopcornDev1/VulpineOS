@@ -361,21 +361,41 @@ func TestSetAgentIDClearsDraftInput(t *testing.T) {
 	}
 }
 
-func TestInsertPastedContentUsesMarkerButKeepsPayload(t *testing.T) {
+func TestInsertShortPastedContentShowsRawText(t *testing.T) {
 	m := New()
 	m.SetAgentID("agent-1")
 	raw := "first line\nsecond line with enough content"
+	visible := "first line second line with enough content"
 
 	m.InsertPastedContent(raw)
 
-	if got := m.textInput.Value(); got != "[Pasted Content 42 Chars]" {
+	if got := m.textInput.Value(); got != visible {
+		t.Fatalf("visible input = %q, want visible paste", got)
+	}
+	payload, display := m.InputPayloadAndDisplay()
+	if payload != raw {
+		t.Fatalf("payload = %q, want raw paste", payload)
+	}
+	if display != visible {
+		t.Fatalf("display = %q, want visible paste", display)
+	}
+}
+
+func TestInsertLongPastedContentUsesMarkerButKeepsPayload(t *testing.T) {
+	m := New()
+	m.SetAgentID("agent-1")
+	raw := strings.Repeat("x", 201)
+
+	m.InsertPastedContent(raw)
+
+	if got := m.textInput.Value(); got != "[Pasted Content 201 Chars]" {
 		t.Fatalf("visible input = %q, want paste marker", got)
 	}
 	payload, display := m.InputPayloadAndDisplay()
 	if payload != raw {
 		t.Fatalf("payload = %q, want raw paste", payload)
 	}
-	if display != "[Pasted Content 42 Chars]" {
+	if display != "[Pasted Content 201 Chars]" {
 		t.Fatalf("display = %q, want paste marker", display)
 	}
 }
