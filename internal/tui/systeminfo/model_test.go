@@ -103,3 +103,48 @@ func TestDefaultHeightShowsRecentRuntimeEvent(t *testing.T) {
 		t.Fatalf("default-height system panel missing runtime event:\n%s", view)
 	}
 }
+
+func TestConstrainedHeightPrioritizesTelemetryAndOmitsRiskAndSentinel(t *testing.T) {
+	model := New()
+	model.SetHeight(10)
+
+	updated, _ := model.Update(shared.KernelStatusMsg{
+		Running: true,
+		PID:     1234,
+		Uptime:  2 * time.Minute,
+	})
+	updated.SetBrowserCounts(4, 7)
+	updated, _ = updated.Update(shared.TelemetryMsg{
+		MemoryMB:         512,
+		EventLoopLagMs:   12,
+		RuntimeRiskScore: 99,
+	})
+	for _, event := range []struct {
+		component string
+		name      string
+	}{
+		{component: "sentinel", name: "provider_unavailable"},
+		{component: "foxbridge", name: "profile_repaired"},
+		{component: "gateway", name: "gateway_started"},
+	} {
+		updated, _ = updated.Update(shared.RuntimeEventMsg{Event: vault.RuntimeEvent{
+			Component: event.component,
+			Event:     event.name,
+			Timestamp: time.Date(2026, 5, 10, 12, 34, 0, 0, time.UTC),
+		}})
+	}
+
+	view := updated.View()
+	if !strings.Contains(view, "MEM") {
+		t.Fatalf("constrained system panel should keep MEM visible:\n%s", view)
+	}
+	if !strings.Contains(view, "LAG") {
+		t.Fatalf("constrained system panel should keep LAG visible:\n%s", view)
+	}
+	if strings.Contains(view, "RISK") || strings.Contains(view, "SENT") {
+		t.Fatalf("system panel should not render risk/sentinel rows:\n%s", view)
+	}
+	if !strings.Contains(view, "GATE") {
+		t.Fatalf("system panel should still show non-sentinel runtime events when space allows:\n%s", view)
+	}
+}

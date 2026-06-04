@@ -21,7 +21,6 @@ type Model struct {
 	browserWindow  string
 	memoryMB       float64
 	eventLoopLag   float64
-	runtimeRisk    float64
 	activeContexts int
 	activePages    int
 	runtimeEvents  []sharedRuntimeEvent
@@ -71,8 +70,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case shared.TelemetryMsg:
 		m.memoryMB = msg.MemoryMB
 		m.eventLoopLag = msg.EventLoopLagMs
-		m.runtimeRisk = msg.RuntimeRiskScore
 	case shared.RuntimeEventMsg:
+		if isHiddenRuntimeEvent(msg.Event.Component) {
+			return m, nil
+		}
 		m.runtimeEvents = append([]sharedRuntimeEvent{{
 			component: msg.Event.Component,
 			event:     msg.Event.Event,
@@ -90,6 +91,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 func (m *Model) SetRuntimeEvents(events []shared.RuntimeEventMsg) {
 	m.runtimeEvents = m.runtimeEvents[:0]
 	for _, event := range events {
+		if isHiddenRuntimeEvent(event.Event.Component) {
+			continue
+		}
 		m.runtimeEvents = append(m.runtimeEvents, sharedRuntimeEvent{
 			component: event.Event.Component,
 			event:     event.Event.Event,
@@ -157,6 +161,8 @@ func (m Model) View() string {
 	b.WriteString("\n")
 	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("Ctx: %d Pg: %d", m.activeContexts, m.activePages)))
 	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("MEM %s\n", meterBar(m.memoryMB, 1024, fmt.Sprintf("%.0f", m.memoryMB))))
+	b.WriteString(fmt.Sprintf("LAG %s", meterBar(m.eventLoopLag, 100, fmt.Sprintf("%.0fms", m.eventLoopLag))))
 
 	if len(m.runtimeEvents) > 0 {
 		b.WriteString("\n\n")
@@ -165,11 +171,7 @@ func (m Model) View() string {
 			b.WriteString("\n")
 			b.WriteString(shared.MutedStyle.Render(formatRuntimeEvent(event)))
 		}
-		b.WriteString("\n")
 	}
-	b.WriteString(fmt.Sprintf("MEM %s\n", meterBar(m.memoryMB, 1024, fmt.Sprintf("%.0f", m.memoryMB))))
-	b.WriteString(fmt.Sprintf("LAG %s\n", meterBar(m.eventLoopLag, 100, fmt.Sprintf("%.0fms", m.eventLoopLag))))
-	b.WriteString(fmt.Sprintf("RISK %s", meterBar(m.runtimeRisk, 100, fmt.Sprintf("%.0f", m.runtimeRisk))))
 
 	// Truncate to allocated height so the panel never overflows
 	result := b.String()
@@ -188,6 +190,10 @@ func (m Model) View() string {
 		}
 	}
 	return result
+}
+
+func isHiddenRuntimeEvent(component string) bool {
+	return strings.EqualFold(strings.TrimSpace(component), "sentinel")
 }
 
 func fitLine(line string, width int) string {
