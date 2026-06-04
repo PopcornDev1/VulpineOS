@@ -48,6 +48,8 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 // Input block (OpenCode-style chat box) styling.
 var (
 	inputBlockBg     = shared.ColorBg
+	inputRailStyle   = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(inputBlockBg)
+	inputBlockStyle  = lipgloss.NewStyle().Background(inputBlockBg)
 	inputStatusStyle = lipgloss.NewStyle().
 				Foreground(shared.ColorPrimary).
 				Background(inputBlockBg).
@@ -690,29 +692,22 @@ func (m *Model) clampScroll() {
 
 // View renders the conversation panel.
 // Messages are bottom-aligned: empty space at top, messages grow upward from the input box.
-// inputBlock renders a fixed-height OpenCode-style chat input box with rounded
-// border, prompt line, and agent/model metadata.
+// inputBlock renders the 5-line OpenCode-style chat input box: a top blank rail
+// line, the input line, a blank rail line, the agent/model metadata line, and a
+// half-block bottom border.
 func (m Model) inputBlock(inputArea string) string {
 	blockWidth := m.width - 2
-	if blockWidth < 6 {
+	if blockWidth < 4 {
 		return fitCellLine(inputArea, max(1, m.width))
 	}
-	contentWidth := blockWidth - 4 // border + horizontal padding
-	if contentWidth < 1 {
-		contentWidth = 1
-	}
-	body := strings.Join([]string{
-		"",
-		fitCellLine(inputArea, contentWidth),
-		m.inputMetadata(contentWidth),
+	contentWidth := blockWidth - 1
+	return strings.Join([]string{
+		inputBlockLine("", blockWidth),
+		inputBlockLine(inputBlockStyle.Render("  ")+inputArea, blockWidth),
+		inputBlockLine("", blockWidth),
+		inputBlockLine(inputBlockStyle.Render("  ")+m.inputMetadata(contentWidth-2), blockWidth),
+		inputBlockHalfLine(blockWidth),
 	}, "\n")
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(shared.ColorPrimary).
-		Background(inputBlockBg).
-		Padding(0, 1).
-		Width(contentWidth).
-		Render(body)
 }
 
 func (m Model) inputArea() string {
@@ -779,6 +774,29 @@ func (m Model) inputMetadata(maxWidth int) string {
 	}
 	model = clipCellText(model, modelWidth)
 	return inputStatusStyle.Render(name) + inputMutedStyle.Render(" · ") + inputModelStyle.Render(model)
+}
+
+func inputBlockLine(content string, blockWidth int) string {
+	contentWidth := blockWidth - 1
+	if contentWidth < 1 {
+		return inputRailStyle.Render("▌")
+	}
+	content = fitCellLine(content, contentWidth)
+	padding := ""
+	if contentWidth > ansiVisualWidth(content) {
+		padding = strings.Repeat(" ", contentWidth-ansiVisualWidth(content))
+	}
+	return inputRailStyle.Render("▌") + content + inputBlockStyle.Render(padding)
+}
+
+func inputBlockHalfLine(blockWidth int) string {
+	contentWidth := blockWidth - 1
+	halfLineStyle := lipgloss.NewStyle().Foreground(inputBlockBg).Background(inputBlockBg)
+	halfRailStyle := lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(inputBlockBg)
+	if contentWidth < 1 {
+		return halfRailStyle.Render("▌")
+	}
+	return halfRailStyle.Render("▌") + halfLineStyle.Render(strings.Repeat("▀", contentWidth))
 }
 
 func clipCellText(text string, maxWidth int) string {
