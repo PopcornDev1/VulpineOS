@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -73,9 +74,10 @@ func audioFP(t *testing.T, client *juggler.Client, sessionID string) float64 {
 	return v
 }
 
-// TestLiveAudioFingerprint runtime-verifies the audio-fingerprint feature:
-// window.setAudioFingerprintSeed is exposed, applies a SEED-DEPENDENT transform
-// to WebAudio output, and is DETERMINISTIC for a given seed.
+// TestLiveAudioFingerprint runtime-verifies the production audio-fingerprint
+// path: Browser.setContextFingerprint writes a per-context
+// roverfox.s.audioFingerprintSeed_<userContextId> pref, the page-visible setter
+// remains hidden, and WebAudio output is deterministic and seed-dependent.
 func TestLiveAudioFingerprint(t *testing.T) {
 	binary := skipIfNoLiveBrowser(t)
 
@@ -93,34 +95,69 @@ func TestLiveAudioFingerprint(t *testing.T) {
 		t.Fatalf("Browser.enable: %v", err)
 	}
 
-	sessionID, _ := createPageWithFrame(t, client)
-	// createPageWithFrame already triggered content-process init and an execution
-	// context (captured by setupContextTracking). about:blank is sufficient for
-	// OfflineAudioContext + setAudioFingerprintSeed — no navigation needed.
+	type ctxInfo struct {
+		BrowserContextID string `json:"browserContextId"`
+		UserContextID    uint32 `json:"userContextId"`
+	}
+	mkctx := func() ctxInfo {
+		res, err := client.Call("", "Browser.createBrowserContext", mustJSON(map[string]interface{}{
+			"removeOnDetach": true,
+		}))
+		if err != nil {
+			t.Fatalf("createBrowserContext: %v", err)
+		}
+		var c ctxInfo
+		if err := json.Unmarshal(res, &c); err != nil {
+			t.Fatalf("unmarshal ctx: %v", err)
+		}
+		if c.UserContextID == 0 {
+			t.Fatal("Browser.createBrowserContext returned userContextId=0; per-context audio seeding is unavailable")
+		}
+		return c
+	}
+
+	baseCtx := mkctx()
+	seedCtx := mkctx()
+	if baseCtx.UserContextID == seedCtx.UserContextID {
+		t.Fatalf("two contexts share userContextId %d", baseCtx.UserContextID)
+	}
+
+	const seed = 777777
+	if _, err := client.Call("", "Browser.setContextFingerprint", mustJSON(map[string]interface{}{
+		"prefs": []map[string]interface{}{{
+			"name":  fmt.Sprintf("roverfox.s.audioFingerprintSeed_%d", seedCtx.UserContextID),
+			"value": strconv.Itoa(seed),
+		}},
+	})); err != nil {
+		t.Fatalf("setContextFingerprint(ctx=%d): %v", seedCtx.UserContextID, err)
+	}
+
+	baseSessionID := newPageInContext(t, client, baseCtx.BrowserContextID)
+	seedSessionID := newPageInContext(t, client, seedCtx.BrowserContextID)
+	// about:blank is sufficient for OfflineAudioContext; wait for content-process
+	// init and execution-context tracking.
 	time.Sleep(1 * time.Second)
-	if _, ok := latestContext.Load(sessionID); !ok {
-		t.Fatal("no execution context after createPageWithFrame")
+	if _, ok := latestContext.Load(baseSessionID); !ok {
+		t.Fatal("no execution context for baseline context")
+	}
+	if _, ok := latestContext.Load(seedSessionID); !ok {
+		t.Fatal("no execution context for seeded context")
 	}
 
-	if evalNumber(t, client, sessionID, "typeof window.setAudioFingerprintSeed === 'function' ? 1 : 0") != 1 {
-		t.Fatal("window.setAudioFingerprintSeed is not exposed — audio-fingerprint feature not built/enabled")
+	if evalNumber(t, client, baseSessionID, "typeof window.setAudioFingerprintSeed === 'undefined' ? 1 : 0") != 1 {
+		t.Fatal("window.setAudioFingerprintSeed is page-visible; expected ChromeOnly production path")
 	}
-	t.Log("setAudioFingerprintSeed exposed ✓")
 
-	// Baseline first: no seed set this session. NOTE: the WebIDL setter
-	// self-disables after the first call (SetSeed -> DisableFunction by design),
-	// so we measure baseline, then set the seed exactly ONCE, then re-measure.
-	base1 := audioFP(t, client, sessionID)
-	base2 := audioFP(t, client, sessionID)
+	base1 := audioFP(t, client, baseSessionID)
+	base2 := audioFP(t, client, baseSessionID)
 	if base1 != base2 {
 		t.Errorf("baseline not deterministic: %v vs %v", base1, base2)
 	}
 
-	evalNumber(t, client, sessionID, fmt.Sprintf("window.setAudioFingerprintSeed(%d); 0", 777777))
-
-	s1 := audioFP(t, client, sessionID)
-	s2 := audioFP(t, client, sessionID)
-	t.Logf("baseline=%v ; seeded(777777)=%v (rerun %v)", base1, s1, s2)
+	s1 := audioFP(t, client, seedSessionID)
+	s2 := audioFP(t, client, seedSessionID)
+	t.Logf("baseline(ctx=%d)=%v ; seeded(ctx=%d seed=%d)=%v (rerun %v)",
+		baseCtx.UserContextID, base1, seedCtx.UserContextID, seed, s1, s2)
 
 	if s1 != s2 {
 		t.Errorf("seeded render not deterministic: %v vs %v", s1, s2)

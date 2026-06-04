@@ -50,9 +50,9 @@ func newPageInContext(t *testing.T, client *juggler.Client, browserContextID str
 // isolation slice end-to-end:
 //   - D.4: Browser.createBrowserContext returns a numeric userContextId that is
 //     non-zero and distinct per context.
-//   - B/C: a per-context init script (Browser.setInitScripts) drives the
-//     self-destructing window.setAudioFingerprintSeed setter at document-start,
-//     so two contexts seeded differently produce DIFFERENT audio fingerprints.
+//   - B/C: Browser.setContextFingerprint writes the per-context
+//     roverfox.s.audioFingerprintSeed_<userContextId> prefs production uses, so
+//     two contexts seeded differently produce DIFFERENT audio fingerprints.
 func TestLivePerContextFingerprintIsolation(t *testing.T) {
 	binary := skipIfNoLiveBrowser(t)
 
@@ -135,7 +135,7 @@ func TestLivePerContextFingerprintIsolation(t *testing.T) {
 	t.Logf("audioFP ctxA(seed=%d)=%v  ctxB(seed=%d)=%v", seedA, fpA, seedB, fpB)
 
 	if fpA == fpB {
-		t.Fatalf("per-context audio fingerprints identical (%v) — init-script delivery is NOT isolating contexts", fpA)
+		t.Fatalf("per-context audio fingerprints identical (%v) — pref delivery is NOT isolating contexts", fpA)
 	}
-	t.Logf("per-context audio isolation confirmed via init script: Δfp=%v", fpA-fpB)
+	t.Logf("per-context audio isolation confirmed via pref delivery: Δfp=%v", fpA-fpB)
 }
