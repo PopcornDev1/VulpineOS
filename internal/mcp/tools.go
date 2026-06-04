@@ -18,6 +18,8 @@ var (
 )
 
 var newContextAttachTimeout = 10 * time.Second
+var navigateVerificationTimeout = 5 * time.Second
+var navigateVerificationPollInterval = 250 * time.Millisecond
 
 // tools returns the list of VulpineOS browser tools available via MCP.
 // The result is computed exactly once per process and cached. Callers
@@ -532,10 +534,11 @@ func handleNavigate(client *juggler.Client, tracker *ContextTracker, args json.R
 	if strings.TrimSpace(p.URL) != p.URL {
 		return errorResult(fmt.Errorf("url must not have leading or trailing whitespace")), nil
 	}
-	if strings.HasPrefix(p.URL, "javascript:") {
+	normalizedURL := strings.ToLower(p.URL)
+	if strings.HasPrefix(normalizedURL, "javascript:") {
 		return errorResult(fmt.Errorf("javascript: URLs are not permitted")), nil
 	}
-	if !strings.Contains(p.URL, "://") && !strings.HasPrefix(p.URL, "/") {
+	if !isAllowedSpecialNavigationURL(normalizedURL) && !strings.Contains(p.URL, "://") && !strings.HasPrefix(p.URL, "/") {
 		return errorResult(fmt.Errorf("url %q is not absolute (missing scheme); prepend https://", p.URL)), nil
 	}
 
@@ -571,7 +574,118 @@ func handleNavigate(client *juggler.Client, tracker *ContextTracker, args json.R
 	globalLabels.Clear(p.SessionID)
 	resetSnapshotProfile(p.SessionID)
 
+	if err := waitForNavigationUsable(client, tracker, p.SessionID, p.URL); err != nil {
+		return errorResult(err), nil
+	}
+
 	return textResult(fmt.Sprintf("Navigated to %s", p.URL)), nil
+}
+
+type navigationPageState struct {
+	ReadyState    string `json:"readyState"`
+	BodyLen       int    `json:"bodyLen"`
+	ResourceCount int    `json:"resourceCount"`
+	URL           string `json:"url"`
+}
+
+func isAllowedSpecialNavigationURL(normalizedURL string) bool {
+	return normalizedURL == "about:blank"
+}
+
+func waitForNavigationUsable(client *juggler.Client, tracker *ContextTracker, sessionID, targetURL string) error {
+	if isAllowedSpecialNavigationURL(strings.ToLower(targetURL)) {
+		return nil
+	}
+
+	deadline := time.Now().Add(navigateVerificationTimeout)
+	var lastState navigationPageState
+	var haveState bool
+	var lastErr error
+
+	for {
+		state, err := currentNavigationPageState(client, tracker, sessionID)
+		if err == nil {
+			lastState = state
+			haveState = true
+			if navigationPageStateUsable(state) {
+				return nil
+			}
+		} else {
+			lastErr = err
+		}
+
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(navigateVerificationPollInterval)
+	}
+
+	if haveState {
+		return fmt.Errorf("navigation to %s did not load usable content within %s (last readyState=%s bodyLen=%d resourceCount=%d url=%s)",
+			targetURL, navigateVerificationTimeout, lastState.ReadyState, lastState.BodyLen, lastState.ResourceCount, lastState.URL)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("navigation to %s could not verify usable content within %s: %w", targetURL, navigateVerificationTimeout, lastErr)
+	}
+	return fmt.Errorf("navigation to %s could not verify usable content within %s", targetURL, navigateVerificationTimeout)
+}
+
+func currentNavigationPageState(client *juggler.Client, tracker *ContextTracker, sessionID string) (navigationPageState, error) {
+	js := `(() => {
+		let rc = 0;
+		try { rc = performance.getEntriesByType('resource').length; } catch(e) {}
+		return JSON.stringify({
+			readyState: document.readyState,
+			bodyLen: document.body ? document.body.innerHTML.length : 0,
+			resourceCount: rc,
+			url: window.location.href
+		});
+	})()`
+	if tracker != nil {
+		if ctx := tracker.Get(sessionID); ctx != nil && ctx.ExecutionContextID != "" {
+			result, err := evalJSWithContextID(client, sessionID, js, ctx.ExecutionContextID)
+			if err == nil {
+				return parseNavigationPageState(result)
+			}
+			tracker.InvalidateExecutionContext(sessionID)
+		}
+	}
+	result, err := evalJS(client, sessionID, js)
+	if err != nil {
+		if tracker == nil {
+			return navigationPageState{}, err
+		}
+		ctx, resolveErr := tracker.Resolve(sessionID)
+		if resolveErr != nil {
+			return navigationPageState{}, err
+		}
+		if ctx == nil || ctx.ExecutionContextID == "" {
+			return navigationPageState{}, err
+		}
+		result, err = evalJSWithContextID(client, sessionID, js, ctx.ExecutionContextID)
+		if err != nil {
+			return navigationPageState{}, err
+		}
+	}
+	return parseNavigationPageState(result)
+}
+
+func parseNavigationPageState(result string) (navigationPageState, error) {
+	var state navigationPageState
+	if err := json.Unmarshal([]byte(result), &state); err != nil {
+		return navigationPageState{}, err
+	}
+	return state, nil
+}
+
+func navigationPageStateUsable(state navigationPageState) bool {
+	if state.URL == "" || strings.EqualFold(state.URL, "about:blank") {
+		return false
+	}
+	if state.ReadyState != "complete" && state.ReadyState != "interactive" {
+		return false
+	}
+	return state.BodyLen > 0 || state.ResourceCount > 0
 }
 
 func isFrameIDRequiredError(err error) bool {

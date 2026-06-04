@@ -164,6 +164,13 @@ func TestMCPServerSmoke_LoopDetectorAndNavigationReset(t *testing.T) {
 	transport.on("Page.navigate", func(req *juggler.Message) *juggler.Message {
 		return okResultMessage(t, map[string]interface{}{"navigationId": "nav-1"})
 	})
+	transport.on("Runtime.evaluate", func(req *juggler.Message) *juggler.Message {
+		return okResultMessage(t, map[string]interface{}{
+			"result": map[string]interface{}{
+				"value": `{"readyState":"complete","bodyLen":1000,"resourceCount":2,"url":"https://example.com"}`,
+			},
+		})
+	})
 
 	for i := 0; i < 3; i++ {
 		resp := callTool(t, s, i+1, "vulpine_list_mobile_devices", map[string]interface{}{})

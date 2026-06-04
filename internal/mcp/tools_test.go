@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -207,10 +208,24 @@ func TestTextResult(t *testing.T) {
 	}
 }
 
+func respondRuntimeEvaluateValue(t testing.TB, transport *testutil.FakeJugglerTransport, value string) {
+	t.Helper()
+	transport.RespondFunc("Runtime.evaluate", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": value},
+		})
+		if err != nil {
+			t.Fatalf("marshal Runtime.evaluate response: %v", err)
+		}
+		return data, nil
+	})
+}
+
 func TestHandleNavigateDoesNotRequireTrackedExecutionContext(t *testing.T) {
 	transport := testutil.NewFakeJugglerTransport(t)
 	transport.RespondError("Accessibility.getFullAXTree", "AX probe should not be required for navigation")
 	transport.RespondJSON("Page.navigate", map[string]any{"navigationId": "nav-1"})
+	respondRuntimeEvaluateValue(t, transport, `{"readyState":"complete","bodyLen":1200,"resourceCount":4,"url":"https://example.com/"}`)
 	client := juggler.NewClient(transport)
 	defer client.Close()
 
@@ -247,6 +262,7 @@ func TestHandleNavigateUsesKnownFrameWithoutExecutionContext(t *testing.T) {
 	transport := testutil.NewFakeJugglerTransport(t)
 	transport.RespondError("Accessibility.getFullAXTree", "AX probe should not be required for navigation")
 	transport.RespondJSON("Page.navigate", map[string]any{"navigationId": "nav-1"})
+	respondRuntimeEvaluateValue(t, transport, `{"readyState":"complete","bodyLen":1200,"resourceCount":4,"url":"https://example.com/known"}`)
 	client := juggler.NewClient(transport)
 	defer client.Close()
 
@@ -295,6 +311,7 @@ func TestHandleNavigateFallsBackToFrameProbeWhenFrameIDRequired(t *testing.T) {
 		})
 		return json.RawMessage(`{}`), nil
 	})
+	respondRuntimeEvaluateValue(t, transport, `{"readyState":"complete","bodyLen":1200,"resourceCount":4,"url":"https://example.com/legacy"}`)
 	client := juggler.NewClient(transport)
 	defer client.Close()
 
@@ -321,6 +338,90 @@ func TestHandleNavigateFallsBackToFrameProbeWhenFrameIDRequired(t *testing.T) {
 	}
 	if params["frameId"] != "frame-legacy" {
 		t.Fatalf("retry frameId = %v, want frame-legacy", params["frameId"])
+	}
+}
+
+func TestHandleNavigateFailsWhenPageRemainsAboutBlank(t *testing.T) {
+	previousTimeout := navigateVerificationTimeout
+	previousInterval := navigateVerificationPollInterval
+	navigateVerificationTimeout = 20 * time.Millisecond
+	navigateVerificationPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		navigateVerificationTimeout = previousTimeout
+		navigateVerificationPollInterval = previousInterval
+	})
+
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Page.navigate", map[string]any{"navigationId": "nav-blank"})
+	respondRuntimeEvaluateValue(t, transport, `{"readyState":"complete","bodyLen":0,"resourceCount":0,"url":"about:blank"}`)
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleNavigate(client, tracker, json.RawMessage(`{"sessionId":"session-blank","url":"https://browserleaks.com/javascript"}`))
+	if err != nil {
+		t.Fatalf("handleNavigate returned error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("handleNavigate result = %#v, want tool error for blank post-navigation document", result)
+	}
+	if len(result.Content) == 0 {
+		t.Fatalf("handleNavigate returned empty error content")
+	}
+	got := result.Content[0].Text
+	if !strings.Contains(got, "did not load usable content") || !strings.Contains(got, "about:blank") {
+		t.Fatalf("handleNavigate error = %q, want blank-page diagnostic", got)
+	}
+}
+
+func TestHandleNavigateResolvesExecutionContextWhenDefaultEvaluateRequiresIt(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Page.navigate", map[string]any{"navigationId": "nav-needs-context"})
+	transport.RespondFunc("Runtime.evaluate", func(msg *juggler.Message) (json.RawMessage, *juggler.Error) {
+		var params map[string]any
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			t.Fatalf("unmarshal Runtime.evaluate params: %v", err)
+		}
+		if params["executionContextId"] == nil {
+			return nil, &juggler.Error{Message: `Expected "<root>.executionContextId" to be |string|; found |undefined|`}
+		}
+		if params["executionContextId"] != "exec-fresh" {
+			t.Fatalf("executionContextId = %v, want exec-fresh", params["executionContextId"])
+		}
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": `{"readyState":"complete","bodyLen":900,"resourceCount":3,"url":"https://example.com/context"}`},
+		})
+		if err != nil {
+			t.Fatalf("marshal Runtime.evaluate response: %v", err)
+		}
+		return data, nil
+	})
+	transport.RespondFunc("Accessibility.getFullAXTree", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		transport.InjectEvent("session-needs-context", "Page.frameAttached", map[string]any{
+			"frameId": "frame-main",
+		})
+		transport.InjectEvent("session-needs-context", "Runtime.executionContextCreated", map[string]any{
+			"executionContextId": "exec-fresh",
+			"auxData": map[string]any{
+				"frameId": "frame-main",
+			},
+		})
+		return json.RawMessage(`{}`), nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleNavigate(client, tracker, json.RawMessage(`{"sessionId":"session-needs-context","url":"https://example.com/context"}`))
+	if err != nil {
+		t.Fatalf("handleNavigate returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleNavigate result = %#v, want success after context resolve", result)
 	}
 }
 

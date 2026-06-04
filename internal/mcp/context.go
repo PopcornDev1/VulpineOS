@@ -59,11 +59,15 @@ func NewContextTracker(client *juggler.Client) *ContextTracker {
 			ctx = &SessionContext{}
 			ct.contexts[sessionID] = ctx
 		}
+		if ev.AuxData.FrameID == "" {
+			return
+		}
+		if ctx.FrameID != "" && ctx.FrameID != ev.AuxData.FrameID {
+			return
+		}
+		ctx.FrameID = ev.AuxData.FrameID
 		if ev.ExecutionContextID != "" {
 			ctx.ExecutionContextID = ev.ExecutionContextID
-		}
-		if ev.AuxData.FrameID != "" {
-			ctx.FrameID = ev.AuxData.FrameID
 		}
 	})
 
@@ -105,6 +109,9 @@ func NewContextTracker(client *juggler.Client) *ContextTracker {
 			if !ok {
 				ctx = &SessionContext{}
 				ct.contexts[sessionID] = ctx
+			}
+			if ctx.FrameID != "" && ctx.FrameID != ev.FrameID {
+				ctx.ExecutionContextID = ""
 			}
 			ctx.FrameID = ev.FrameID
 			ct.mu.Unlock()

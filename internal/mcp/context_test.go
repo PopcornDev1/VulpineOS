@@ -162,6 +162,49 @@ func TestContextTrackerClearsExecutionContextOnContextsCleared(t *testing.T) {
 	t.Fatalf("execution context was not cleared; got %+v", tracker.Get("session-clear"))
 }
 
+func TestContextTrackerKeepsMainExecutionContextWhenSubframeContextAppears(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	client := juggler.NewClient(transport)
+	t.Cleanup(func() { _ = client.Close() })
+
+	tracker := NewContextTracker(client)
+	t.Cleanup(tracker.Close)
+
+	transport.InjectEvent("session-frames", "Page.frameAttached", map[string]any{
+		"frameId": "frame-main",
+	})
+	transport.InjectEvent("session-frames", "Runtime.executionContextCreated", map[string]any{
+		"executionContextId": "exec-main",
+		"auxData": map[string]any{
+			"frameId": "frame-main",
+		},
+	})
+	waitForTrackedContext(t, tracker, "session-frames", "frame-main", "exec-main")
+
+	transport.InjectEvent("session-frames", "Page.frameAttached", map[string]any{
+		"frameId":       "frame-child",
+		"parentFrameId": "frame-main",
+	})
+	transport.InjectEvent("session-frames", "Runtime.executionContextCreated", map[string]any{
+		"executionContextId": "exec-child",
+		"auxData": map[string]any{
+			"frameId": "frame-child",
+		},
+	})
+	transport.InjectEvent("session-frames", "Runtime.executionContextCreated", map[string]any{
+		"executionContextId": "exec-worker",
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	ctx := tracker.Get("session-frames")
+	if ctx == nil {
+		t.Fatal("tracked context missing")
+	}
+	if ctx.FrameID != "frame-main" || ctx.ExecutionContextID != "exec-main" {
+		t.Fatalf("tracked context = %+v, want main frame/main execution context", ctx)
+	}
+}
+
 func waitForContext(t *testing.T, tracker *ContextTracker, sessionID string, wantPresent bool) {
 	t.Helper()
 	deadline := time.Now().Add(500 * time.Millisecond)
@@ -173,6 +216,19 @@ func waitForContext(t *testing.T, tracker *ContextTracker, sessionID string, wan
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("context presence for %s did not become %v", sessionID, wantPresent)
+}
+
+func waitForTrackedContext(t *testing.T, tracker *ContextTracker, sessionID, frameID, executionContextID string) {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		ctx := tracker.Get(sessionID)
+		if ctx != nil && ctx.FrameID == frameID && ctx.ExecutionContextID == executionContextID {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("context for %s did not become frame=%s exec=%s; got %+v", sessionID, frameID, executionContextID, tracker.Get(sessionID))
 }
 
 func waitForSessionCleanup(t *testing.T, screenshots *ScreenshotTracker, sessionID string) {
