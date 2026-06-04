@@ -340,6 +340,22 @@ func TestRenderMarkdownFormatsTables(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownFormatsFencedCodeBlocks(t *testing.T) {
+	lines := renderMarkdown("```go\nfmt.Println(\"ok\")\n```", 80)
+	if len(lines) != 1 {
+		t.Fatalf("lines = %#v, want one rendered code line", lines)
+	}
+	if !strings.Contains(lines[0], "fmt.Println(\"ok\")") {
+		t.Fatalf("code line missing content: %#v", lines)
+	}
+	if strings.Contains(strings.Join(lines, "\n"), "```") {
+		t.Fatalf("code fence markers leaked into rendered lines: %#v", lines)
+	}
+	if !strings.HasPrefix(lines[0], "  │ ") {
+		t.Fatalf("code line should use terminal code-block prefix: %#v", lines)
+	}
+}
+
 func hasUnclosedSGR(line string) bool {
 	active := false
 	for i := 0; i < len(line); i++ {

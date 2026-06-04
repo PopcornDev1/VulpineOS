@@ -1021,6 +1021,11 @@ func renderMarkdown(text string, maxWidth int) []string {
 	var allLines []string
 	rawLines := strings.Split(text, "\n")
 	for i := 0; i < len(rawLines); {
+		if codeLines, next, ok := renderMarkdownCodeBlock(rawLines, i, maxWidth); ok {
+			allLines = append(allLines, codeLines...)
+			i = next
+			continue
+		}
 		if tableLines, next, ok := renderMarkdownTable(rawLines, i, maxWidth); ok {
 			allLines = append(allLines, tableLines...)
 			i = next
@@ -1084,6 +1089,34 @@ func renderPrefixedMarkdown(text string, maxWidth int, firstPrefix, nextPrefix s
 		out = append(out, shared.MutedStyle.Render(prefix)+applyInlineMarkdown(wrappedLine))
 	}
 	return out
+}
+
+func renderMarkdownCodeBlock(rawLines []string, start, maxWidth int) ([]string, int, bool) {
+	open := strings.TrimSpace(rawLines[start])
+	if !strings.HasPrefix(open, "```") {
+		return nil, start, false
+	}
+	next := start + 1
+	var out []string
+	for next < len(rawLines) {
+		line := strings.TrimRight(rawLines[next], " ")
+		next++
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			return out, next, true
+		}
+		out = append(out, renderCodeBlockLine(line, maxWidth))
+	}
+	return out, next, true
+}
+
+func renderCodeBlockLine(line string, maxWidth int) string {
+	const prefix = "  │ "
+	width := maxWidth - ansiVisualWidth(prefix)
+	if width < 1 {
+		width = 1
+	}
+	line = clipCellText(line, width)
+	return shared.MutedStyle.Render(prefix) + lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA")).Render(line)
 }
 
 func renderMarkdownTable(rawLines []string, start, maxWidth int) ([]string, int, bool) {
