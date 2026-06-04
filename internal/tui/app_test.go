@@ -347,7 +347,7 @@ func TestDeletingSelectedAgentLoadsNextPersistedConversation(t *testing.T) {
 	}
 }
 
-func TestDeletingOnlySelectedAgentClearsWorkbenchState(t *testing.T) {
+func TestDeletingOnlySelectedAgentCreatesDefaultChat(t *testing.T) {
 	db := openTestVault(t)
 
 	agent, err := db.CreateAgent("solo-agent", "solo task", "{}")
@@ -368,25 +368,114 @@ func TestDeletingOnlySelectedAgentClearsWorkbenchState(t *testing.T) {
 	})
 	app.agentDetail.SetAgent(agent.ID, "solo-agent", "solo task", "paused", 0, "", "", time.Now())
 
-	model, _ := app.Update(shared.AgentDeletedMsg{AgentID: agent.ID})
+	deleted, ok := app.deleteAgent(agent.ID)().(shared.AgentDeletedMsg)
+	if !ok {
+		t.Fatalf("deleteAgent did not return AgentDeletedMsg")
+	}
+
+	model, cmd := app.Update(deleted)
 	app = model.(App)
 
-	if app.selectedAgentID != "" {
-		t.Fatalf("selected agent = %q, want empty", app.selectedAgentID)
+	created := runAgentCreatedCommand(t, cmd)
+	if created.Agent.Name != "Agent 1" {
+		t.Fatalf("created agent name = %q, want Agent 1", created.Agent.Name)
 	}
-	if app.conversation.AgentID() != "" {
-		t.Fatalf("conversation agent id = %q, want empty", app.conversation.AgentID())
+
+	model, _ = app.Update(created)
+	app = model.(App)
+
+	if app.selectedAgentID != created.Agent.ID {
+		t.Fatalf("selected agent = %q, want %q", app.selectedAgentID, created.Agent.ID)
 	}
-	if app.agentDetail.HasAgent() {
-		t.Fatal("expected agent detail to clear after deleting final agent")
+	if app.conversation.AgentID() != created.Agent.ID {
+		t.Fatalf("conversation agent id = %q, want %q", app.conversation.AgentID(), created.Agent.ID)
+	}
+	if app.focus != FocusConversation || app.inputMode != "chat" {
+		t.Fatalf("focus/input = %d/%q, want conversation/chat", app.focus, app.inputMode)
+	}
+	if !app.agentDetail.HasAgent() {
+		t.Fatal("expected agent detail to show the replacement agent")
+	}
+	agents, err := db.ListAgents()
+	if err != nil {
+		t.Fatalf("list agents: %v", err)
+	}
+	if len(agents) != 1 || agents[0].ID != created.Agent.ID {
+		t.Fatalf("vault agents = %#v, want only replacement agent", agents)
 	}
 	conversationView := app.conversation.View()
-	if !strings.Contains(conversationView, "to create a new agent") {
-		t.Fatalf("expected empty conversation prompt, got:\n%s", conversationView)
+	if strings.Contains(conversationView, "to create a new agent") || strings.Contains(conversationView, "arrow keys") {
+		t.Fatalf("conversation still shows old empty-state prompt:\n%s", conversationView)
 	}
 	detailView := app.agentDetail.View()
-	if !strings.Contains(detailView, "to create a new agent") {
-		t.Fatalf("expected empty detail prompt, got:\n%s", detailView)
+	if !strings.Contains(detailView, "Agent 1") {
+		t.Fatalf("expected detail to show replacement agent, got:\n%s", detailView)
+	}
+}
+
+func TestEmptyVaultStartsInDefaultChat(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.conversation.SetSize(80, 20)
+
+	if app.focus != FocusConversation || app.inputMode != "chat" {
+		t.Fatalf("focus/input = %d/%q, want conversation/chat", app.focus, app.inputMode)
+	}
+	if !app.shouldCreateDefaultAgent() {
+		t.Fatal("empty local vault should schedule a default agent")
+	}
+	if view := app.conversation.View(); strings.Contains(view, "to create a new agent") || strings.Contains(view, "arrow keys") {
+		t.Fatalf("empty startup view still shows old create prompt:\n%s", view)
+	}
+
+	created := runAgentCreatedCommand(t, app.createDefaultAgent())
+	if created.Agent.Name != "Agent 1" {
+		t.Fatalf("created agent name = %q, want Agent 1", created.Agent.Name)
+	}
+
+	model, _ := app.Update(created)
+	app = model.(App)
+	if app.selectedAgentID != created.Agent.ID || app.conversation.AgentID() != created.Agent.ID {
+		t.Fatalf("selected/conversation = %q/%q, want %q", app.selectedAgentID, app.conversation.AgentID(), created.Agent.ID)
+	}
+}
+
+func runAgentCreatedCommand(t *testing.T, cmd tea.Cmd) shared.AgentCreatedMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected default-agent creation command, got nil")
+	}
+	msg := runCommandWithTimeout(t, cmd)
+	if created, ok := msg.(shared.AgentCreatedMsg); ok {
+		return created
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, child := range batch {
+			if child == nil {
+				continue
+			}
+			childMsg := runCommandWithTimeout(t, child)
+			if created, ok := childMsg.(shared.AgentCreatedMsg); ok {
+				return created
+			}
+		}
+	}
+	t.Fatalf("command returned %T, want AgentCreatedMsg", msg)
+	return shared.AgentCreatedMsg{}
+}
+
+func runCommandWithTimeout(t *testing.T, cmd tea.Cmd) tea.Msg {
+	t.Helper()
+	done := make(chan tea.Msg, 1)
+	go func() {
+		done <- cmd()
+	}()
+	select {
+	case msg := <-done:
+		return msg
+	case <-time.After(5 * time.Second):
+		t.Fatal("command timed out")
+		return nil
 	}
 }
 

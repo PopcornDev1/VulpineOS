@@ -861,26 +861,6 @@ func (m Model) view(palette string) string {
 		paletteLines = strings.Split(palette, "\n")
 	}
 
-	// No agent selected — show centered prompt
-	if m.agentID == "" {
-		topPad := m.height/2 - 2 - len(paletteLines)
-		for i := 0; i < topPad; i++ {
-			b.WriteString("\n")
-		}
-		b.WriteString(shared.MutedStyle.Render("  Press "))
-		b.WriteString(shared.KeyStyle.Render("n"))
-		b.WriteString(shared.MutedStyle.Render(" to create a new agent"))
-		b.WriteString("\n\n")
-		b.WriteString(shared.MutedStyle.Render("  Or use the "))
-		b.WriteString(shared.KeyStyle.Render("↑/↓"))
-		b.WriteString(shared.MutedStyle.Render(" arrow keys to select an agent"))
-		for _, line := range paletteLines {
-			b.WriteString("\n")
-			b.WriteString(line)
-		}
-		return b.String()
-	}
-
 	// Build the input line (rendered inside the styled input block below).
 	inputArea := m.inputArea()
 

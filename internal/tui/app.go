@@ -170,7 +170,10 @@ type remoteSkillSummary struct {
 	Enabled bool   `json:"enabled"`
 }
 
-const remoteAPIKeyPlaceholder = "__vulpine_remote_api_key_set__"
+const (
+	defaultAgentName        = "Agent 1"
+	remoteAPIKeyPlaceholder = "__vulpine_remote_api_key_set__"
+)
 
 // App is the root Bubbletea model for the 3-column agent workbench.
 type App struct {
@@ -345,9 +348,7 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 				app.inputMode = "chat"
 				app.conversation.SetAwake(true)
 			} else {
-				// No agents — auto-enter creation flow
-				app.inputMode = "new-agent-name"
-				app.nameInput.Focus()
+				app.prepareDefaultChatPlaceholder()
 			}
 		}
 	}
@@ -578,11 +579,32 @@ func (a App) Init() tea.Cmd {
 		a.replayBrowserTargets(),
 		conversation.InputPulseTick(),
 	}
+	if a.shouldCreateDefaultAgent() {
+		cmds = append(cmds, a.createDefaultAgent())
+	}
 	if a.control != nil {
 		cmds = append(cmds, a.loadRemoteAgents())
 		cmds = append(cmds, a.loadRemoteStatus())
 	}
 	return tea.Batch(cmds...)
+}
+
+func (a App) shouldCreateDefaultAgent() bool {
+	return a.control == nil && a.vault != nil && len(a.agentList.AllAgents()) == 0
+}
+
+func (a *App) prepareDefaultChatPlaceholder() {
+	a.selectedAgentID = ""
+	a.conversation.SetAgentID("")
+	a.conversation.SetAgentName(defaultAgentName)
+	a.conversation.SetAwake(true)
+	a.agentDetail.Clear()
+	a.focus = FocusConversation
+	a.inputMode = "chat"
+}
+
+func (a *App) createDefaultAgent() tea.Cmd {
+	return a.createAgent(defaultAgentName, defaultAgentName, "")
 }
 
 func (a App) replayBrowserTargets() tea.Cmd {
@@ -1322,6 +1344,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				a.refreshAgentDetail(newID)
 			}
+		}
+		if a.shouldCreateDefaultAgent() {
+			a.prepareDefaultChatPlaceholder()
+			cmds = append(cmds, a.createDefaultAgent())
 		}
 		a.notice = "Agent deleted"
 		a.noticeTTL = 3

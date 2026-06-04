@@ -98,6 +98,16 @@ func TestTraceOnlyShowsPlaceholderWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestNoAgentViewDoesNotShowCreateInstructions(t *testing.T) {
+	m := New()
+	m.SetSize(80, 20)
+
+	view := m.View()
+	if strings.Contains(view, "to create a new agent") || strings.Contains(view, "arrow keys") {
+		t.Fatalf("no-agent view still shows legacy create instructions:\n%s", view)
+	}
+}
+
 func TestSetSizeRewrapsRenderedEntries(t *testing.T) {
 	m := New()
 	m.SetSize(80, 20)

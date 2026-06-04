@@ -143,11 +143,7 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	if m.agentID == "" {
-		b.WriteString("\n")
-		b.WriteString(shared.MutedStyle.Render("  Press "))
-		b.WriteString(shared.KeyStyle.Render("n"))
-		b.WriteString(shared.MutedStyle.Render(" to create a new agent"))
-		return b.String()
+		return ""
 	}
 
 	// Line 1: Agent name

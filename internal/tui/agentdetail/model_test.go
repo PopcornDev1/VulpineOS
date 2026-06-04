@@ -9,6 +9,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+func TestEmptyViewDoesNotShowCreateInstructions(t *testing.T) {
+	m := New()
+	m.SetSize(30, 8)
+
+	view := m.View()
+	if strings.Contains(view, "to create a new agent") || strings.Contains(view, "Press n") {
+		t.Fatalf("empty detail view still shows legacy create instructions:\n%s", view)
+	}
+}
+
 func TestViewConstrainsLongRowsToWidth(t *testing.T) {
 	m := New()
 	m.SetSize(18, 8)
