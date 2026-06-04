@@ -245,12 +245,12 @@ func baseTools() []ToolDefinition {
 		},
 		{
 			Name:        "vulpine_page_settled",
-			Description: "Wait until the page is fully loaded and stable. Checks document.readyState, DOM mutations, and pending images. Use after navigation or clicking links that load new pages.",
+			Description: "Wait until the page is usable and preferably stable. Dynamic SPAs may return a usable warning instead of failing when they keep polling or updating. Timeout default: 30s.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
 					"sessionId": {Type: "string", Description: "Target page session ID"},
-					"timeout":   {Type: "number", Description: "Timeout in seconds (default 10)"},
+					"timeout":   {Type: "number", Description: "Timeout in seconds (default 30)"},
 				},
 				Required: []string{"sessionId"},
 			},
@@ -539,16 +539,25 @@ func handleNavigate(client *juggler.Client, tracker *ContextTracker, args json.R
 		return errorResult(fmt.Errorf("url %q is not absolute (missing scheme); prepend https://", p.URL)), nil
 	}
 
-	// Resolve frame ID for this session
-	ctx, err := tracker.Resolve(p.SessionID)
-	if err != nil {
-		return errorResult(fmt.Errorf("cannot navigate: %w", err)), nil
+	callParams := map[string]interface{}{"url": p.URL}
+	if tracker != nil {
+		if ctx := tracker.Get(p.SessionID); ctx != nil && ctx.FrameID != "" {
+			callParams["frameId"] = ctx.FrameID
+		}
 	}
 
-	_, err = client.Call(p.SessionID, "Page.navigate", map[string]interface{}{
-		"url":     p.URL,
-		"frameId": ctx.FrameID,
-	})
+	_, err := client.Call(p.SessionID, "Page.navigate", callParams)
+	if err != nil && callParams["frameId"] != nil && strings.Contains(err.Error(), "no browsing context for frameId") {
+		delete(callParams, "frameId")
+		_, err = client.Call(p.SessionID, "Page.navigate", callParams)
+	}
+	if err != nil && callParams["frameId"] == nil && isFrameIDRequiredError(err) && tracker != nil {
+		ctx, resolveErr := tracker.ResolveFrame(p.SessionID)
+		if resolveErr == nil && ctx != nil && ctx.FrameID != "" {
+			callParams["frameId"] = ctx.FrameID
+			_, err = client.Call(p.SessionID, "Page.navigate", callParams)
+		}
+	}
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -563,6 +572,14 @@ func handleNavigate(client *juggler.Client, tracker *ContextTracker, args json.R
 	resetSnapshotProfile(p.SessionID)
 
 	return textResult(fmt.Sprintf("Navigated to %s", p.URL)), nil
+}
+
+func isFrameIDRequiredError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "frameid") && (strings.Contains(msg, "required") || strings.Contains(msg, "missing") || strings.Contains(msg, "expected"))
 }
 
 func handleSnapshot(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
@@ -737,7 +754,7 @@ func handleScroll(client *juggler.Client, tracker *ContextTracker, args json.Raw
 		return errorResult(err), nil
 	}
 
-	result, err := evalJS(client, p.SessionID, fmt.Sprintf(`(() => {
+	result, err := evalJSWithTracker(client, tracker, p.SessionID, fmt.Sprintf(`(() => {
 		window.scrollBy(0, %f);
 		return Math.round(window.scrollY);
 	})()`, p.DeltaY))

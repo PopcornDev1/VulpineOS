@@ -135,6 +135,33 @@ func TestContextTrackerResolveRequiresFrameID(t *testing.T) {
 	}
 }
 
+func TestContextTrackerClearsExecutionContextOnContextsCleared(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	client := juggler.NewClient(transport)
+	t.Cleanup(func() { _ = client.Close() })
+
+	tracker := NewContextTracker(client)
+	t.Cleanup(tracker.Close)
+	tracker.mu.Lock()
+	tracker.contexts["session-clear"] = &SessionContext{
+		ExecutionContextID: "exec-old",
+		FrameID:            "frame-main",
+	}
+	tracker.mu.Unlock()
+
+	transport.InjectEvent("session-clear", "Runtime.executionContextsCleared", map[string]any{})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		ctx := tracker.Get("session-clear")
+		if ctx != nil && ctx.ExecutionContextID == "" && ctx.FrameID == "frame-main" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("execution context was not cleared; got %+v", tracker.Get("session-clear"))
+}
+
 func waitForContext(t *testing.T, tracker *ContextTracker, sessionID string, wantPresent bool) {
 	t.Helper()
 	deadline := time.Now().Add(500 * time.Millisecond)

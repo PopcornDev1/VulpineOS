@@ -1009,7 +1009,7 @@ const Page = {
     },
     'navigate': {
       params: {
-        frameId: t.String,
+        frameId: t.Optional(t.String),
         url: t.String,
         referer: t.Optional(t.String),
       },

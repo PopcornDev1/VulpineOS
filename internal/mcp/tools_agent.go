@@ -37,11 +37,15 @@ func handleWait(client *juggler.Client, tracker *ContextTracker, args json.RawMe
 
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 	pollInterval := 300 * time.Millisecond
+	lastDetail := ""
 
 	for time.Now().Before(deadline) {
 		met, detail, err := checkCondition(client, tracker, p.SessionID, p.Condition, p.Selector, p.Text, p.Ref)
 		if err != nil {
 			return errorResult(err), nil
+		}
+		if detail != "" {
+			lastDetail = detail
 		}
 		if met {
 			return textResult(fmt.Sprintf("Condition met: %s (%s)", p.Condition, detail)), nil
@@ -49,6 +53,9 @@ func handleWait(client *juggler.Client, tracker *ContextTracker, args json.RawMe
 		time.Sleep(pollInterval)
 	}
 
+	if lastDetail != "" {
+		return errorResult(fmt.Errorf("timeout after %ds waiting for condition: %s (last: %s)", timeout, p.Condition, lastDetail)), nil
+	}
 	return errorResult(fmt.Errorf("timeout after %ds waiting for condition: %s", timeout, p.Condition)), nil
 }
 
@@ -65,7 +72,7 @@ func checkCondition(client *juggler.Client, tracker *ContextTracker, sessionID, 
 				window.getComputedStyle(el).visibility !== 'hidden';
 			return JSON.stringify({found: true, visible: visible, text: el.textContent.substring(0, 100)});
 		})()`, selector)
-		result, err := evalJS(client, sessionID, js)
+		result, err := evalJSWithTracker(client, tracker, sessionID, js)
 		if err != nil {
 			return false, "", nil // page might not be ready yet
 		}
@@ -78,19 +85,19 @@ func checkCondition(client *juggler.Client, tracker *ContextTracker, sessionID, 
 		if r.Found && r.Visible {
 			return true, fmt.Sprintf("element %q found: %q", selector, truncate(r.Text, 50)), nil
 		}
-		return false, "", fmt.Errorf("element %q not found or not visible", selector)
+		return false, fmt.Sprintf("element %q not found or not visible yet", selector), nil
 
 	case "text":
 		// Check if page body contains specific text
 		js := `document.body.innerText`
-		result, err := evalJS(client, sessionID, js)
+		result, err := evalJSWithTracker(client, tracker, sessionID, js)
 		if err != nil {
 			return false, "", nil
 		}
 		if strings.Contains(result, text) {
 			return true, fmt.Sprintf("text %q found on page", truncate(text, 50)), nil
 		}
-		return false, "", fmt.Errorf("text %q not found on page", text)
+		return false, fmt.Sprintf("text %q not found on page yet", text), nil
 
 	case "networkIdle":
 		// Check if there are no pending network requests (via performance API)
@@ -99,7 +106,7 @@ func checkCondition(client *juggler.Client, tracker *ContextTracker, sessionID, 
 			const recent = entries.filter(e => (performance.now() - e.startTime) < 500 && e.duration === 0);
 			return JSON.stringify({pending: recent.length});
 		})()`
-		result, err := evalJS(client, sessionID, js)
+		result, err := evalJSWithTracker(client, tracker, sessionID, js)
 		if err != nil {
 			return false, "", nil
 		}
@@ -110,28 +117,28 @@ func checkCondition(client *juggler.Client, tracker *ContextTracker, sessionID, 
 		if r.Pending == 0 {
 			return true, "network idle", nil
 		}
-		return false, "", fmt.Errorf("network not idle")
+		return false, "network not idle yet", nil
 
 	case "domStable":
 		// Take two snapshots 300ms apart and compare
 		js := `document.documentElement.innerHTML.length`
-		result1, err := evalJS(client, sessionID, js)
+		result1, err := evalJSWithTracker(client, tracker, sessionID, js)
 		if err != nil {
 			return false, "", nil
 		}
 		time.Sleep(300 * time.Millisecond)
-		result2, err := evalJS(client, sessionID, js)
+		result2, err := evalJSWithTracker(client, tracker, sessionID, js)
 		if err != nil {
 			return false, "", nil
 		}
 		if result1 == result2 {
 			return true, "DOM stable", nil
 		}
-		return false, "", fmt.Errorf("DOM not stable")
+		return false, "DOM not stable yet", nil
 
 	case "urlContains":
 		js := `window.location.href`
-		result, err := evalJS(client, sessionID, js)
+		result, err := evalJSWithTracker(client, tracker, sessionID, js)
 		if err != nil {
 			return false, "", nil
 		}
@@ -214,7 +221,7 @@ func handleFind(client *juggler.Client, tracker *ContextTracker, args json.RawMe
 		return JSON.stringify(results);
 	})()`, p.Query, p.Role, maxResults)
 
-	result, err := evalJS(client, p.SessionID, js)
+	result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -271,7 +278,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 	switch p.Check {
 	case "exists":
 		js := fmt.Sprintf(`!!document.querySelector(%q)`, p.Selector)
-		result, err := evalJS(client, p.SessionID, js)
+		result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -288,7 +295,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 			const style = window.getComputedStyle(el);
 			return (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden') ? "visible" : "hidden";
 		})()`, p.Selector)
-		result, err := evalJS(client, p.SessionID, js)
+		result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -302,7 +309,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 			const el = document.querySelector(%q);
 			return el ? String(el.checked) : "not_found";
 		})()`, p.Selector)
-		result, err := evalJS(client, p.SessionID, js)
+		result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -316,7 +323,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 			const el = document.querySelector(%q);
 			return el ? el.value : "not_found";
 		})()`, p.Selector)
-		result, err := evalJS(client, p.SessionID, js)
+		result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -330,7 +337,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 			const el = document.querySelector(%q);
 			return el ? el.textContent.trim() : "not_found";
 		})()`, p.Selector)
-		result, err := evalJS(client, p.SessionID, js)
+		result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -341,7 +348,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 
 	case "url":
 		js := `window.location.href`
-		result, err := evalJS(client, p.SessionID, js)
+		result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -352,7 +359,7 @@ func handleVerify(client *juggler.Client, tracker *ContextTracker, args json.Raw
 
 	case "title":
 		js := `document.title`
-		result, err := evalJS(client, p.SessionID, js)
+		result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -419,11 +426,9 @@ func handleScreenshotDiff(client *juggler.Client, tracker *ScreenshotTracker, ar
 	return textResult(fmt.Sprintf("CHANGED: screenshot %q shows %s from previous checkpoint", p.Label, diffDesc)), nil
 }
 
-// handlePageSettled waits until the page is fully loaded and stable.
-// Uses two success conditions:
-//   - Network idle: performance resource count stable for 600ms (works for SPAs)
-//   - DOM stability: full state snapshot identical for 600ms (fast path for static pages)
-// Accepts as soon as EITHER condition is met, preventing timeout on modern SPAs.
+// handlePageSettled waits until the page is usable and preferably stable.
+// It returns success for stable pages, and a success-with-detail for dynamic
+// pages that are interactive/complete but still polling or updating.
 func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
 	var p struct {
 		SessionID string `json:"sessionId"`
@@ -439,10 +444,17 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 	}
 
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
-	var lastSnapshot string
+	var lastDOMFingerprint string
 	var lastResourceCount string
 	var networkIdleCount int
 	var domStableCount int
+	var lastState struct {
+		ReadyState    string `json:"readyState"`
+		BodyLen       int    `json:"bodyLen"`
+		ResourceCount int    `json:"resourceCount"`
+		URL           string `json:"url"`
+	}
+	var sawUsable bool
 
 	for time.Now().Before(deadline) {
 		js := `(() => {
@@ -455,7 +467,7 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 				url: window.location.href
 			});
 		})()`
-		result, err := evalJS(client, p.SessionID, js)
+		result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 		if err != nil {
 			time.Sleep(300 * time.Millisecond)
 			continue
@@ -468,16 +480,18 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 			URL           string `json:"url"`
 		}
 		json.Unmarshal([]byte(result), &state)
+		lastState = state
 
-		// Don't proceed until readyState is complete
-		if state.ReadyState != "complete" {
-			lastSnapshot = ""
+		usable := (state.ReadyState == "complete" || state.ReadyState == "interactive") && state.BodyLen > 0
+		if !usable {
+			lastDOMFingerprint = ""
 			lastResourceCount = ""
 			networkIdleCount = 0
 			domStableCount = 0
 			time.Sleep(300 * time.Millisecond)
 			continue
 		}
+		sawUsable = true
 
 		// Condition A: network idle — resource count unchanged for 2 polls
 		rc := fmt.Sprintf("%d", state.ResourceCount)
@@ -488,12 +502,14 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 			lastResourceCount = rc
 		}
 
-		// Condition B: DOM stability — full snapshot unchanged for 2 polls
-		if result == lastSnapshot {
+		// Condition B: DOM stability — document readiness/body/url unchanged for 2 polls.
+		// Keep resourceCount separate so telemetry/polling churn does not invalidate DOM stability.
+		domFingerprint := fmt.Sprintf("%s|%d|%s", state.ReadyState, state.BodyLen, state.URL)
+		if domFingerprint == lastDOMFingerprint {
 			domStableCount++
 		} else {
 			domStableCount = 0
-			lastSnapshot = result
+			lastDOMFingerprint = domFingerprint
 		}
 
 		if networkIdleCount >= 2 || domStableCount >= 2 {
@@ -504,6 +520,15 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 		time.Sleep(300 * time.Millisecond)
 	}
 
+	if sawUsable {
+		return textResult(fmt.Sprintf("Page usable: readyState=%s, bodyLen=%d, resourceCount=%d, url=%s (still changing; networkIdlePolls=%d domStablePolls=%d)",
+			lastState.ReadyState, lastState.BodyLen, lastState.ResourceCount, lastState.URL, networkIdleCount, domStableCount)), nil
+	}
+
+	if lastState.ReadyState != "" || lastState.URL != "" || lastState.BodyLen != 0 || lastState.ResourceCount != 0 {
+		return errorResult(fmt.Errorf("page did not become usable within %ds (last readyState=%s bodyLen=%d resourceCount=%d url=%s)",
+			timeout, lastState.ReadyState, lastState.BodyLen, lastState.ResourceCount, lastState.URL)), nil
+	}
 	return errorResult(fmt.Errorf("page did not settle within %ds", timeout)), nil
 }
 
@@ -542,7 +567,7 @@ func handleSelectOption(client *juggler.Client, tracker *ContextTracker, args js
 		return errorResult(fmt.Errorf("either value or text is required")), nil
 	}
 
-	result, err := evalJS(client, p.SessionID, js)
+	result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -584,7 +609,7 @@ func handleFillForm(client *juggler.Client, tracker *ContextTracker, args json.R
 			return "ok";
 		})()`, selector, value)
 
-		result, err := evalJS(client, p.SessionID, js)
+		result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 		if err != nil {
 			errors = append(errors, fmt.Sprintf("%s: %v", selector, err))
 			continue
@@ -631,7 +656,7 @@ func handleGetPageInfo(client *juggler.Client, tracker *ContextTracker, args jso
 		alerts: 0,
 	})`
 
-	result, err := evalJS(client, p.SessionID, js)
+	result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -716,7 +741,7 @@ func handleClearInput(client *juggler.Client, tracker *ContextTracker, args json
 			el.dispatchEvent(new Event('change', {bubbles: true}));
 			return "ok";
 		})()`, p.Selector)
-		result, err := evalJS(client, p.SessionID, js)
+		result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 		if err != nil {
 			return errorResult(err), nil
 		}
@@ -734,7 +759,7 @@ func handleClearInput(client *juggler.Client, tracker *ContextTracker, args json
 		el.dispatchEvent(new Event('change', {bubbles: true}));
 		return "ok";
 	})()`
-	result, err := evalJS(client, p.SessionID, js)
+	result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -789,7 +814,7 @@ func handleGetFormErrors(client *juggler.Client, tracker *ContextTracker, args j
 		return JSON.stringify({errors: errors, count: errors.length});
 	})()`, sel)
 
-	result, err := evalJS(client, p.SessionID, js)
+	result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -799,19 +824,48 @@ func handleGetFormErrors(client *juggler.Client, tracker *ContextTracker, args j
 // --- Helper functions ---
 
 // evalJS evaluates JavaScript and returns the string result.
-// Fully resolves the execution context when possible for determinism,
-// but falls back to calling Runtime.evaluate without a context ID so
-// that SPAs which create new targets on navigation (e.g. cross-origin
-// redirects in Fission) don't permanently break tool loops.
+// Use evalJSWithTracker when the caller has a ContextTracker; this raw helper
+// intentionally leaves context selection to the browser.
 func evalJS(client *juggler.Client, sessionID, expression string) (string, error) {
+	return evalJSWithContextID(client, sessionID, expression, "")
+}
+
+func evalJSWithTracker(client *juggler.Client, tracker *ContextTracker, sessionID, expression string) (string, error) {
+	if tracker != nil {
+		ctx := tracker.Get(sessionID)
+		if ctx != nil && ctx.ExecutionContextID != "" {
+			result, evalErr := evalJSWithContextID(client, sessionID, expression, ctx.ExecutionContextID)
+			if evalErr == nil {
+				return result, nil
+			}
+			tracker.InvalidateExecutionContext(sessionID)
+		}
+		if ctx != nil && ctx.FrameID != "" {
+			if resolved, err := tracker.Resolve(sessionID); err == nil && resolved != nil && resolved.ExecutionContextID != "" {
+				result, evalErr := evalJSWithContextID(client, sessionID, expression, resolved.ExecutionContextID)
+				if evalErr == nil {
+					return result, nil
+				}
+				tracker.InvalidateExecutionContext(sessionID)
+			}
+		}
+	}
+	return evalJSWithContextID(client, sessionID, expression, "")
+}
+
+func evalJSWithContextID(client *juggler.Client, sessionID, expression, executionContextID string) (string, error) {
 	if client == nil {
 		return "", fmt.Errorf("no browser connection")
 	}
 
-	result, err := client.Call(sessionID, "Runtime.evaluate", map[string]interface{}{
+	params := map[string]interface{}{
 		"expression":    expression,
 		"returnByValue": true,
-	})
+	}
+	if executionContextID != "" {
+		params["executionContextId"] = executionContextID
+	}
+	result, err := client.Call(sessionID, "Runtime.evaluate", params)
 	if err != nil {
 		return "", err
 	}

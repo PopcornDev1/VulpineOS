@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"vulpineos/internal/juggler"
+	"vulpineos/internal/testutil"
 )
 
 func TestToolSchemaProperties(t *testing.T) {
@@ -203,6 +204,123 @@ func TestTextResult(t *testing.T) {
 	}
 	if r.IsError {
 		t.Error("textResult should not be an error")
+	}
+}
+
+func TestHandleNavigateDoesNotRequireTrackedExecutionContext(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondError("Accessibility.getFullAXTree", "AX probe should not be required for navigation")
+	transport.RespondJSON("Page.navigate", map[string]any{"navigationId": "nav-1"})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleNavigate(client, tracker, json.RawMessage(`{"sessionId":"session-new","url":"https://example.com"}`))
+	if err != nil {
+		t.Fatalf("handleNavigate returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleNavigate result = %#v, want success", result)
+	}
+	if calls := transport.CallsByMethod("Accessibility.getFullAXTree"); len(calls) != 0 {
+		t.Fatalf("navigate made %d AX probe call(s), want none", len(calls))
+	}
+	navCall, ok := transport.LastCall("Page.navigate")
+	if !ok {
+		t.Fatal("Page.navigate was not called")
+	}
+	var params map[string]any
+	if err := json.Unmarshal(navCall.Params, &params); err != nil {
+		t.Fatalf("unmarshal navigate params: %v", err)
+	}
+	if params["url"] != "https://example.com" {
+		t.Fatalf("navigate url = %v, want https://example.com", params["url"])
+	}
+	if _, ok := params["frameId"]; ok {
+		t.Fatalf("navigate params included frameId without tracked frame: %#v", params)
+	}
+}
+
+func TestHandleNavigateUsesKnownFrameWithoutExecutionContext(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondError("Accessibility.getFullAXTree", "AX probe should not be required for navigation")
+	transport.RespondJSON("Page.navigate", map[string]any{"navigationId": "nav-1"})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+	tracker.mu.Lock()
+	tracker.contexts["session-known-frame"] = &SessionContext{FrameID: "frame-known"}
+	tracker.mu.Unlock()
+
+	result, err := handleNavigate(client, tracker, json.RawMessage(`{"sessionId":"session-known-frame","url":"https://example.com/known"}`))
+	if err != nil {
+		t.Fatalf("handleNavigate returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleNavigate result = %#v, want success", result)
+	}
+	if calls := transport.CallsByMethod("Accessibility.getFullAXTree"); len(calls) != 0 {
+		t.Fatalf("navigate made %d AX probe call(s), want none", len(calls))
+	}
+	navCall, ok := transport.LastCall("Page.navigate")
+	if !ok {
+		t.Fatal("Page.navigate was not called")
+	}
+	var params map[string]any
+	if err := json.Unmarshal(navCall.Params, &params); err != nil {
+		t.Fatalf("unmarshal navigate params: %v", err)
+	}
+	if params["frameId"] != "frame-known" {
+		t.Fatalf("navigate frameId = %v, want frame-known", params["frameId"])
+	}
+}
+
+func TestHandleNavigateFallsBackToFrameProbeWhenFrameIDRequired(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	navigateCalls := 0
+	transport.RespondFunc("Page.navigate", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		navigateCalls++
+		if navigateCalls == 1 {
+			return nil, &juggler.Error{Message: "frameId is required"}
+		}
+		return json.RawMessage(`{"navigationId":"nav-2"}`), nil
+	})
+	transport.RespondFunc("Accessibility.getFullAXTree", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		transport.InjectEvent("session-legacy", "Page.frameAttached", map[string]any{
+			"frameId": "frame-legacy",
+		})
+		return json.RawMessage(`{}`), nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleNavigate(client, tracker, json.RawMessage(`{"sessionId":"session-legacy","url":"https://example.com/legacy"}`))
+	if err != nil {
+		t.Fatalf("handleNavigate returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleNavigate result = %#v, want success", result)
+	}
+	if navigateCalls != 2 {
+		t.Fatalf("navigateCalls = %d, want first failure plus retry", navigateCalls)
+	}
+	navCall, ok := transport.LastCall("Page.navigate")
+	if !ok {
+		t.Fatal("Page.navigate was not called")
+	}
+	var params map[string]any
+	if err := json.Unmarshal(navCall.Params, &params); err != nil {
+		t.Fatalf("unmarshal navigate params: %v", err)
+	}
+	if params["frameId"] != "frame-legacy" {
+		t.Fatalf("retry frameId = %v, want frame-legacy", params["frameId"])
 	}
 }
 

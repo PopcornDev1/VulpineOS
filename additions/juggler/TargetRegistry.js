@@ -488,6 +488,10 @@ export class PageTarget {
     return helper.collectAllBrowsingContexts(this._linkedBrowser.browsingContext).find(bc => helper.browsingContextToFrameId(bc) === frameId);
   }
 
+  mainBrowsingContext() {
+    return this._linkedBrowser.browsingContext;
+  }
+
   nextActorSequenceNumber() {
     return ++this._actorSequenceNumber;
   }

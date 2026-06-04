@@ -1,7 +1,13 @@
 package mcp
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
+
+	"vulpineos/internal/juggler"
+	"vulpineos/internal/testutil"
 )
 
 func TestTruncate(t *testing.T) {
@@ -116,5 +122,154 @@ func TestEvalJSHelper_NotPanicsOnNilClient(t *testing.T) {
 	_, err := evalJS(nil, "session", "1+1")
 	if err == nil {
 		t.Error("expected error with nil client")
+	}
+}
+
+func TestHandleWaitPollsUntilTextAppears(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	evalCalls := 0
+	transport.RespondFunc("Runtime.evaluate", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		evalCalls++
+		text := "loading"
+		if evalCalls >= 3 {
+			text = "loading\nReady now"
+		}
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": text},
+		})
+		if err != nil {
+			t.Fatalf("marshal eval result: %v", err)
+		}
+		return data, nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleWait(client, tracker, json.RawMessage(`{"sessionId":"session-wait","condition":"text","text":"Ready now","timeout":2}`))
+	if err != nil {
+		t.Fatalf("handleWait returned error: %v", err)
+	}
+	if result == nil || len(result.Content) == 0 {
+		t.Fatalf("empty wait result: %#v", result)
+	}
+	if result.IsError {
+		t.Fatalf("wait should not fail on first missing text: %s", result.Content[0].Text)
+	}
+	if evalCalls < 3 {
+		t.Fatalf("evalCalls = %d, want polling until text appears", evalCalls)
+	}
+	if got := result.Content[0].Text; !strings.Contains(got, "Condition met") {
+		t.Fatalf("wait text = %q, want condition met", got)
+	}
+}
+
+func TestHandleWaitUsesTrackedExecutionContext(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Runtime.evaluate", map[string]any{
+		"result": map[string]any{"value": "https://example.com/dashboard"},
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+	tracker.mu.Lock()
+	tracker.contexts["session-eval"] = &SessionContext{
+		ExecutionContextID: "exec-current",
+		FrameID:            "frame-current",
+	}
+	tracker.mu.Unlock()
+
+	result, err := handleWait(client, tracker, json.RawMessage(`{"sessionId":"session-eval","condition":"urlContains","text":"dashboard","timeout":1}`))
+	if err != nil {
+		t.Fatalf("handleWait returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleWait result = %#v, want success", result)
+	}
+
+	call, ok := transport.LastCall("Runtime.evaluate")
+	if !ok {
+		t.Fatal("Runtime.evaluate was not called")
+	}
+	var params map[string]any
+	if err := json.Unmarshal(call.Params, &params); err != nil {
+		t.Fatalf("unmarshal eval params: %v", err)
+	}
+	if params["executionContextId"] != "exec-current" {
+		t.Fatalf("executionContextId = %v, want exec-current", params["executionContextId"])
+	}
+}
+
+func TestHandlePageSettledReturnsUsableForDynamicPage(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	evalCalls := 0
+	transport.RespondFunc("Runtime.evaluate", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		evalCalls++
+		state := fmt.Sprintf(`{"readyState":"complete","bodyLen":%d,"resourceCount":%d,"url":"https://app.example/dashboard"}`, 1000+evalCalls, evalCalls)
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": state},
+		})
+		if err != nil {
+			t.Fatalf("marshal eval result: %v", err)
+		}
+		return data, nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handlePageSettled(client, tracker, json.RawMessage(`{"sessionId":"session-dynamic","timeout":1}`))
+	if err != nil {
+		t.Fatalf("handlePageSettled returned error: %v", err)
+	}
+	if result == nil || len(result.Content) == 0 {
+		t.Fatalf("empty page_settled result: %#v", result)
+	}
+	if result.IsError {
+		t.Fatalf("dynamic usable page should not be a tool error: %s", result.Content[0].Text)
+	}
+	if got := result.Content[0].Text; !strings.Contains(got, "Page usable:") || !strings.Contains(got, "still changing") {
+		t.Fatalf("page_settled text = %q, want usable dynamic-page message", got)
+	}
+}
+
+func TestHandlePageSettledIgnoresResourceChurnWhenDOMStable(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	evalCalls := 0
+	transport.RespondFunc("Runtime.evaluate", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		evalCalls++
+		state := fmt.Sprintf(`{"readyState":"complete","bodyLen":1200,"resourceCount":%d,"url":"https://app.example/dashboard"}`, evalCalls)
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": state},
+		})
+		if err != nil {
+			t.Fatalf("marshal eval result: %v", err)
+		}
+		return data, nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handlePageSettled(client, tracker, json.RawMessage(`{"sessionId":"session-churn","timeout":2}`))
+	if err != nil {
+		t.Fatalf("handlePageSettled returned error: %v", err)
+	}
+	if result == nil || len(result.Content) == 0 {
+		t.Fatalf("empty page_settled result: %#v", result)
+	}
+	if result.IsError {
+		t.Fatalf("stable DOM with resource churn should not be a tool error: %s", result.Content[0].Text)
+	}
+	if got := result.Content[0].Text; !strings.Contains(got, "Page settled:") {
+		t.Fatalf("page_settled text = %q, want settled", got)
 	}
 }
