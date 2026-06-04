@@ -48,7 +48,7 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 // Input block (OpenCode-style chat box) styling.
 var (
 	inputBlockBg     = shared.ColorBg
-	inputRailStyle   = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(inputBlockBg)
+	inputRailStyle   = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(shared.ColorPrimary)
 	inputBlockStyle  = lipgloss.NewStyle().Background(inputBlockBg)
 	inputStatusStyle = lipgloss.NewStyle().
 				Foreground(shared.ColorPrimary).
@@ -60,7 +60,7 @@ var (
 				Foreground(inputBlockBg).
 				Background(lipgloss.Color("#E5E7EB"))
 	inputHalfLineStyle = lipgloss.NewStyle().Foreground(inputBlockBg).Background(inputBlockBg)
-	inputHalfRailStyle = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(inputBlockBg)
+	inputHalfRailStyle = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(shared.ColorPrimary)
 )
 
 const (
@@ -810,7 +810,7 @@ func (m Model) inputArea() string {
 		return m.inputTextView()
 	}
 	if m.agentStatus == "error" {
-		return inputMutedStyle.Render("Agent failed - press Enter to retry")
+		return inputMutedStyle.Render("Agent failed")
 	}
 	if !m.awake && m.thinking {
 		return inputMutedStyle.Render("Chat available after agent responds")
@@ -819,7 +819,7 @@ func (m Model) inputArea() string {
 		return m.inputTextView()
 	}
 	if m.awake {
-		return inputMutedStyle.Render("Press Enter to chat...")
+		return m.inputTextView()
 	}
 	return inputMutedStyle.Render("Agent not active")
 }
@@ -1025,14 +1025,14 @@ func (m Model) inputMetadata(maxWidth int) string {
 func inputBlockLine(content string, blockWidth int) string {
 	contentWidth := blockWidth - 1
 	if contentWidth < 1 {
-		return inputRailStyle.Render("▌")
+		return inputRailStyle.Render(" ")
 	}
 	content = fitCellLine(content, contentWidth)
 	padding := ""
 	if contentWidth > ansiVisualWidth(content) {
 		padding = strings.Repeat(" ", contentWidth-ansiVisualWidth(content))
 	}
-	return inputRailStyle.Render("▌") + content + inputBlockStyle.Render(padding)
+	return inputRailStyle.Render(" ") + content + inputBlockStyle.Render(padding)
 }
 
 func inputAreaLines(inputArea string) []string {
@@ -1046,9 +1046,9 @@ func inputAreaLines(inputArea string) []string {
 func inputBlockHalfLine(blockWidth int) string {
 	contentWidth := blockWidth - 1
 	if contentWidth < 1 {
-		return inputHalfRailStyle.Render("▌")
+		return inputHalfRailStyle.Render(" ")
 	}
-	return inputHalfRailStyle.Render("▌") + inputHalfLineStyle.Render(strings.Repeat("▀", contentWidth))
+	return inputHalfRailStyle.Render(" ") + inputHalfLineStyle.Render(strings.Repeat("▀", contentWidth))
 }
 
 func clipCellText(text string, maxWidth int) string {

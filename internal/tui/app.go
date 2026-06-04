@@ -605,6 +605,12 @@ func (a *App) prepareDefaultChatPlaceholder() {
 	a.conversation.Focus()
 }
 
+func (a *App) focusChatComposer() tea.Cmd {
+	a.focus = FocusConversation
+	a.inputMode = "chat"
+	return a.conversation.Focus()
+}
+
 func (a *App) createDefaultAgent() tea.Cmd {
 	return a.createAgent(defaultAgentName, defaultAgentName, "")
 }
@@ -921,20 +927,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.settings, cmd = a.settings.Update(msg)
 			// If settings closed itself (via Esc or Tab cycling out)
 			if !a.settings.IsActive() {
-				a.focus = FocusAgentList
+				cmds = append(cmds, a.focusChatComposer())
 			}
-			return a, cmd
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return a, tea.Batch(cmds...)
 		}
 
-		// Global controls are intentionally minimal: Ctrl+C exits, Esc cancels
-		// the current focus, and "/" opens the command palette.
+		// Global controls are intentionally minimal: Ctrl+C exits, Esc returns
+		// to the always-active chat composer, and "/" opens the command palette.
 		switch msg.String() {
 		case "ctrl+c":
 			return a, a.shutdown()
 		case "esc":
-			a.conversation.Blur()
-			a.inputMode = ""
-			a.focus = FocusAgentList
+			cmds = append(cmds, a.focusChatComposer())
 		case "/":
 			if a.selectedAgentID != "" {
 				a.focus = FocusConversation
@@ -1342,7 +1349,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.noticeTTL = 3
 
 	case shared.SettingsClosedMsg:
-		a.focus = FocusAgentList
+		cmds = append(cmds, a.focusChatComposer())
 	case shared.SettingsNoticeMsg:
 		a.notice = msg.Message
 		a.noticeTTL = 3
@@ -1681,9 +1688,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.notice = "Agent is still working — wait for the current response"
 			a.noticeTTL = 3
 		case "esc":
-			a.conversation.Blur()
-			a.inputMode = ""
-			a.focus = FocusAgentList
+			return a, a.focusChatComposer()
 		}
 		return a, nil
 	}
@@ -1729,10 +1734,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 	case "esc":
-		a.conversation.Blur()
-		a.inputMode = ""
-		a.focus = FocusAgentList
-		return a, nil
+		return a, a.focusChatComposer()
 	default:
 		if !a.conversation.Focused() {
 			a.conversation.Focus()

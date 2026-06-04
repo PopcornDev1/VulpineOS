@@ -125,8 +125,8 @@ func TestInputBlockUsesOpenCodeRailBox(t *testing.T) {
 	if !strings.Contains(view, "▀") {
 		t.Fatalf("chat input should use half-block bottom border, got:\n%s", view)
 	}
-	if !strings.Contains(view, "▌") {
-		t.Fatalf("chat input should use left rail border, got:\n%s", view)
+	if strings.Contains(view, "▌") {
+		t.Fatalf("chat input rail should be a solid styled cell, not a stacked block glyph:\n%s", view)
 	}
 	if !strings.Contains(view, "Agent 1") || !strings.Contains(view, "opencode/claude-sonnet") {
 		t.Fatalf("chat input should keep agent/model metadata, got:\n%s", view)

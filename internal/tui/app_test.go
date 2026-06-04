@@ -731,7 +731,7 @@ func TestFocusedChatAllowsQuitShortcut(t *testing.T) {
 	}
 }
 
-func TestFocusedChatEscReturnsToAgentList(t *testing.T) {
+func TestFocusedChatEscKeepsChatComposerActive(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
 	app.selectedAgentID = "agent-1"
 	app.focus = FocusConversation
@@ -742,14 +742,14 @@ func TestFocusedChatEscReturnsToAgentList(t *testing.T) {
 
 	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	app = model.(App)
-	if app.focus != FocusAgentList {
-		t.Fatalf("focus = %d, want agent list after esc from focused chat", app.focus)
+	if app.focus != FocusConversation {
+		t.Fatalf("focus = %d, want conversation after esc from focused chat", app.focus)
 	}
-	if app.inputMode != "" {
-		t.Fatalf("inputMode = %q, want empty after esc from chat", app.inputMode)
+	if app.inputMode != "chat" {
+		t.Fatalf("inputMode = %q, want chat after esc from chat", app.inputMode)
 	}
-	if app.conversation.Focused() {
-		t.Fatal("conversation should blur after esc from chat")
+	if !app.conversation.Focused() {
+		t.Fatal("conversation should stay focused after esc from chat")
 	}
 }
 
