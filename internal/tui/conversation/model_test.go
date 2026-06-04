@@ -165,6 +165,34 @@ func TestInputBlockSoftWrapsLongDraft(t *testing.T) {
 	}
 }
 
+func TestInputPulseTickTogglesCustomCaretWithoutChangingWidth(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	m := New()
+	m.SetSize(46, 18)
+	m.SetAgentID("agent-1")
+	m.SetAgentName("Agent 1")
+	m.SetModelLabel("model")
+	m.SetAwake(true)
+	m.Focus()
+	m.TextInput().SetValue("draft")
+
+	before := m.inputTextView()
+	updated, cmd := m.Update(InputPulseTickMsg{})
+	after := updated.inputTextView()
+
+	if cmd == nil {
+		t.Fatal("input pulse should re-arm itself")
+	}
+	if before == after {
+		t.Fatalf("input pulse should toggle the custom caret render, got unchanged view %q", before)
+	}
+	if got, want := lipgloss.Width(after), lipgloss.Width(before); got != want {
+		t.Fatalf("input pulse changed visual width: got %d want %d\nbefore: %q\nafter:  %q", got, want, before, after)
+	}
+}
+
 func TestInputBlockCapsWrappedDraftHeight(t *testing.T) {
 	m := New()
 	m.SetSize(50, 20)
@@ -221,8 +249,8 @@ func TestSetSizeAllowsVeryNarrowContentWidth(t *testing.T) {
 	m.SetAgentID("agent-1")
 	m.AddEntry("assistant", "abcdef")
 
-	if m.textInput.Width() > 2 {
-		t.Fatalf("text input width = %d, want <= 2", m.textInput.Width())
+	if m.textInput.Width > 2 {
+		t.Fatalf("text input width = %d, want <= 2", m.textInput.Width)
 	}
 	for _, line := range m.entries[0].renderedLines {
 		if got := ansiVisualWidth(line); got > 1 {

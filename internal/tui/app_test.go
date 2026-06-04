@@ -937,7 +937,7 @@ func TestUpdatePanelSizesUsesInnerPanelWidthForConversation(t *testing.T) {
 
 	widths := resolveWorkbenchWidths(app.width, app.leftWidth, app.rightWidth)
 	wantInputWidth := widths.center - 7
-	if got := app.conversation.TextInput().Width(); got != wantInputWidth {
+	if got := app.conversation.TextInput().Width; got != wantInputWidth {
 		t.Fatalf("conversation input width = %d, want %d from inner panel width", got, wantInputWidth)
 	}
 }
@@ -950,7 +950,7 @@ func TestCompactWorkbenchPersistsInnerPanelWidthForConversation(t *testing.T) {
 	app.updatePanelSizes()
 
 	wantInputWidth := app.width - 11
-	if got := app.conversation.TextInput().Width(); got != wantInputWidth {
+	if got := app.conversation.TextInput().Width; got != wantInputWidth {
 		t.Fatalf("compact conversation input width = %d, want %d from compact inner width", got, wantInputWidth)
 	}
 }

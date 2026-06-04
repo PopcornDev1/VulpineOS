@@ -576,6 +576,7 @@ func (a App) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		a.waitForEvent(),
 		a.tick(),
+		conversation.InputPulseTick(),
 		a.replayBrowserTargets(),
 	}
 	if a.shouldCreateDefaultAgent() {
@@ -1453,6 +1454,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case conversation.ThinkingTickMsg:
+		var cmd tea.Cmd
+		a.conversation, cmd = a.conversation.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
+	case conversation.InputPulseTickMsg:
 		var cmd tea.Cmd
 		a.conversation, cmd = a.conversation.Update(msg)
 		if cmd != nil {
