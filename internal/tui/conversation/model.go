@@ -739,7 +739,7 @@ func (m Model) selectedCellRangeForLine(idx, width int) (int, int, bool) {
 
 func (m Model) visibleMessageWindow(extraBottomLines int) visibleMessageWindow {
 	bottomLines := m.inputBlockHeight() + extraBottomLines + messageInputGapLines
-	if m.thinking {
+	if m.showSeparateThinkingIndicator() {
 		bottomLines += thinkingGapLines + 1
 	}
 	if m.notice != "" {
@@ -778,6 +778,21 @@ func (m Model) visibleMessageWindow(extraBottomLines int) visibleMessageWindow {
 		visibleLines: visibleSlice,
 		emptyLines:   visibleMsgLines - len(visibleSlice),
 	}
+}
+
+func (m Model) showSeparateThinkingIndicator() bool {
+	return m.thinking && !m.hasActiveToolStatus()
+}
+
+func (m Model) hasActiveToolStatus() bool {
+	if !m.thinking || len(m.entries) == 0 {
+		return false
+	}
+	return m.entries[len(m.entries)-1].Role == "system"
+}
+
+func (m Model) isActiveToolStatusEntry(idx int) bool {
+	return m.hasActiveToolStatus() && idx == len(m.entries)-1
 }
 
 func (m *Model) rewrapEntries(maxWidth int) {
@@ -930,7 +945,7 @@ func (m Model) Focused() bool {
 func (m Model) visibleLines() int {
 	// Layout: title(1) + messages + thinking(0-2) + gap + input block + notice(0-1)
 	reserved := 1 + messageInputGapLines + m.inputBlockHeight()
-	if m.thinking {
+	if m.showSeparateThinkingIndicator() {
 		reserved += thinkingGapLines + 1 // thinking gap + indicator between messages and input block
 	}
 	if m.notice != "" {
@@ -1019,8 +1034,8 @@ func (m Model) getDisplayLines() []string {
 			// System messages: muted dot. The trailing status line while the
 			// agent is working animates with the spinner to signal it's live.
 			marker := shared.MutedStyle.Render("● ")
-			if !m.traceOnly && idx == len(m.entries)-1 && m.thinking {
-				marker = shared.WarmingStyle.Render(spinnerFrames[m.spinnerFrame%len(spinnerFrames)] + " ")
+			if m.isActiveToolStatusEntry(idx) {
+				marker = renderToolSpinner(m.spinnerFrame, m.shimmerOffset) + " "
 			}
 			for j, line := range lines {
 				if j == 0 {
@@ -1483,7 +1498,7 @@ func (m Model) view(palette string) string {
 	}
 
 	// 4. Thinking indicator
-	if m.thinking {
+	if m.showSeparateThinkingIndicator() {
 		for i := 0; i < thinkingGapLines; i++ {
 			b.WriteString("\n")
 		}
@@ -1520,7 +1535,32 @@ func (m Model) view(palette string) string {
 // The shimmer is a bright spot that moves through the characters.
 func renderShimmer(text string, offset int) string {
 	// Purple gradient: dark → bright → dark
-	purples := []string{
+	runes := []rune(text)
+	var result strings.Builder
+	shimmerWidth := len(thinkingPurplePalette)
+
+	for i, ch := range runes {
+		// Calculate distance from shimmer center
+		dist := (i - offset%len(runes) + len(runes)) % len(runes)
+		if dist >= shimmerWidth {
+			// Outside shimmer — use base purple
+			result.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7C3AED")).Render(string(ch)))
+		} else {
+			// Inside shimmer — use gradient color
+			result.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(thinkingPurplePalette[dist])).Bold(true).Render(string(ch)))
+		}
+	}
+	return result.String()
+}
+
+func renderToolSpinner(frame, offset int) string {
+	spinner := spinnerFrames[frame%len(spinnerFrames)]
+	color := thinkingPurplePalette[offset%len(thinkingPurplePalette)]
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(spinner)
+}
+
+var (
+	thinkingPurplePalette = []string{
 		"#4C1D95", // very dark purple
 		"#5B21B6", // dark purple
 		"#7C3AED", // medium purple
@@ -1532,26 +1572,6 @@ func renderShimmer(text string, offset int) string {
 		"#7C3AED", // medium purple
 		"#5B21B6", // dark purple
 	}
-
-	runes := []rune(text)
-	var result strings.Builder
-	shimmerWidth := len(purples)
-
-	for i, ch := range runes {
-		// Calculate distance from shimmer center
-		dist := (i - offset%len(runes) + len(runes)) % len(runes)
-		if dist >= shimmerWidth {
-			// Outside shimmer — use base purple
-			result.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#7C3AED")).Render(string(ch)))
-		} else {
-			// Inside shimmer — use gradient color
-			result.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(purples[dist])).Bold(true).Render(string(ch)))
-		}
-	}
-	return result.String()
-}
-
-var (
 	reBold           = regexp.MustCompile(`\*\*(.+?)\*\*`)
 	reItalic         = regexp.MustCompile(`\*(.+?)\*`)
 	reCode           = regexp.MustCompile("`([^`]+)`")

@@ -228,6 +228,48 @@ func TestThinkingIndicatorLeavesBlankLineAfterMessage(t *testing.T) {
 	}
 }
 
+func TestActiveToolStatusSuppressesSeparateThinkingIndicator(t *testing.T) {
+	m := New()
+	m.SetSize(80, 18)
+	m.SetAgentID("agent-1")
+	m.SetAwake(true)
+	m.AddEntry("user", "please check")
+	m.AddEntry("system", "Tool running: vulpine_navigate")
+	m.SetThinking(true)
+	m.phraseIdx = 0
+
+	view := stripANSI(m.View())
+
+	if strings.Contains(view, "Thinking...") {
+		t.Fatalf("active tool row should suppress separate loading message:\n%s", view)
+	}
+	if !strings.Contains(view, "Tool running: vulpine_navigate") {
+		t.Fatalf("view missing active tool row:\n%s", view)
+	}
+}
+
+func TestActiveToolStatusUsesPurpleSpinner(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	m := New()
+	m.SetSize(80, 18)
+	m.SetAgentID("agent-1")
+	m.SetAwake(true)
+	m.AddEntry("system", "Tool running: vulpine_navigate")
+	m.SetThinking(true)
+	m.phraseIdx = 0
+
+	view := m.View()
+
+	if !strings.Contains(view, "\x1b[") {
+		t.Fatalf("expected styled active tool spinner:\n%s", view)
+	}
+	if !strings.Contains(view, "38;2;") || !strings.Contains(view, "76;29;149") {
+		t.Fatalf("active tool spinner should use purple shimmer palette:\n%q", view)
+	}
+}
+
 func TestInputBlockSoftWrapsLongDraft(t *testing.T) {
 	m := New()
 	m.SetSize(46, 18)
