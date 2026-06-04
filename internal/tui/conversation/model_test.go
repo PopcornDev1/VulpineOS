@@ -244,6 +244,53 @@ func TestRenderMarkdownDoesNotSplitStyledANSI(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownFormatsHeadings(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	lines := renderMarkdown("## Subheading", 80)
+	if len(lines) != 1 {
+		t.Fatalf("lines = %#v, want one heading line", lines)
+	}
+	if strings.Contains(lines[0], "##") {
+		t.Fatalf("heading marker leaked into rendered text: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "Subheading") {
+		t.Fatalf("heading text missing from rendered line: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "\x1b[1") {
+		t.Fatalf("heading should render bold ANSI style: %q", lines[0])
+	}
+}
+
+func TestRenderMarkdownFormatsInlineEmphasis(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	lines := renderMarkdown("This is **bold** and *italic*.", 80)
+	if got := strings.Join(lines, "\n"); strings.Contains(got, "**") || strings.Contains(got, "*italic*") {
+		t.Fatalf("markdown emphasis markers leaked into rendered text: %q", got)
+	}
+	if got := strings.Join(lines, "\n"); !strings.Contains(got, "\x1b[1m") || !strings.Contains(got, "\x1b[3m") {
+		t.Fatalf("emphasis should render bold and italic ANSI styles: %q", got)
+	}
+}
+
+func TestRenderMarkdownFormatsBullets(t *testing.T) {
+	lines := renderMarkdown("- first item\n- second item", 80)
+	if len(lines) != 2 {
+		t.Fatalf("lines = %#v, want two bullet lines", lines)
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "  • ") {
+			t.Fatalf("bullet line = %q, want indented bullet prefix", line)
+		}
+		if strings.Contains(line, "- ") {
+			t.Fatalf("dash marker leaked into bullet line: %q", line)
+		}
+	}
+}
+
 func hasUnclosedSGR(line string) bool {
 	active := false
 	for i := 0; i < len(line); i++ {

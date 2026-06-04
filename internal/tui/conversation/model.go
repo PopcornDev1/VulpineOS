@@ -1025,46 +1025,95 @@ func renderShimmer(text string, offset int) string {
 }
 
 var (
-	reBold   = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	reItalic = regexp.MustCompile(`\*(.+?)\*`)
-	reCode   = regexp.MustCompile("`([^`]+)`")
+	reBold    = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reItalic  = regexp.MustCompile(`\*(.+?)\*`)
+	reCode    = regexp.MustCompile("`([^`]+)`")
+	reHeading = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+	reBullet  = regexp.MustCompile(`^\s*[-*]\s+(.+)$`)
 )
 
 // renderMarkdown applies lightweight inline markdown styling and word wraps.
-// Handles **bold**, *italic*, `code` — no heavy library needed.
+// Handles headings, bullets, **bold**, *italic*, and `code` without pulling in a
+// full parser; this keeps chat rendering deterministic and terminal-safe.
 func renderMarkdown(text string, maxWidth int) []string {
-	boldStyle := lipgloss.NewStyle().Bold(true)
-	italicStyle := lipgloss.NewStyle().Italic(true)
-	codeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA"))
-
-	// Process each paragraph (double newline separated)
 	var allLines []string
-	paragraphs := strings.Split(text, "\n")
-	for _, para := range paragraphs {
-		para = strings.TrimRight(para, " ")
-
-		for _, line := range wordWrap(para, maxWidth) {
-			// Apply inline styles after wrapping so ANSI spans are not split.
-			styled := reBold.ReplaceAllStringFunc(line, func(m string) string {
-				inner := m[2 : len(m)-2]
-				return boldStyle.Render(inner)
-			})
-			styled = reCode.ReplaceAllStringFunc(styled, func(m string) string {
-				inner := m[1 : len(m)-1]
-				return codeStyle.Render(inner)
-			})
-			styled = reItalic.ReplaceAllStringFunc(styled, func(m string) string {
-				inner := m[1 : len(m)-1]
-				return italicStyle.Render(inner)
-			})
-			allLines = append(allLines, styled)
-		}
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimRight(rawLine, " ")
+		allLines = append(allLines, renderMarkdownLine(line, maxWidth)...)
 	}
 
 	if len(allLines) == 0 {
 		return []string{""}
 	}
 	return allLines
+}
+
+func renderMarkdownLine(line string, maxWidth int) []string {
+	if match := reHeading.FindStringSubmatch(line); match != nil {
+		level := len(match[1])
+		text := strings.TrimSpace(match[2])
+		if text == "" {
+			return []string{""}
+		}
+		style := lipgloss.NewStyle().Bold(true)
+		if level <= 2 {
+			style = style.Foreground(shared.ColorPrimary)
+		}
+		var out []string
+		for _, wrapped := range wordWrap(text, maxWidth) {
+			out = append(out, style.Render(applyInlineMarkdown(wrapped)))
+		}
+		return out
+	}
+
+	if match := reBullet.FindStringSubmatch(line); match != nil {
+		text := strings.TrimSpace(match[1])
+		if text == "" {
+			return []string{shared.MutedStyle.Render("  •")}
+		}
+		const firstPrefix = "  • "
+		const nextPrefix = "    "
+		width := maxWidth - ansiVisualWidth(firstPrefix)
+		if width < 1 {
+			width = 1
+		}
+		wrapped := wordWrap(text, width)
+		out := make([]string, 0, len(wrapped))
+		for i, wrappedLine := range wrapped {
+			prefix := nextPrefix
+			if i == 0 {
+				prefix = firstPrefix
+			}
+			out = append(out, shared.MutedStyle.Render(prefix)+applyInlineMarkdown(wrappedLine))
+		}
+		return out
+	}
+
+	var out []string
+	for _, wrapped := range wordWrap(line, maxWidth) {
+		out = append(out, applyInlineMarkdown(wrapped))
+	}
+	return out
+}
+
+func applyInlineMarkdown(line string) string {
+	boldStyle := lipgloss.NewStyle().Bold(true)
+	italicStyle := lipgloss.NewStyle().Italic(true)
+	codeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA"))
+
+	styled := reBold.ReplaceAllStringFunc(line, func(m string) string {
+		inner := m[2 : len(m)-2]
+		return boldStyle.Render(inner)
+	})
+	styled = reCode.ReplaceAllStringFunc(styled, func(m string) string {
+		inner := m[1 : len(m)-1]
+		return codeStyle.Render(inner)
+	})
+	styled = reItalic.ReplaceAllStringFunc(styled, func(m string) string {
+		inner := m[1 : len(m)-1]
+		return italicStyle.Render(inner)
+	})
+	return styled
 }
 
 // ansiVisualWidth returns the visual width of a string, ignoring ANSI escape codes.
