@@ -109,6 +109,8 @@ func TestNoAgentViewDoesNotShowCreateInstructions(t *testing.T) {
 }
 
 func TestInputBlockUsesOpenCodeRailBox(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "Apple_Terminal")
+
 	m := New()
 	m.SetSize(60, 14)
 	m.SetAgentID("agent-1")
@@ -127,6 +129,30 @@ func TestInputBlockUsesOpenCodeRailBox(t *testing.T) {
 	}
 	if strings.Contains(view, "▌") {
 		t.Fatalf("chat input rail should be a solid styled cell, not a stacked block glyph:\n%s", view)
+	}
+	if !strings.Contains(view, "Agent 1") || !strings.Contains(view, "opencode/claude-sonnet") {
+		t.Fatalf("chat input should keep agent/model metadata, got:\n%s", view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > 60 {
+			t.Fatalf("line %d width = %d, want <= 60:\n%s", i+1, width, view)
+		}
+	}
+}
+
+func TestInputBlockUsesOriginalThinRailOutsideAppleTerminal(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+
+	m := New()
+	m.SetSize(60, 14)
+	m.SetAgentID("agent-1")
+	m.SetAgentName("Agent 1")
+	m.SetModelLabel("opencode/claude-sonnet")
+	m.SetAwake(true)
+
+	view := m.View()
+	if !strings.Contains(view, "▌") {
+		t.Fatalf("non-Apple terminal should use Nick's original thin rail glyph, got:\n%s", view)
 	}
 	if !strings.Contains(view, "Agent 1") || !strings.Contains(view, "opencode/claude-sonnet") {
 		t.Fatalf("chat input should keep agent/model metadata, got:\n%s", view)

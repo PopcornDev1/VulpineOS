@@ -3,6 +3,7 @@ package conversation
 import (
 	"fmt"
 	"math/rand"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -47,10 +48,11 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 // Input block (OpenCode-style chat box) styling.
 var (
-	inputBlockBg     = shared.ColorBg
-	inputRailStyle   = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(shared.ColorPrimary)
-	inputBlockStyle  = lipgloss.NewStyle().Background(inputBlockBg)
-	inputStatusStyle = lipgloss.NewStyle().
+	inputBlockBg        = shared.ColorBg
+	inputThinRailStyle  = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(inputBlockBg)
+	inputSolidRailStyle = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(shared.ColorPrimary)
+	inputBlockStyle     = lipgloss.NewStyle().Background(inputBlockBg)
+	inputStatusStyle    = lipgloss.NewStyle().
 				Foreground(shared.ColorPrimary).
 				Background(inputBlockBg).
 				Bold(true)
@@ -60,7 +62,6 @@ var (
 				Foreground(inputBlockBg).
 				Background(lipgloss.Color("#E5E7EB"))
 	inputHalfLineStyle = lipgloss.NewStyle().Foreground(inputBlockBg).Background(inputBlockBg)
-	inputHalfRailStyle = lipgloss.NewStyle().Foreground(shared.ColorPrimary).Background(shared.ColorPrimary)
 )
 
 const (
@@ -1025,14 +1026,14 @@ func (m Model) inputMetadata(maxWidth int) string {
 func inputBlockLine(content string, blockWidth int) string {
 	contentWidth := blockWidth - 1
 	if contentWidth < 1 {
-		return inputRailStyle.Render(" ")
+		return inputRailCell()
 	}
 	content = fitCellLine(content, contentWidth)
 	padding := ""
 	if contentWidth > ansiVisualWidth(content) {
 		padding = strings.Repeat(" ", contentWidth-ansiVisualWidth(content))
 	}
-	return inputRailStyle.Render(" ") + content + inputBlockStyle.Render(padding)
+	return inputRailCell() + content + inputBlockStyle.Render(padding)
 }
 
 func inputAreaLines(inputArea string) []string {
@@ -1046,9 +1047,16 @@ func inputAreaLines(inputArea string) []string {
 func inputBlockHalfLine(blockWidth int) string {
 	contentWidth := blockWidth - 1
 	if contentWidth < 1 {
-		return inputHalfRailStyle.Render(" ")
+		return inputRailCell()
 	}
-	return inputHalfRailStyle.Render(" ") + inputHalfLineStyle.Render(strings.Repeat("▀", contentWidth))
+	return inputRailCell() + inputHalfLineStyle.Render(strings.Repeat("▀", contentWidth))
+}
+
+func inputRailCell() string {
+	if os.Getenv("TERM_PROGRAM") == "Apple_Terminal" {
+		return inputSolidRailStyle.Render(" ")
+	}
+	return inputThinRailStyle.Render("▌")
 }
 
 func clipCellText(text string, maxWidth int) string {
