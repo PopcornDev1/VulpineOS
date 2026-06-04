@@ -117,3 +117,30 @@ func TestClickNearestEmptyListReturnsFalse(t *testing.T) {
 		t.Fatal("ClickNearest should return false with no agents")
 	}
 }
+
+func TestScrollMovesSelectedAgent(t *testing.T) {
+	m := New()
+	m.SetHeight(4)
+	m.SetAgents([]vault.Agent{
+		{ID: "a0", Name: "Agent0", Status: "ready"},
+		{ID: "a1", Name: "Agent1", Status: "ready"},
+		{ID: "a2", Name: "Agent2", Status: "ready"},
+	})
+
+	if item, ok := m.Scroll(1); !ok || item.ID != "a1" {
+		t.Fatalf("scroll down selected %#v ok=%v, want a1/true", item, ok)
+	}
+	if item, ok := m.Scroll(10); !ok || item.ID != "a2" {
+		t.Fatalf("scroll past end selected %#v ok=%v, want clamped a2/true", item, ok)
+	}
+	if item, ok := m.Scroll(-10); !ok || item.ID != "a0" {
+		t.Fatalf("scroll past start selected %#v ok=%v, want clamped a0/true", item, ok)
+	}
+}
+
+func TestScrollEmptyListReturnsFalse(t *testing.T) {
+	m := New()
+	if _, ok := m.Scroll(1); ok {
+		t.Fatal("Scroll should return false with no agents")
+	}
+}

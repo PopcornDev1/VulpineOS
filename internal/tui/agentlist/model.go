@@ -112,6 +112,21 @@ func (m *Model) MoveDown() {
 	}
 }
 
+// Scroll moves selection by delta rows and returns the selected agent.
+func (m *Model) Scroll(delta int) (AgentListItem, bool) {
+	if len(m.agents) == 0 {
+		return AgentListItem{}, false
+	}
+	m.selected += delta
+	if m.selected < 0 {
+		m.selected = 0
+	}
+	if m.selected >= len(m.agents) {
+		m.selected = len(m.agents) - 1
+	}
+	return m.agents[m.selected], true
+}
+
 // SelectedAgentID returns the ID of the currently selected agent.
 func (m Model) SelectedAgentID() string {
 	if len(m.agents) == 0 || m.selected >= len(m.agents) {

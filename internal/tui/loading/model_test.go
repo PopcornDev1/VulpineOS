@@ -23,3 +23,22 @@ func TestLoadingViewFitsTinyTerminal(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadingScreenOnlyCtrlCQuits(t *testing.T) {
+	m := New("Starting browser runtime")
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("plain q should not quit loading screen")
+		}
+	}
+
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c should quit loading screen")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("ctrl+c did not return tea.QuitMsg")
+	}
+}

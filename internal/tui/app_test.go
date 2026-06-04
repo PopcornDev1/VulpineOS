@@ -611,7 +611,7 @@ func TestStartupLockedChatDoesNotAcceptInput(t *testing.T) {
 	}
 }
 
-func TestStartupLockedChatEnterFromListDoesNotWakeInput(t *testing.T) {
+func TestStartupLockedChatEnterFromListDoesNotFocusInput(t *testing.T) {
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.conversation.SetSize(80, 20)
@@ -630,18 +630,45 @@ func TestStartupLockedChatEnterFromListDoesNotWakeInput(t *testing.T) {
 	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = model.(App)
 
-	if app.focus != FocusConversation {
-		t.Fatalf("focus = %d, want conversation", app.focus)
+	if app.focus != FocusAgentList {
+		t.Fatalf("focus = %d, want agent list", app.focus)
 	}
-	if app.inputMode != "chat" {
-		t.Fatalf("inputMode = %q, want chat", app.inputMode)
+	if app.inputMode != "" {
+		t.Fatalf("inputMode = %q, want empty", app.inputMode)
 	}
 	if app.conversation.IsAwake() {
-		t.Fatal("conversation should stay locked when focus changes before first reply")
+		t.Fatal("conversation should stay locked before first reply")
 	}
 }
 
-func TestStartupLockedChatAllowsQuitShortcut(t *testing.T) {
+func TestStartupLockedChatAllowsCtrlCQuitShortcut(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Scraper", "Scrape prices", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	agent.Status = "active"
+
+	model, _ := app.Update(shared.AgentCreatedMsg{Agent: *agent})
+	app = model.(App)
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
+
+	if cmd == nil {
+		t.Fatal("locked startup quit returned no command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("locked startup quit did not return tea.QuitMsg")
+	}
+	if app.conversation.TextInput().Value() != "" {
+		t.Fatal("locked startup quit should not type into chat")
+	}
+}
+
+func TestStartupLockedChatIgnoresPlainQuitKey(t *testing.T) {
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.conversation.SetSize(80, 20)
@@ -657,14 +684,13 @@ func TestStartupLockedChatAllowsQuitShortcut(t *testing.T) {
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	app = model.(App)
 
-	if cmd == nil {
-		t.Fatal("locked startup quit returned no command")
-	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatal("locked startup quit did not return tea.QuitMsg")
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("plain q should not quit a locked chat")
+		}
 	}
 	if app.conversation.TextInput().Value() != "" {
-		t.Fatal("locked startup quit should not type into chat")
+		t.Fatal("locked startup should not type into chat")
 	}
 }
 
@@ -727,12 +753,12 @@ func TestFocusedChatEscReturnsToAgentList(t *testing.T) {
 	}
 }
 
-func TestSettingsAllowsGlobalQuitShortcut(t *testing.T) {
+func TestSettingsAllowsEmergencyQuitShortcut(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
 	app.focus = FocusSettings
 	app.settings.SetActive(true)
 
-	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
 		t.Fatal("settings quit returned no command")
 	}
@@ -828,7 +854,7 @@ func TestTargetAttachUpdatesSystemPanelBrowserCounts(t *testing.T) {
 	}
 }
 
-func TestArrowKeysNavigateAgentsWhenResizeModeDisabled(t *testing.T) {
+func TestArrowKeysDoNotNavigateAgentsOutsideCommandPalette(t *testing.T) {
 	db := openTestVault(t)
 	first, err := db.CreateAgent("first-agent", "first task", "{}")
 	if err != nil {
@@ -854,10 +880,52 @@ func TestArrowKeysNavigateAgentsWhenResizeModeDisabled(t *testing.T) {
 	app = model.(App)
 
 	if app.leftSplit != originalSplit {
-		t.Fatalf("leftSplit changed from %d to %d on arrow navigation", originalSplit, app.leftSplit)
+		t.Fatalf("leftSplit changed from %d to %d on ignored arrow key", originalSplit, app.leftSplit)
 	}
+	if app.selectedAgentID != first.ID {
+		t.Fatalf("selected agent = %q, want unchanged %q after down arrow", app.selectedAgentID, first.ID)
+	}
+}
+
+func TestMouseWheelScrollsAgentList(t *testing.T) {
+	db := openTestVault(t)
+	first, err := db.CreateAgent("first-agent", "first task", "{}")
+	if err != nil {
+		t.Fatalf("create first agent: %v", err)
+	}
+	second, err := db.CreateAgent("second-agent", "second task", "{}")
+	if err != nil {
+		t.Fatalf("create second agent: %v", err)
+	}
+	if _, err := db.Conn().Exec(`UPDATE agents SET last_active = ? WHERE id = ?`, time.Now().Unix()+10, first.ID); err != nil {
+		t.Fatalf("set first last_active: %v", err)
+	}
+	if _, err := db.Conn().Exec(`UPDATE agents SET last_active = ? WHERE id = ?`, time.Now().Unix(), second.ID); err != nil {
+		t.Fatalf("set second last_active: %v", err)
+	}
+
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 30
+	app.focus = FocusAgentList
+	app.inputMode = ""
+	app.updatePanelSizes()
+	rx, ry, rw, rh := app.agentListPanelRect()
+	if rw == 0 || rh == 0 {
+		t.Fatal("expected clickable agent-list panel rect")
+	}
+
+	model, _ := app.Update(tea.MouseMsg{
+		X:      rx + 1,
+		Y:      ry + 2,
+		Type:   tea.MouseWheelDown,
+		Button: tea.MouseButtonWheelDown,
+		Action: tea.MouseActionPress,
+	})
+	app = model.(App)
+
 	if app.selectedAgentID != second.ID {
-		t.Fatalf("selected agent = %q, want %q after down arrow", app.selectedAgentID, second.ID)
+		t.Fatalf("selected agent = %q, want %q after agent-list wheel scroll", app.selectedAgentID, second.ID)
 	}
 }
 
@@ -1148,14 +1216,16 @@ func TestRemoteControlBulkStatusExcludesFailures(t *testing.T) {
 	}
 }
 
-func TestRemoteControlLabelsExposeRemoteSettingsAndLogs(t *testing.T) {
+func TestRemoteControlLabelsDoNotExposeRemovedKeybinds(t *testing.T) {
 	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, &fakeControlClient{})
 	app.width = 160
 	app.agentDetail.SetAgent("agent-1", "Remote", "task", "active", 0, "", "", time.Now())
 
 	detail := app.agentDetail.View()
-	if !strings.Contains(detail, "[o] log") || strings.Contains(detail, "[x] delete") {
-		t.Fatalf("remote detail controls are wrong: %s", detail)
+	for _, legacy := range []string{"[Enter]", "[o]", "[x]", "kill", "delete"} {
+		if strings.Contains(detail, legacy) {
+			t.Fatalf("remote detail still exposes removed keybind %q: %s", legacy, detail)
+		}
 	}
 }
 
@@ -1297,8 +1367,7 @@ func TestRemoteOpenSessionLogFetchesAndOpensTempFile(t *testing.T) {
 	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, control)
 	app.selectedAgentID = "agent-1"
 
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
-	app = model.(App)
+	cmd := app.dispatchCommand("log", "/log")
 	if cmd == nil {
 		t.Fatal("remote open log should fetch through control")
 	}
@@ -1768,7 +1837,7 @@ func TestChatInputKeystrokeRefocusesAndCapturesFirstRune(t *testing.T) {
 	}
 }
 
-func TestFocusedChatAllowsCtrlViewShortcut(t *testing.T) {
+func TestFocusedChatIgnoresCtrlViewShortcut(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -1790,7 +1859,10 @@ func TestFocusedChatAllowsCtrlViewShortcut(t *testing.T) {
 	app = model.(App)
 
 	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when ctrl+v shortcut is used", got)
+		t.Fatalf("conversation input = %q, want empty when ctrl+v is ignored", got)
+	}
+	if app.notice != "" {
+		t.Fatalf("notice = %q, want no browser toggle notice from ctrl+v", app.notice)
 	}
 }
 
@@ -2024,7 +2096,7 @@ func TestEmbeddedReconfigureCompletionSavesConfigWithoutQuitting(t *testing.T) {
 	}
 }
 
-func TestFocusedChatAllowsCtrlOpenLogShortcut(t *testing.T) {
+func TestFocusedChatIgnoresCtrlOpenLogShortcut(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -2038,7 +2110,6 @@ func TestFocusedChatAllowsCtrlOpenLogShortcut(t *testing.T) {
 	if err := db.AppendMessage(agent.ID, "assistant", "session line", 0); err != nil {
 		t.Fatalf("append message: %v", err)
 	}
-	logPath := filepath.Join(os.TempDir(), "vulpineos-session-"+safeTempAgentID(agent.ID)+".jsonl")
 
 	original := startExternalCommand
 	defer func() { startExternalCommand = original }()
@@ -2062,10 +2133,56 @@ func TestFocusedChatAllowsCtrlOpenLogShortcut(t *testing.T) {
 	updated := model.(App)
 
 	if got := updated.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want empty when ctrl+o shortcut is used", got)
+		t.Fatalf("conversation input = %q, want empty when ctrl+o is ignored", got)
 	}
-	if len(opened) != 2 || opened[0] != "open" || opened[1] != logPath {
-		t.Fatalf("unexpected open command: %#v", opened)
+	if len(opened) != 0 {
+		t.Fatalf("ctrl+o should not open a session log, got command: %#v", opened)
+	}
+}
+
+func TestDirectActionKeybindsDoNotFireOutsideCommandPalette(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg := &config.Config{}
+	db := openTestVault(t)
+	agent, err := db.CreateAgent("agent", "task", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if err := db.AppendMessage(agent.ID, "assistant", "session line", 0); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	original := startExternalCommand
+	defer func() { startExternalCommand = original }()
+	var opened []string
+	startExternalCommand = func(name string, args ...string) error {
+		opened = append([]string{name}, args...)
+		return nil
+	}
+
+	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app.selectedAgentID = agent.ID
+	app.focus = FocusAgentList
+	app.inputMode = ""
+
+	for _, msg := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune{'q'}},
+		{Type: tea.KeyRunes, Runes: []rune{'o'}},
+		{Type: tea.KeyCtrlO},
+		{Type: tea.KeyCtrlY},
+	} {
+		model, cmd := app.Update(msg)
+		app = model.(App)
+		if cmd != nil {
+			if _, ok := cmd().(tea.QuitMsg); ok {
+				t.Fatalf("%q should not quit outside slash commands", msg.String())
+			}
+		}
+	}
+	if len(opened) != 0 {
+		t.Fatalf("direct keybinds should not open a session log, got command: %#v", opened)
 	}
 }
 

@@ -248,25 +248,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.step {
 		case stepProvider:
 			switch msg.String() {
-			case "q", "ctrl+c":
+			case "ctrl+c":
 				return m, tea.Quit
 			case "esc":
 				m.providerQuery = ""
 				m.providerIdx = 0
-			case "j":
-				if m.providerQuery == "" {
-					m.moveProviderSelection(1)
-				} else if m.appendProviderQuery(msg) {
-					m.providerIdx = 0
-				}
 			case "down":
 				m.moveProviderSelection(1)
-			case "k":
-				if m.providerQuery == "" {
-					m.moveProviderSelection(-1)
-				} else if m.appendProviderQuery(msg) {
-					m.providerIdx = 0
-				}
 			case "up":
 				m.moveProviderSelection(-1)
 			case "backspace", "ctrl+h":
@@ -302,11 +290,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "esc":
 				m.step = stepProvider
-			case "j", "down":
+			case "down":
 				if m.authMethodIdx < 1 {
 					m.authMethodIdx++
 				}
-			case "k", "up":
+			case "up":
 				if m.authMethodIdx > 0 {
 					m.authMethodIdx--
 				}
@@ -335,20 +323,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.step = stepProvider
 				}
-			case "j":
-				if m.modelQuery == "" {
-					m.moveModelSelection(p, 1)
-				} else if m.appendModelQuery(msg) {
-					m.modelIdx = 0
-				}
 			case "down":
 				m.moveModelSelection(p, 1)
-			case "k":
-				if m.modelQuery == "" {
-					m.moveModelSelection(p, -1)
-				} else if m.appendModelQuery(msg) {
-					m.modelIdx = 0
-				}
 			case "up":
 				m.moveModelSelection(p, -1)
 			case "backspace", "ctrl+h":
@@ -450,7 +426,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case stepDone:
 			switch msg.String() {
-			case "q", "ctrl+c":
+			case "ctrl+c":
 				return m, tea.Quit
 			case "enter":
 				m.done = true
@@ -721,7 +697,7 @@ func (m *Model) viewProvider() string {
 	if len(filtered) == 0 {
 		b.WriteString(mutedStyle.Render("No providers match."))
 		b.WriteString("\n\n")
-		b.WriteString(mutedStyle.Render("[Backspace] edit  [Esc] clear  [q] quit"))
+		b.WriteString(mutedStyle.Render("[Backspace] edit  [Esc] clear"))
 		return b.String()
 	}
 
@@ -775,7 +751,7 @@ func (m *Model) viewProvider() string {
 	if strings.TrimSpace(m.providerQuery) == "" {
 		count = fmt.Sprintf("%d providers", len(m.providers))
 	}
-	b.WriteString(fitSetupLine(mutedStyle.Render(fmt.Sprintf("[↑/↓] navigate  type to filter  [Enter] select  [Esc] clear  [q] quit  (%s)", count)), m.contentWidth()))
+	b.WriteString(fitSetupLine(mutedStyle.Render(fmt.Sprintf("[↑/↓] navigate  type to filter  [Enter] select  [Esc] clear  (%s)", count)), m.contentWidth()))
 	return b.String()
 }
 

@@ -924,54 +924,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 
-		// Normal keybinds
+		// Global controls are intentionally minimal: Ctrl+C exits, Esc cancels
+		// the current focus, and "/" opens the command palette.
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "ctrl+c":
 			return a, a.shutdown()
-		case "o", "ctrl+o":
-			cmds = append(cmds, a.handleOpenSessionLog())
-		case "ctrl+y":
-			cmds = append(cmds, a.handleYankResponse())
-		case "enter":
-			switch a.focus {
-			case FocusAgentList, FocusAgentDetail, FocusConversation:
-				// Focus conversation input for the selected agent. Startup-locked
-				// chats stay locked until the first assistant reply or terminal status.
-				if a.selectedAgentID != "" {
-					a.focus = FocusConversation
-					a.inputMode = "chat"
-					cmd := a.conversation.Focus()
-					return a, cmd
-				}
-			}
 		case "esc":
 			a.conversation.Blur()
 			a.inputMode = ""
 			a.focus = FocusAgentList
-		case "up":
-			switch a.focus {
-			case FocusConversation:
-				var cmd tea.Cmd
-				a.conversation, cmd = a.conversation.Update(msg)
-				return a, cmd
-			case FocusAgentList:
-				a.agentList.MoveUp()
-				cmds = append(cmds, a.selectCurrentAgent())
-			case FocusContextList:
-				a.contextList.MoveUp()
-			}
-		case "down":
-			switch a.focus {
-			case FocusConversation:
-				var cmd tea.Cmd
-				a.conversation, cmd = a.conversation.Update(msg)
-				return a, cmd
-			case FocusAgentList:
-				a.agentList.MoveDown()
-				cmds = append(cmds, a.selectCurrentAgent())
-			case FocusContextList:
-				a.contextList.MoveDown()
-			}
 		case "/":
 			if a.selectedAgentID != "" {
 				a.focus = FocusConversation
@@ -1467,6 +1428,22 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, tea.Batch(cmds...)
 			}
 		}
+		if msg.Action == tea.MouseActionPress && (msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown) {
+			rx, ry, rw, rh := a.agentListPanelRect()
+			if rw > 0 && rh > 0 &&
+				msg.X >= rx && msg.X < rx+rw &&
+				msg.Y >= ry && msg.Y < ry+rh {
+				delta := 1
+				if msg.Button == tea.MouseButtonWheelUp {
+					delta = -1
+				}
+				if item, ok := a.agentList.Scroll(delta); ok {
+					a.markAgentSelected(item.ID)
+					cmds = append(cmds, a.selectCurrentAgent())
+				}
+				return a, tea.Batch(cmds...)
+			}
+		}
 		// Forward mouse events (e.g. wheel scroll) to the conversation.
 		if a.focus == FocusConversation || a.inputMode == "chat" {
 			var cmd tea.Cmd
@@ -1579,7 +1556,7 @@ func (a App) conversationInputLocked() bool {
 
 func isGlobalLifecycleKey(msg tea.KeyMsg) bool {
 	switch msg.String() {
-	case "q", "ctrl+c":
+	case "ctrl+c":
 		return true
 	default:
 		return false
@@ -1698,14 +1675,6 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			return a, a.shutdown()
-		case "ctrl+v":
-			return a, a.handleBrowserToggle()
-		case "ctrl+o":
-			return a, a.handleOpenSessionLog()
-		case "ctrl+t":
-			a.handleTraceToggle()
-		case "ctrl+y":
-			return a, a.handleYankResponse()
 		case "enter":
 			a.notice = "Agent is still working — wait for the current response"
 			a.noticeTTL = 3
@@ -1740,15 +1709,6 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return a, a.shutdown()
-	case "ctrl+v":
-		return a, a.handleBrowserToggle()
-	case "ctrl+o":
-		return a, a.handleOpenSessionLog()
-	case "ctrl+t":
-		a.handleTraceToggle()
-		return a, nil
-	case "ctrl+y":
-		return a, a.handleYankResponse()
 	case "enter":
 		text, displayText := a.conversation.InputPayloadAndDisplay()
 		if text != "" && a.selectedAgentID != "" {
@@ -1771,11 +1731,6 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.inputMode = ""
 		a.focus = FocusAgentList
 		return a, nil
-	case "pgup", "pgdown", "up", "down":
-		// Forward scroll keys to conversation
-		var cmd tea.Cmd
-		a.conversation, cmd = a.conversation.Update(msg)
-		return a, cmd
 	default:
 		ti := a.conversation.TextInput()
 		if !a.conversation.Focused() {
@@ -2072,7 +2027,7 @@ func browserToggleCmd(window browserContextWindow, contextID string) tea.Cmd {
 		if err := window.ShowContext(contextID); err != nil {
 			return statusNotice{text: "Failed to show context: " + err.Error()}
 		}
-		return statusNotice{text: "Context shown - press v to hide"}
+		return statusNotice{text: "Context shown"}
 	}
 }
 

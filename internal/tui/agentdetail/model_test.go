@@ -19,6 +19,22 @@ func TestEmptyViewDoesNotShowCreateInstructions(t *testing.T) {
 	}
 }
 
+func TestViewDoesNotShowRemovedControlKeybinds(t *testing.T) {
+	m := New()
+	m.SetSize(60, 10)
+	m.SetAgent("agent-1", "Agent", "task", "active", 0, "", "", time.Now())
+
+	view := m.View()
+	for _, legacy := range []string{"[Enter]", "[o]", "[x]", "kill", "delete"} {
+		if strings.Contains(view, legacy) {
+			t.Fatalf("detail view still shows removed keybind %q:\n%s", legacy, view)
+		}
+	}
+	if !strings.Contains(view, "/") {
+		t.Fatalf("detail view should point users to slash commands:\n%s", view)
+	}
+}
+
 func TestViewConstrainsLongRowsToWidth(t *testing.T) {
 	m := New()
 	m.SetSize(18, 8)

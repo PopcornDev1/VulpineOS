@@ -54,7 +54,7 @@ func (m *Model) Init() tea.Cmd { return nil }
 
 // Update handles key events and window resizes. The picker dispatches
 // AgentPickerPickedMsg when the user presses Enter and
-// AgentPickerCancelledMsg when they press Esc/q/ctrl+c.
+// AgentPickerCancelledMsg when they press Esc/ctrl+c.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -63,12 +63,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "esc", "q", "ctrl+c":
+		case "esc", "ctrl+c":
 			return m, func() tea.Msg { return shared.AgentPickerCancelledMsg{} }
-		case "up", "k", "ctrl+p":
+		case "up":
 			m.move(-1)
 			return m, nil
-		case "down", "j", "ctrl+n":
+		case "down":
 			m.move(1)
 			return m, nil
 		case "enter":

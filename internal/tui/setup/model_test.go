@@ -86,6 +86,20 @@ func TestProviderPickerFiltersByTypedSearch(t *testing.T) {
 	}
 }
 
+func TestProviderPickerTreatsJAndQAsTypedSearch(t *testing.T) {
+	m := newWithConfigAndProviders(nil, setupTestProviders())
+	for _, r := range "jq" {
+		model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = model.(*Model)
+		if cmd != nil {
+			t.Fatalf("%q returned command %#v, want filter text only", string(r), cmd())
+		}
+	}
+	if m.providerQuery != "jq" {
+		t.Fatalf("providerQuery = %q, want jq", m.providerQuery)
+	}
+}
+
 func TestModelPickerFiltersByTypedSearchAndSelectsModel(t *testing.T) {
 	m := newWithConfigAndProviders(nil, []config.Provider{
 		{
@@ -132,6 +146,25 @@ func TestModelPickerFiltersByTypedSearchAndSelectsModel(t *testing.T) {
 	}
 	if m.step != stepAPIKey {
 		t.Fatalf("step = %v, want API key step after model selection", m.step)
+	}
+}
+
+func TestModelPickerTreatsJAndKAsTypedSearch(t *testing.T) {
+	m := newWithConfigAndProviders(nil, setupTestProviders())
+	model, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = model.(*Model)
+	if m.step != stepModel {
+		t.Fatalf("step = %v, want model picker step", m.step)
+	}
+	for _, r := range "jk" {
+		model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = model.(*Model)
+		if cmd != nil {
+			t.Fatalf("%q returned command %#v, want filter text only", string(r), cmd())
+		}
+	}
+	if m.modelQuery != "jk" {
+		t.Fatalf("modelQuery = %q, want jk", m.modelQuery)
 	}
 }
 
@@ -250,6 +283,28 @@ func TestSetupProviderWithOAuthOffersAuthMethod(t *testing.T) {
 	}
 }
 
+func TestSetupAuthMethodIgnoresVimNavigation(t *testing.T) {
+	m := newWithConfigAndProviders(nil, oauthTestProviders())
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = model.(*Model)
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // select OpenAI -> authMethod
+	m = model.(*Model)
+	if m.step != stepAuthMethod {
+		t.Fatalf("step = %v, want stepAuthMethod", m.step)
+	}
+
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = model.(*Model)
+	if m.authMethodIdx != 0 {
+		t.Fatalf("authMethodIdx = %d after j, want unchanged 0", m.authMethodIdx)
+	}
+	model, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = model.(*Model)
+	if m.authMethodIdx != 1 {
+		t.Fatalf("authMethodIdx = %d after down, want 1", m.authMethodIdx)
+	}
+}
+
 func TestSetupOAuthMethodSelectsHiddenVariantAndStartsLogin(t *testing.T) {
 	m := newWithConfigAndProviders(nil, oauthTestProviders())
 	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -315,5 +370,21 @@ func TestSetupAuthMethodAPIKeyChoiceUsesBaseProvider(t *testing.T) {
 	m = model.(*Model)
 	if m.step != stepAPIKey {
 		t.Fatalf("step = %v, want stepAPIKey", m.step)
+	}
+}
+
+func TestDoneStepIgnoresPlainQuitKey(t *testing.T) {
+	m := newWithConfigAndProviders(nil, setupTestProviders())
+	m.step = stepDone
+
+	model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = model.(*Model)
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("plain q should not quit the setup done step")
+		}
+	}
+	if m.done {
+		t.Fatal("plain q should not mark setup done")
 	}
 }

@@ -104,6 +104,37 @@ func TestEscDispatchesCancelledMessage(t *testing.T) {
 	}
 }
 
+func TestPlainQuitAndVimKeysFilterInsteadOfControllingPicker(t *testing.T) {
+	m := New(sampleAgents())
+	for _, r := range "jkq" {
+		var cmd tea.Cmd
+		out, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = out.(*Model)
+		if cmd != nil {
+			t.Fatalf("%q returned command %#v, want filter text only", string(r), cmd())
+		}
+	}
+	if m.query != "jkq" {
+		t.Fatalf("query = %q, want jkq", m.query)
+	}
+}
+
+func TestCtrlNavigationKeysDoNotMovePickerSelection(t *testing.T) {
+	m := New(sampleAgents())
+	m = pressKey(m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.selected != 1 {
+		t.Fatalf("after down selected = %d, want 1", m.selected)
+	}
+	m = pressKey(m, tea.KeyMsg{Type: tea.KeyCtrlP})
+	if m.selected != 1 {
+		t.Fatalf("ctrl+p selected = %d, want unchanged 1", m.selected)
+	}
+	m = pressKey(m, tea.KeyMsg{Type: tea.KeyCtrlN})
+	if m.selected != 1 {
+		t.Fatalf("ctrl+n selected = %d, want unchanged 1", m.selected)
+	}
+}
+
 func TestBackspacePopsFilter(t *testing.T) {
 	m := New(sampleAgents())
 	for _, r := range "wo" {
