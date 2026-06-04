@@ -1168,9 +1168,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if pendingAssistantReply {
 			a.pendingChatFocusAgentID = ""
 		}
-		// If matches selected agent, add to conversation panel + clear thinking
+		// If matches selected agent, add to conversation panel. Tool and stream
+		// updates keep the loading indicator active until the final assistant
+		// reply or a terminal status arrives.
 		if msg.AgentID == a.selectedAgentID {
-			a.conversation.SetThinking(false)
+			if msg.Role == "assistant" {
+				a.conversation.SetThinking(false)
+			}
 			if msg.Role == "stream" {
 				a.conversation.UpdateLastAssistant(msg.Content, true)
 			} else if msg.Role == "assistant" && a.conversation.IsLastEntryStreaming() {

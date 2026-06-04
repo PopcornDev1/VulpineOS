@@ -73,6 +73,7 @@ const (
 	compactDraftInputMax  = 2
 	inputBlockChromeLines = 4 // top spacer, spacer, metadata, bottom half-border
 	messageInputGapLines  = 1
+	thinkingGapLines      = 1
 )
 
 // ThinkingTickMsg triggers animation updates for the thinking indicator.
@@ -738,7 +739,7 @@ func (m Model) selectedCellRangeForLine(idx, width int) (int, int, bool) {
 func (m Model) visibleMessageWindow(extraBottomLines int) visibleMessageWindow {
 	bottomLines := m.inputBlockHeight() + extraBottomLines + messageInputGapLines
 	if m.thinking {
-		bottomLines++
+		bottomLines += thinkingGapLines + 1
 	}
 	if m.notice != "" {
 		bottomLines++
@@ -910,10 +911,10 @@ func (m Model) Focused() bool {
 
 // visibleLines returns how many rendered lines fit in the message area.
 func (m Model) visibleLines() int {
-	// Layout: title(1) + messages + thinking(0-1) + gap + input block + notice(0-1)
+	// Layout: title(1) + messages + thinking(0-2) + gap + input block + notice(0-1)
 	reserved := 1 + messageInputGapLines + m.inputBlockHeight()
 	if m.thinking {
-		reserved++ // thinking indicator between messages and input block
+		reserved += thinkingGapLines + 1 // thinking gap + indicator between messages and input block
 	}
 	if m.notice != "" {
 		reserved++
@@ -1466,6 +1467,9 @@ func (m Model) view(palette string) string {
 
 	// 4. Thinking indicator
 	if m.thinking {
+		for i := 0; i < thinkingGapLines; i++ {
+			b.WriteString("\n")
+		}
 		b.WriteString(thinkingLine)
 		b.WriteString("\n")
 	}

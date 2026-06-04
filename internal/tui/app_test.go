@@ -2214,6 +2214,53 @@ func TestPendingStartupReplyRefocusesChatInput(t *testing.T) {
 	}
 }
 
+func TestSelectedToolAndStreamEntriesKeepConversationThinking(t *testing.T) {
+	db := openTestVault(t)
+	cfg := &config.Config{}
+	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Researcher", "Research task", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.SetAgentName(agent.Name)
+	app.conversation.SetAwake(true)
+	app.conversation.SetThinking(true)
+
+	model, _ := app.Update(shared.ConversationEntryMsg{
+		AgentID: agent.ID,
+		Role:    "system",
+		Content: "Tool used: vulpine_navigate",
+	})
+	app = model.(App)
+	if !app.conversation.IsThinking() {
+		t.Fatal("selected system/tool entry should keep loading indicator active")
+	}
+
+	model, _ = app.Update(shared.ConversationEntryMsg{
+		AgentID: agent.ID,
+		Role:    "stream",
+		Content: "working",
+	})
+	app = model.(App)
+	if !app.conversation.IsThinking() {
+		t.Fatal("selected streaming entry should keep loading indicator active")
+	}
+
+	model, _ = app.Update(shared.ConversationEntryMsg{
+		AgentID: agent.ID,
+		Role:    "assistant",
+		Content: "Finished.",
+	})
+	app = model.(App)
+	if app.conversation.IsThinking() {
+		t.Fatal("final assistant entry should clear loading indicator")
+	}
+}
+
 func TestBackgroundPendingStartupReplyClearsMarkerWithoutStealingFocus(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}

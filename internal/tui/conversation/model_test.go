@@ -198,6 +198,36 @@ func TestViewLeavesBlankLineAboveInputBlock(t *testing.T) {
 	}
 }
 
+func TestThinkingIndicatorLeavesBlankLineAfterMessage(t *testing.T) {
+	m := New()
+	m.SetSize(60, 14)
+	m.SetAgentID("agent-1")
+	m.SetAwake(true)
+	m.AddEntry("user", "please check")
+	m.SetThinking(true)
+
+	lines := strings.Split(stripANSI(m.View()), "\n")
+	messageLine := -1
+	for i, line := range lines {
+		if strings.Contains(line, "please check") {
+			messageLine = i
+			break
+		}
+	}
+	if messageLine < 0 {
+		t.Fatalf("view missing sent message:\n%s", strings.Join(lines, "\n"))
+	}
+	if messageLine+2 >= len(lines) {
+		t.Fatalf("view missing rows after sent message:\n%s", strings.Join(lines, "\n"))
+	}
+	if strings.TrimSpace(lines[messageLine+1]) != "" {
+		t.Fatalf("line after sent message = %q, want blank gap:\n%s", lines[messageLine+1], strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[messageLine+2], "...") {
+		t.Fatalf("loading indicator should follow blank gap, got %q:\n%s", lines[messageLine+2], strings.Join(lines, "\n"))
+	}
+}
+
 func TestInputBlockSoftWrapsLongDraft(t *testing.T) {
 	m := New()
 	m.SetSize(46, 18)
