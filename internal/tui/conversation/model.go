@@ -62,6 +62,9 @@ var (
 				Foreground(inputBlockBg).
 				Background(lipgloss.Color("#E5E7EB"))
 	inputHalfLineStyle = lipgloss.NewStyle().Foreground(inputBlockBg).Background(inputBlockBg)
+	selectedLineStyle  = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#F9FAFB")).
+				Background(lipgloss.Color("#312E81"))
 )
 
 const (
@@ -116,6 +119,14 @@ type pasteSnippet struct {
 	Raw    string
 }
 
+type visibleMessageWindow struct {
+	rendered     []string
+	start        int
+	end          int
+	visibleLines []string
+	emptyLines   int
+}
+
 // Model holds the conversation panel state.
 type Model struct {
 	entries         []Entry
@@ -138,6 +149,10 @@ type Model struct {
 	pasteSnippets   []pasteSnippet
 	modelLabel      string // provider/model shown in the input block metadata
 	notice          string // transient message rendered just under the chatbox
+	selecting       bool
+	selectionActive bool
+	selectionStart  int
+	selectionEnd    int
 }
 
 // SetAgentName sets the display name for the agent.
@@ -487,6 +502,160 @@ func (m Model) contentWidth() int {
 		return 1
 	}
 	return maxWidth
+}
+
+// BeginSelectionAtViewRow starts a line selection from a row in the rendered
+// conversation view. The row is relative to the conversation content, not the
+// outer workbench.
+func (m *Model) BeginSelectionAtViewRow(row int) bool {
+	idx, ok := m.renderedLineIndexForViewRow(row)
+	if !ok {
+		m.ClearSelection()
+		return false
+	}
+	m.selecting = true
+	m.selectionActive = true
+	m.selectionStart = idx
+	m.selectionEnd = idx
+	return true
+}
+
+// ExtendSelectionAtViewRow extends the active line selection to a rendered row.
+func (m *Model) ExtendSelectionAtViewRow(row int) bool {
+	if !m.selecting && !m.selectionActive {
+		return false
+	}
+	idx, ok := m.renderedLineIndexForViewRow(row)
+	if !ok {
+		return false
+	}
+	m.selectionEnd = idx
+	return true
+}
+
+// EndSelection stops drag selection while keeping the selected range visible.
+func (m *Model) EndSelection() {
+	m.selecting = false
+}
+
+// SelectionDragging reports whether a mouse drag selection is in progress.
+func (m Model) SelectionDragging() bool {
+	return m.selecting
+}
+
+// HasSelection reports whether there is a selected conversation range.
+func (m Model) HasSelection() bool {
+	return m.selectionActive
+}
+
+// ClearSelection clears the selected conversation range.
+func (m *Model) ClearSelection() {
+	m.selecting = false
+	m.selectionActive = false
+	m.selectionStart = 0
+	m.selectionEnd = 0
+}
+
+// SelectedText returns the selected visible conversation rows without ANSI
+// styling, suitable for clipboard copy.
+func (m Model) SelectedText() string {
+	if !m.selectionActive {
+		return ""
+	}
+	rendered := m.getDisplayLines()
+	if len(rendered) == 0 {
+		return ""
+	}
+	start, end := m.normalizedSelectionRange()
+	if start >= len(rendered) {
+		return ""
+	}
+	if end >= len(rendered) {
+		end = len(rendered) - 1
+	}
+	lines := make([]string, 0, end-start+1)
+	for i := start; i <= end; i++ {
+		lines = append(lines, strings.TrimRight(stripANSI(rendered[i]), " "))
+	}
+	return strings.Trim(strings.Join(lines, "\n"), "\n")
+}
+
+func (m Model) normalizedSelectionRange() (int, int) {
+	start, end := m.selectionStart, m.selectionEnd
+	if start > end {
+		start, end = end, start
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end < 0 {
+		end = 0
+	}
+	return start, end
+}
+
+func (m Model) isSelectedRenderedLine(idx int) bool {
+	if !m.selectionActive {
+		return false
+	}
+	start, end := m.normalizedSelectionRange()
+	return idx >= start && idx <= end
+}
+
+func (m Model) renderedLineIndexForViewRow(row int) (int, bool) {
+	if row < 0 {
+		return 0, false
+	}
+	window := m.visibleMessageWindow(0)
+	messageStart := 1 + window.emptyLines
+	messageEnd := messageStart + len(window.visibleLines)
+	if row < messageStart || row >= messageEnd {
+		return 0, false
+	}
+	return window.start + (row - messageStart), true
+}
+
+func (m Model) visibleMessageWindow(extraBottomLines int) visibleMessageWindow {
+	bottomLines := m.inputBlockHeight() + extraBottomLines + messageInputGapLines
+	if m.thinking {
+		bottomLines++
+	}
+	if m.notice != "" {
+		bottomLines++
+	}
+	visibleMsgLines := m.height - 1 - bottomLines // 1 for title
+	if visibleMsgLines < 1 {
+		visibleMsgLines = 1
+	}
+
+	rendered := m.getDisplayLines()
+	start := m.scroll
+	maxScroll := len(rendered) - visibleMsgLines
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if start > maxScroll {
+		start = maxScroll
+	}
+	if start < 0 {
+		start = 0
+	}
+
+	end := start + visibleMsgLines
+	if end > len(rendered) {
+		end = len(rendered)
+	}
+	visibleSlice := rendered[start:end]
+	if len(visibleSlice) > visibleMsgLines {
+		visibleSlice = visibleSlice[:visibleMsgLines]
+	}
+	return visibleMessageWindow{
+		rendered:     rendered,
+		start:        start,
+		end:          end,
+		visibleLines: visibleSlice,
+		emptyLines:   visibleMsgLines - len(visibleSlice),
+	}
 }
 
 func (m *Model) rewrapEntries(maxWidth int) {
@@ -1103,6 +1272,18 @@ func fitCellLine(line string, width int) string {
 	return lines[0]
 }
 
+func (m Model) selectedLine(line string) string {
+	plain := stripANSI(line)
+	width := m.width
+	if width < 1 {
+		width = ansiVisualWidth(plain)
+	}
+	if padding := width - ansiVisualWidth(plain); padding > 0 {
+		plain += strings.Repeat(" ", padding)
+	}
+	return selectedLineStyle.Render(plain)
+}
+
 func (m Model) View() string {
 	return m.view("")
 }
@@ -1138,46 +1319,7 @@ func (m Model) view(palette string) string {
 		thinkingLine = "  " + shimmerText
 	}
 
-	// Calculate available lines for messages.
-	// Layout (bottom to top): notice(0-1) + input block + palette(0-n) + gap + thinking(0-1) + messages + title(1)
-	bottomLines := m.inputBlockHeight() + len(paletteLines) + messageInputGapLines
-	if m.thinking {
-		bottomLines++
-	}
-	if m.notice != "" {
-		bottomLines++
-	}
-	visibleMsgLines := m.height - 1 - bottomLines // 1 for title
-	if visibleMsgLines < 1 {
-		visibleMsgLines = 1
-	}
-
-	// Get display lines from pre-rendered entries (no markdown parsing in render path)
-	rendered := m.getDisplayLines()
-
-	// Clamp scroll
-	maxScroll := len(rendered) - visibleMsgLines
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if m.scroll > maxScroll {
-		m.scroll = maxScroll
-	}
-	if m.scroll < 0 {
-		m.scroll = 0
-	}
-
-	start := m.scroll
-	end := start + visibleMsgLines
-	if end > len(rendered) {
-		end = len(rendered)
-	}
-	visibleSlice := rendered[start:end]
-	// Hard-truncate to visibleMsgLines (safety against markdown expanding lines)
-	if len(visibleSlice) > visibleMsgLines {
-		visibleSlice = visibleSlice[:visibleMsgLines]
-	}
-	linesWritten := len(visibleSlice)
+	window := m.visibleMessageWindow(len(paletteLines))
 
 	// === BUILD OUTPUT ===
 
@@ -1190,13 +1332,15 @@ func (m Model) view(palette string) string {
 	b.WriteString("\n")
 
 	// 2. Empty space (bottom-align messages)
-	emptyLines := visibleMsgLines - linesWritten
-	for i := 0; i < emptyLines; i++ {
+	for i := 0; i < window.emptyLines; i++ {
 		b.WriteString("\n")
 	}
 
 	// 3. Messages
-	for _, line := range visibleSlice {
+	for i, line := range window.visibleLines {
+		if m.isSelectedRenderedLine(window.start + i) {
+			line = m.selectedLine(line)
+		}
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
@@ -1568,6 +1712,25 @@ func ansiVisualWidth(s string) int {
 		width += runewidth.RuneWidth(r)
 	}
 	return width
+}
+
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if inEscape {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // wordWrap breaks text into lines of at most maxWidth visual characters,

@@ -377,6 +377,56 @@ func TestAddEntryWithDisplayRendersMarkerNotRawPaste(t *testing.T) {
 	}
 }
 
+func TestVisibleRowSelectionCopiesPlainRenderedText(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	m := New()
+	m.SetSize(80, 16)
+	m.SetAgentID("agent-1")
+	m.SetAwake(true)
+	m.AddEntry("assistant", "alpha **bold**")
+	m.AddEntry("assistant", "beta line")
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	start := -1
+	end := -1
+	for i, line := range lines {
+		switch {
+		case strings.Contains(line, "alpha"):
+			start = i
+		case strings.Contains(line, "beta line"):
+			end = i
+		}
+	}
+	if start < 0 || end < 0 {
+		t.Fatalf("could not locate selectable rows:\n%s", view)
+	}
+
+	if !m.BeginSelectionAtViewRow(start) {
+		t.Fatalf("begin selection row %d failed:\n%s", start, view)
+	}
+	if !m.ExtendSelectionAtViewRow(end) {
+		t.Fatalf("extend selection row %d failed:\n%s", end, view)
+	}
+
+	copied := m.SelectedText()
+	if !strings.Contains(copied, "alpha bold") || !strings.Contains(copied, "beta line") {
+		t.Fatalf("copied text = %q, want selected rendered rows", copied)
+	}
+	if strings.Contains(copied, "\x1b[") {
+		t.Fatalf("copied text should not contain ANSI escapes: %q", copied)
+	}
+	if !m.HasSelection() {
+		t.Fatal("selection should remain active after selecting rows")
+	}
+	selectedView := m.View()
+	if selectedView == view {
+		t.Fatalf("view did not change after selection:\n%s", selectedView)
+	}
+}
+
 func TestForceScrollToBottomOverridesManualScroll(t *testing.T) {
 	m := New()
 	m.SetSize(80, 6)

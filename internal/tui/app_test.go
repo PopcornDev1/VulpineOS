@@ -641,7 +641,7 @@ func TestStartupLockedChatEnterFromListDoesNotFocusInput(t *testing.T) {
 	}
 }
 
-func TestStartupLockedChatAllowsCtrlCQuitShortcut(t *testing.T) {
+func TestStartupLockedChatRequiresSecondCtrlCToQuit(t *testing.T) {
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.conversation.SetSize(80, 20)
@@ -657,14 +657,24 @@ func TestStartupLockedChatAllowsCtrlCQuitShortcut(t *testing.T) {
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	app = model.(App)
 
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("first ctrl+c should not quit locked startup chat")
+		}
+	}
+	if !strings.Contains(app.notice, "Press Ctrl+C again") {
+		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
+	}
+	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
 	if cmd == nil {
-		t.Fatal("locked startup quit returned no command")
+		t.Fatal("second locked startup ctrl+c returned no command")
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatal("locked startup quit did not return tea.QuitMsg")
+		t.Fatal("second locked startup ctrl+c did not return tea.QuitMsg")
 	}
 	if app.conversation.TextInput().Value() != "" {
-		t.Fatal("locked startup quit should not type into chat")
+		t.Fatal("locked startup ctrl+c should not type into chat")
 	}
 }
 
@@ -694,22 +704,33 @@ func TestStartupLockedChatIgnoresPlainQuitKey(t *testing.T) {
 	}
 }
 
-func TestNewAgentPromptsAllowQuitShortcut(t *testing.T) {
+func TestNewAgentPromptsRequireSecondCtrlCToQuit(t *testing.T) {
 	for _, mode := range []string{"new-agent-name", "new-agent-desc"} {
 		app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
 		app.inputMode = mode
 
-		_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		app = model.(App)
+		if cmd != nil {
+			if _, ok := cmd().(tea.QuitMsg); ok {
+				t.Fatalf("%s first ctrl+c should not quit", mode)
+			}
+		}
+		if !strings.Contains(app.notice, "Press Ctrl+C again") {
+			t.Fatalf("%s notice = %q, want second-press quit hint", mode, app.notice)
+		}
+
+		_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 		if cmd == nil {
-			t.Fatalf("%s quit returned no command", mode)
+			t.Fatalf("%s second ctrl+c returned no command", mode)
 		}
 		if _, ok := cmd().(tea.QuitMsg); !ok {
-			t.Fatalf("%s quit did not return tea.QuitMsg", mode)
+			t.Fatalf("%s second ctrl+c did not return tea.QuitMsg", mode)
 		}
 	}
 }
 
-func TestFocusedChatAllowsQuitShortcut(t *testing.T) {
+func TestFocusedChatRequiresSecondCtrlCToQuit(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
 	app.selectedAgentID = "agent-1"
 	app.focus = FocusConversation
@@ -720,14 +741,24 @@ func TestFocusedChatAllowsQuitShortcut(t *testing.T) {
 
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	app = model.(App)
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("first focused chat ctrl+c should not quit")
+		}
+	}
+	if !strings.Contains(app.notice, "Press Ctrl+C again") {
+		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
+	}
+	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
 	if cmd == nil {
-		t.Fatal("focused chat quit returned no command")
+		t.Fatal("second focused chat ctrl+c returned no command")
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatal("focused chat quit did not return tea.QuitMsg")
+		t.Fatal("second focused chat ctrl+c did not return tea.QuitMsg")
 	}
 	if app.conversation.TextInput().Value() != "" {
-		t.Fatal("focused chat quit should not type into chat")
+		t.Fatal("focused chat ctrl+c should not type into chat")
 	}
 }
 
@@ -753,17 +784,27 @@ func TestFocusedChatEscKeepsChatComposerActive(t *testing.T) {
 	}
 }
 
-func TestSettingsAllowsEmergencyQuitShortcut(t *testing.T) {
+func TestSettingsRequiresSecondCtrlCToQuit(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
 	app.focus = FocusSettings
 	app.settings.SetActive(true)
 
-	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("settings first ctrl+c should not quit")
+		}
+	}
+	if !strings.Contains(app.notice, "Press Ctrl+C again") {
+		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
+	}
+	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
-		t.Fatal("settings quit returned no command")
+		t.Fatal("settings second ctrl+c returned no command")
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatal("settings quit did not return tea.QuitMsg")
+		t.Fatal("settings second ctrl+c did not return tea.QuitMsg")
 	}
 }
 
@@ -926,6 +967,100 @@ func TestMouseWheelScrollsAgentList(t *testing.T) {
 
 	if app.selectedAgentID != second.ID {
 		t.Fatalf("selected agent = %q, want %q after agent-list wheel scroll", app.selectedAgentID, second.ID)
+	}
+}
+
+func TestMouseSelectsChatRowsAndCtrlCCopiesSelection(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 24
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.selectedAgentID = "agent-1"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Agent 1")
+	app.conversation.SetAwake(true)
+	app.conversation.AddEntry("assistant", "copy this selected line")
+	app.conversation.AddEntry("assistant", "and this one")
+	app.updatePanelSizes()
+
+	copied := ""
+	app.clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	view := app.conversation.View()
+	lines := strings.Split(view, "\n")
+	startRow := -1
+	endRow := -1
+	for i, line := range lines {
+		switch {
+		case strings.Contains(line, "copy this selected line"):
+			startRow = i
+		case strings.Contains(line, "and this one"):
+			endRow = i
+		}
+	}
+	if startRow < 0 || endRow < 0 {
+		t.Fatalf("could not locate chat rows:\n%s", view)
+	}
+	rx, ry, rw, rh := app.conversationContentRect()
+	if rw <= 0 || rh <= 0 {
+		t.Fatalf("conversation rect = (%d,%d,%d,%d), want usable rect", rx, ry, rw, rh)
+	}
+
+	model, _ := app.Update(tea.MouseMsg{
+		X:      rx + 2,
+		Y:      ry + startRow,
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{
+		X:      rx + 2,
+		Y:      ry + endRow,
+		Type:   tea.MouseMotion,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionMotion,
+	})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{
+		X:      rx + 2,
+		Y:      ry + endRow,
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionRelease,
+	})
+	app = model.(App)
+
+	if !app.conversation.HasSelection() {
+		t.Fatal("conversation should have a selected chat range after mouse drag")
+	}
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("ctrl+c with chat selection returned no copy command")
+	}
+	msg := cmd()
+	notice, ok := msg.(statusNotice)
+	if !ok {
+		t.Fatalf("copy command returned %#v, want statusNotice", msg)
+	}
+	if !strings.Contains(notice.text, "Copied selected chat text") {
+		t.Fatalf("notice = %q, want selected chat copy notice", notice.text)
+	}
+	if !strings.Contains(copied, "copy this selected line") || !strings.Contains(copied, "and this one") {
+		t.Fatalf("copied = %q, want selected chat rows", copied)
+	}
+	if strings.Contains(copied, "\x1b[") {
+		t.Fatalf("copied text should not contain ANSI escapes: %q", copied)
+	}
+	if app.conversation.HasSelection() {
+		t.Fatal("selection should clear after ctrl+c copy")
 	}
 }
 

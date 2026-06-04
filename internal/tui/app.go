@@ -213,8 +213,10 @@ type App struct {
 	renameAgentID           string // agent ID being renamed
 	notice                  string
 	noticeTTL               int // number of ticks before notice is cleared
+	quitConfirmArmed        bool
 	pendingChatFocusAgentID string
 	liveAgentContexts       map[string]string
+	clipboardWrite          func(string) error
 
 	// Text inputs
 	nameInput   textinput.Model
@@ -284,6 +286,7 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		settings:          settings.New(),
 		commandPalette:    commandpalette.New(),
 		liveAgentContexts: make(map[string]string),
+		clipboardWrite:    clipboard.WriteAll,
 		eventCh:           eventCh,
 		eventIn:           eventIn,
 		stopCh:            stopCh,
@@ -867,11 +870,43 @@ func (a *App) shutdown() tea.Cmd {
 	return tea.Quit
 }
 
+func (a App) handleCtrlC() (tea.Model, tea.Cmd) {
+	selected := a.conversation.SelectedText()
+	if strings.TrimSpace(selected) != "" {
+		a.conversation.ClearSelection()
+		a.quitConfirmArmed = false
+		return a, a.copyTextCommand(selected, "Copied selected chat text")
+	}
+	if a.quitConfirmArmed {
+		return a, a.shutdown()
+	}
+	a.notice = "Press Ctrl+C again to quit"
+	a.noticeTTL = 4
+	a.quitConfirmArmed = true
+	return a, nil
+}
+
+func (a App) copyTextCommand(content, success string) tea.Cmd {
+	return func() tea.Msg {
+		write := a.clipboardWrite
+		if write == nil {
+			write = clipboard.WriteAll
+		}
+		if err := write(content); err != nil {
+			return statusNotice{text: "Copy failed: " + err.Error()}
+		}
+		return statusNotice{text: success}
+	}
+}
+
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	if key, ok := msg.(tea.KeyMsg); ok && isLeakedTerminalMouseReportKey(key) {
 		return a, nil
+	}
+	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" {
+		return a.handleCtrlC()
 	}
 
 	if a.setupActive {
@@ -936,11 +971,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(cmds...)
 		}
 
-		// Global controls are intentionally minimal: Ctrl+C exits, Esc returns
-		// to the always-active chat composer, and "/" opens the command palette.
+		// Global controls are intentionally minimal: Ctrl+C confirms quit or
+		// copies selected chat text, Esc returns to the always-active chat
+		// composer, and "/" opens the command palette.
 		switch msg.String() {
 		case "ctrl+c":
-			return a, a.shutdown()
+			return a.handleCtrlC()
 		case "esc":
 			cmds = append(cmds, a.focusChatComposer())
 		case "/":
@@ -979,6 +1015,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.noticeTTL--
 			if a.noticeTTL == 0 {
 				a.notice = ""
+				a.quitConfirmArmed = false
 			}
 		}
 		if a.kernel != nil {
@@ -1454,6 +1491,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, tea.Batch(cmds...)
 			}
 		}
+		if a.handleConversationSelectionMouse(msg) {
+			return a, tea.Batch(cmds...)
+		}
 		// Forward mouse events (e.g. wheel scroll) to the conversation.
 		if a.focus == FocusConversation || a.inputMode == "chat" {
 			var cmd tea.Cmd
@@ -1489,7 +1529,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a App) updateNameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
-		return a, a.shutdown()
+		return a.handleCtrlC()
 	case "enter":
 		name := strings.TrimSpace(a.nameInput.Value())
 		if name != "" {
@@ -1659,7 +1699,7 @@ func isASCIIDigit(b byte) bool {
 func (a App) updateDescInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
-		return a, a.shutdown()
+		return a.handleCtrlC()
 	case "enter":
 		desc := strings.TrimSpace(a.taskInput.Value())
 		if desc == "" {
@@ -1689,7 +1729,7 @@ func (a App) updateDescInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a App) updateRenameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
-		return a, a.shutdown()
+		return a.handleCtrlC()
 	case "enter":
 		newName := strings.TrimSpace(a.renameInput.Value())
 		if newName != "" && a.renameAgentID != "" {
@@ -1724,7 +1764,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.conversationInputLocked() {
 		switch msg.String() {
 		case "ctrl+c":
-			return a, a.shutdown()
+			return a.handleCtrlC()
 		case "enter":
 			a.notice = "Agent is still working — wait for the current response"
 			a.noticeTTL = 3
@@ -1756,7 +1796,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "ctrl+c":
-		return a, a.shutdown()
+		return a.handleCtrlC()
 	case "enter":
 		text, displayText := a.conversation.InputPayloadAndDisplay()
 		if text != "" && a.selectedAgentID != "" {
@@ -1790,7 +1830,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a App) updateCommandPaletteInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
-		return a, a.shutdown()
+		return a.handleCtrlC()
 	case "esc", "enter":
 		var cmd tea.Cmd
 		a.commandPalette, cmd = a.commandPalette.Update(msg)
@@ -2189,16 +2229,13 @@ func (a *App) handleTraceToggle() {
 }
 
 func (a *App) handleYankResponse() tea.Cmd {
-	return func() tea.Msg {
-		content := a.conversation.LatestAssistantContent()
-		if content == "" {
+	content := a.conversation.LatestAssistantContent()
+	if content == "" {
+		return func() tea.Msg {
 			return statusNotice{text: "No agent response to copy"}
 		}
-		if err := clipboard.WriteAll(content); err != nil {
-			return statusNotice{text: "Copy failed: " + err.Error()}
-		}
-		return statusNotice{text: "Copied latest agent response"}
 	}
+	return a.copyTextCommand(content, "Copied latest agent response")
 }
 
 func (a *App) browserWindowLabel() string {
@@ -2313,6 +2350,68 @@ func (a App) agentListPanelRect() (int, int, int, int) {
 	ry := leftTop + 2
 	rh := leftBottom + 2
 	return 0, ry, widths.left + 2, rh
+}
+
+func (a App) conversationContentRect() (int, int, int, int) {
+	if a.width <= 0 || a.height <= 0 {
+		return 0, 0, 0, 0
+	}
+	widths := resolveWorkbenchWidths(a.width, a.leftWidth, a.rightWidth)
+	bodyHeight := workbenchBodyHeight(a.height)
+	if a.useCompactWorkbench(widths, bodyHeight) {
+		if a.focus != FocusConversation {
+			return 0, 0, 0, 0
+		}
+		panelWidth := compactPanelWidth(a.width)
+		return 1, 1, panelContentWidth(panelWidth), compactContentHeight(a.height)
+	}
+	if a.focus == FocusSettings && a.settings.IsActive() {
+		return 0, 0, 0, 0
+	}
+	x := widths.left + 3 // left panel including border, then center panel left border
+	y := 1
+	return x, y, panelContentWidth(widths.center), bodyHeight - 2
+}
+
+func (a *App) handleConversationSelectionMouse(msg tea.MouseMsg) bool {
+	if a.commandPalette.Active() || a.inputMode == "new-agent-name" || a.inputMode == "new-agent-desc" {
+		return false
+	}
+	rx, ry, rw, rh := a.conversationContentRect()
+	if rw <= 0 || rh <= 0 {
+		return false
+	}
+	inside := msg.X >= rx && msg.X < rx+rw && msg.Y >= ry && msg.Y < ry+rh
+	switch msg.Action {
+	case tea.MouseActionPress:
+		if msg.Button != tea.MouseButtonLeft || !inside {
+			return false
+		}
+		if !a.conversation.BeginSelectionAtViewRow(msg.Y - ry) {
+			return false
+		}
+		a.quitConfirmArmed = false
+		return true
+	case tea.MouseActionMotion:
+		if msg.Button != tea.MouseButtonLeft || !a.conversation.SelectionDragging() {
+			return false
+		}
+		if inside {
+			a.conversation.ExtendSelectionAtViewRow(msg.Y - ry)
+		}
+		return true
+	case tea.MouseActionRelease:
+		if !a.conversation.SelectionDragging() {
+			return false
+		}
+		if inside {
+			a.conversation.ExtendSelectionAtViewRow(msg.Y - ry)
+		}
+		a.conversation.EndSelection()
+		return true
+	default:
+		return false
+	}
 }
 
 // conversationView renders the conversation, overlaying the inline slash-command
@@ -2724,9 +2823,11 @@ func (a App) updateEmbeddedSetup(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.updatePanelSizes()
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "esc", "ctrl+c":
+		case "esc":
 			a.cancelEmbeddedReconfigure()
 			return a, nil
+		case "ctrl+c":
+			return a.handleCtrlC()
 		}
 	}
 
