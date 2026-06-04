@@ -890,6 +890,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if isLeakedTerminalMouseReportKey(msg) {
+			return a, nil
+		}
 		// The slash-command palette owns key input whenever it is open.
 		if a.commandPalette.Active() {
 			return a.updateCommandPaletteInput(msg)
@@ -1581,6 +1584,48 @@ func isGlobalLifecycleKey(msg tea.KeyMsg) bool {
 	default:
 		return false
 	}
+}
+
+func isLeakedTerminalMouseReportKey(msg tea.KeyMsg) bool {
+	return msg.Type == tea.KeyRunes && !msg.Paste && isOnlySGRMouseReports(string(msg.Runes))
+}
+
+func isOnlySGRMouseReports(s string) bool {
+	if s == "" {
+		return false
+	}
+	for s != "" {
+		if strings.HasPrefix(s, "\x1b") {
+			s = s[1:]
+		}
+		if !strings.HasPrefix(s, "[<") {
+			return false
+		}
+		s = s[2:]
+		for field := 0; field < 3; field++ {
+			if s == "" || !isASCIIDigit(s[0]) {
+				return false
+			}
+			for s != "" && isASCIIDigit(s[0]) {
+				s = s[1:]
+			}
+			if field < 2 {
+				if s == "" || s[0] != ';' {
+					return false
+				}
+				s = s[1:]
+			}
+		}
+		if s == "" || (s[0] != 'M' && s[0] != 'm') {
+			return false
+		}
+		s = s[1:]
+	}
+	return true
+}
+
+func isASCIIDigit(b byte) bool {
+	return b >= '0' && b <= '9'
 }
 
 // updateDescInput handles keystrokes in "new-agent-desc" mode.

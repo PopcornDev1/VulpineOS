@@ -1845,6 +1845,33 @@ func TestChatPasteDisplaysMarkerAndPersistsRawContent(t *testing.T) {
 	}
 }
 
+func TestFocusedChatIgnoresLeakedMouseReports(t *testing.T) {
+	db := openTestVault(t)
+	cfg := &config.Config{}
+	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Scraper", "Scrape prices", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.SetAgentName(agent.Name)
+	app.conversation.SetAwake(true)
+	app.conversation.Focus()
+
+	report := "[<65;72;20M[<65;72;20M"
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(report)})
+	app = model.(App)
+
+	if got := app.conversation.TextInput().Value(); got != "" {
+		t.Fatalf("conversation input = %q, want leaked mouse reports ignored", got)
+	}
+}
+
 func TestAgentTurnPromptIncludesPersistedVisibleHistory(t *testing.T) {
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
