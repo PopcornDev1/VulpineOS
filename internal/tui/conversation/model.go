@@ -69,6 +69,7 @@ const (
 	maxDraftInputLines    = 4
 	compactDraftInputMax  = 2
 	inputBlockChromeLines = 4 // top spacer, spacer, metadata, bottom half-border
+	messageInputGapLines  = 1
 )
 
 // ThinkingTickMsg triggers animation updates for the thinking indicator.
@@ -260,8 +261,8 @@ func (m Model) maxDraftVisibleLines() int {
 		limit = compactDraftInputMax
 	}
 	if m.height > 0 {
-		// Leave room for the title, input chrome, and at least one message row.
-		budget := m.height - 1 - inputBlockChromeLines - 1
+		// Leave room for the title, input chrome, the message/input gap, and at least one message row.
+		budget := m.height - 1 - inputBlockChromeLines - messageInputGapLines - 1
 		if budget < limit {
 			limit = budget
 		}
@@ -620,8 +621,8 @@ func (m Model) Focused() bool {
 
 // visibleLines returns how many rendered lines fit in the message area.
 func (m Model) visibleLines() int {
-	// Layout: title(1) + messages + thinking(0-1) + input block + notice(0-1)
-	reserved := 1 + m.inputBlockHeight()
+	// Layout: title(1) + messages + thinking(0-1) + gap + input block + notice(0-1)
+	reserved := 1 + messageInputGapLines + m.inputBlockHeight()
 	if m.thinking {
 		reserved++ // thinking indicator between messages and input block
 	}
@@ -1138,8 +1139,8 @@ func (m Model) view(palette string) string {
 	}
 
 	// Calculate available lines for messages.
-	// Layout (bottom to top): notice(0-1) + input block + palette(0-n) + thinking(0-1) + messages + title(1)
-	bottomLines := m.inputBlockHeight() + len(paletteLines)
+	// Layout (bottom to top): notice(0-1) + input block + palette(0-n) + gap + thinking(0-1) + messages + title(1)
+	bottomLines := m.inputBlockHeight() + len(paletteLines) + messageInputGapLines
 	if m.thinking {
 		bottomLines++
 	}
@@ -1206,7 +1207,10 @@ func (m Model) view(palette string) string {
 		b.WriteString("\n")
 	}
 
-	// 4b. Inline command palette (above the input)
+	// 4b. Breathing row between conversation output and input controls.
+	b.WriteString("\n")
+
+	// 4c. Inline command palette (above the input)
 	for _, line := range paletteLines {
 		b.WriteString(line)
 		b.WriteString("\n")

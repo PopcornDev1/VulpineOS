@@ -164,6 +164,40 @@ func TestInputBlockUsesOriginalThinRailOutsideAppleTerminal(t *testing.T) {
 	}
 }
 
+func TestViewLeavesBlankLineAboveInputBlock(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+
+	m := New()
+	m.SetSize(60, 14)
+	m.SetAgentID("agent-1")
+	m.SetAgentName("Agent 1")
+	m.SetAwake(true)
+	m.AddEntry("assistant", "latest response")
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if got := len(lines); got != 14 {
+		t.Fatalf("view height = %d, want 14:\n%s", got, view)
+	}
+
+	placeholderLine := -1
+	for i, line := range lines {
+		if strings.Contains(line, "Type a message...") {
+			placeholderLine = i
+			break
+		}
+	}
+	if placeholderLine < 2 {
+		t.Fatalf("could not locate input placeholder with enough leading rows:\n%s", view)
+	}
+	if gap := lines[placeholderLine-2]; strings.TrimSpace(gap) != "" {
+		t.Fatalf("line above input block = %q, want blank breathing row:\n%s", gap, view)
+	}
+	if topRail := lines[placeholderLine-1]; !strings.Contains(topRail, "▌") {
+		t.Fatalf("expected input block top rail before placeholder, got %q:\n%s", topRail, view)
+	}
+}
+
 func TestInputBlockSoftWrapsLongDraft(t *testing.T) {
 	m := New()
 	m.SetSize(46, 18)
