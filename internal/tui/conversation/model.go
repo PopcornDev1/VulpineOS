@@ -1005,21 +1005,31 @@ func renderShimmer(text string, offset int) string {
 }
 
 var (
-	reBold    = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	reItalic  = regexp.MustCompile(`\*(.+?)\*`)
-	reCode    = regexp.MustCompile("`([^`]+)`")
-	reHeading = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
-	reBullet  = regexp.MustCompile(`^\s*[-*]\s+(.+)$`)
+	reBold           = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reItalic         = regexp.MustCompile(`\*(.+?)\*`)
+	reCode           = regexp.MustCompile("`([^`]+)`")
+	reTaskList       = regexp.MustCompile(`^\s*[-*]\s+\[([ xX])\]\s+(.+)$`)
+	reBullet         = regexp.MustCompile(`^\s*[-*]\s+(.+)$`)
+	reNumbered       = regexp.MustCompile(`^\s*(\d+)[.)]\s+(.+)$`)
+	reTableDelimiter = regexp.MustCompile(`^:?-{3,}:?$`)
 )
 
 // renderMarkdown applies lightweight inline markdown styling and word wraps.
-// Handles headings, bullets, **bold**, *italic*, and `code` without pulling in a
-// full parser; this keeps chat rendering deterministic and terminal-safe.
+// Handles chat-oriented Markdown without pulling in a full parser; this keeps
+// rendering deterministic and terminal-safe.
 func renderMarkdown(text string, maxWidth int) []string {
 	var allLines []string
-	for _, rawLine := range strings.Split(text, "\n") {
+	rawLines := strings.Split(text, "\n")
+	for i := 0; i < len(rawLines); {
+		if tableLines, next, ok := renderMarkdownTable(rawLines, i, maxWidth); ok {
+			allLines = append(allLines, tableLines...)
+			i = next
+			continue
+		}
+		rawLine := rawLines[i]
 		line := strings.TrimRight(rawLine, " ")
 		allLines = append(allLines, renderMarkdownLine(line, maxWidth)...)
+		i++
 	}
 
 	if len(allLines) == 0 {
@@ -1029,44 +1039,24 @@ func renderMarkdown(text string, maxWidth int) []string {
 }
 
 func renderMarkdownLine(line string, maxWidth int) []string {
-	if match := reHeading.FindStringSubmatch(line); match != nil {
-		level := len(match[1])
-		text := strings.TrimSpace(match[2])
-		if text == "" {
-			return []string{""}
+	if match := reTaskList.FindStringSubmatch(line); match != nil {
+		checked := strings.EqualFold(match[1], "x")
+		box := "☐"
+		if checked {
+			box = "☑"
 		}
-		style := lipgloss.NewStyle().Bold(true)
-		if level <= 2 {
-			style = style.Foreground(shared.ColorPrimary)
-		}
-		var out []string
-		for _, wrapped := range wordWrap(text, maxWidth) {
-			out = append(out, style.Render(applyInlineMarkdown(wrapped)))
-		}
-		return out
+		return renderPrefixedMarkdown(strings.TrimSpace(match[2]), maxWidth, "  "+box+" ", "    ")
+	}
+
+	if match := reNumbered.FindStringSubmatch(line); match != nil {
+		prefix := "  " + match[1] + ". "
+		nextPrefix := strings.Repeat(" ", ansiVisualWidth(prefix))
+		return renderPrefixedMarkdown(strings.TrimSpace(match[2]), maxWidth, prefix, nextPrefix)
 	}
 
 	if match := reBullet.FindStringSubmatch(line); match != nil {
 		text := strings.TrimSpace(match[1])
-		if text == "" {
-			return []string{shared.MutedStyle.Render("  •")}
-		}
-		const firstPrefix = "  • "
-		const nextPrefix = "    "
-		width := maxWidth - ansiVisualWidth(firstPrefix)
-		if width < 1 {
-			width = 1
-		}
-		wrapped := wordWrap(text, width)
-		out := make([]string, 0, len(wrapped))
-		for i, wrappedLine := range wrapped {
-			prefix := nextPrefix
-			if i == 0 {
-				prefix = firstPrefix
-			}
-			out = append(out, shared.MutedStyle.Render(prefix)+applyInlineMarkdown(wrappedLine))
-		}
-		return out
+		return renderPrefixedMarkdown(text, maxWidth, "  • ", "    ")
 	}
 
 	var out []string
@@ -1074,6 +1064,174 @@ func renderMarkdownLine(line string, maxWidth int) []string {
 		out = append(out, applyInlineMarkdown(wrapped))
 	}
 	return out
+}
+
+func renderPrefixedMarkdown(text string, maxWidth int, firstPrefix, nextPrefix string) []string {
+	if text == "" {
+		return []string{shared.MutedStyle.Render(strings.TrimRight(firstPrefix, " "))}
+	}
+	width := maxWidth - ansiVisualWidth(firstPrefix)
+	if width < 1 {
+		width = 1
+	}
+	wrapped := wordWrap(text, width)
+	out := make([]string, 0, len(wrapped))
+	for i, wrappedLine := range wrapped {
+		prefix := nextPrefix
+		if i == 0 {
+			prefix = firstPrefix
+		}
+		out = append(out, shared.MutedStyle.Render(prefix)+applyInlineMarkdown(wrappedLine))
+	}
+	return out
+}
+
+func renderMarkdownTable(rawLines []string, start, maxWidth int) ([]string, int, bool) {
+	if start+1 >= len(rawLines) {
+		return nil, start, false
+	}
+	header := strings.TrimRight(rawLines[start], " ")
+	delimiter := strings.TrimRight(rawLines[start+1], " ")
+	headerCells := parseMarkdownTableRow(header)
+	delimiterCells := parseMarkdownTableRow(delimiter)
+	if len(headerCells) < 2 || len(delimiterCells) != len(headerCells) || !isMarkdownTableDelimiter(delimiterCells) {
+		return nil, start, false
+	}
+
+	rows := [][]string{headerCells}
+	next := start + 2
+	for next < len(rawLines) {
+		line := strings.TrimRight(rawLines[next], " ")
+		if strings.TrimSpace(line) == "" {
+			break
+		}
+		cells := parseMarkdownTableRow(line)
+		if len(cells) == 0 {
+			break
+		}
+		rows = append(rows, normalizeTableRow(cells, len(headerCells)))
+		next++
+	}
+	return renderTableRows(rows, maxWidth), next, true
+}
+
+func parseMarkdownTableRow(line string) []string {
+	if !strings.Contains(line, "|") {
+		return nil
+	}
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "|")
+	line = strings.TrimSuffix(line, "|")
+	parts := strings.Split(line, "|")
+	cells := make([]string, 0, len(parts))
+	for _, part := range parts {
+		cells = append(cells, strings.TrimSpace(part))
+	}
+	return cells
+}
+
+func isMarkdownTableDelimiter(cells []string) bool {
+	for _, cell := range cells {
+		if !reTableDelimiter.MatchString(strings.ReplaceAll(cell, " ", "")) {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeTableRow(cells []string, columns int) []string {
+	out := make([]string, columns)
+	copy(out, cells)
+	return out
+}
+
+func renderTableRows(rows [][]string, maxWidth int) []string {
+	if len(rows) == 0 || len(rows[0]) == 0 {
+		return nil
+	}
+	widths := tableColumnWidths(rows, maxWidth)
+	out := make([]string, 0, len(rows)+1)
+	out = append(out, renderTableRow(rows[0], widths, true))
+	out = append(out, renderTableSeparator(widths))
+	for _, row := range rows[1:] {
+		out = append(out, renderTableRow(row, widths, false))
+	}
+	return out
+}
+
+func tableColumnWidths(rows [][]string, maxWidth int) []int {
+	columns := len(rows[0])
+	widths := make([]int, columns)
+	for i := range widths {
+		widths[i] = 1
+	}
+	for _, row := range rows {
+		for i := 0; i < columns && i < len(row); i++ {
+			if width := ansiVisualWidth(row[i]); width > widths[i] {
+				widths[i] = width
+			}
+		}
+	}
+
+	available := maxWidth - 2 - ((columns - 1) * 3)
+	if available < columns {
+		available = columns
+	}
+	total := 0
+	for _, width := range widths {
+		total += width
+	}
+	if total <= available {
+		return widths
+	}
+
+	scaled := make([]int, columns)
+	remaining := available
+	for i, width := range widths {
+		next := width * available / total
+		if next < 1 {
+			next = 1
+		}
+		scaled[i] = next
+		remaining -= next
+	}
+	for i := 0; remaining > 0; i = (i + 1) % columns {
+		scaled[i]++
+		remaining--
+	}
+	return scaled
+}
+
+func renderTableRow(row []string, widths []int, header bool) string {
+	cells := make([]string, len(widths))
+	for i, width := range widths {
+		cell := ""
+		if i < len(row) {
+			cell = row[i]
+		}
+		cells[i] = renderTableCell(cell, width, header)
+	}
+	return "  " + strings.Join(cells, shared.MutedStyle.Render(" │ "))
+}
+
+func renderTableCell(text string, width int, header bool) string {
+	clipped := clipCellText(text, width)
+	rendered := applyInlineMarkdown(clipped)
+	if header {
+		rendered = lipgloss.NewStyle().Bold(true).Render(rendered)
+	}
+	if padding := width - ansiVisualWidth(rendered); padding > 0 {
+		rendered += strings.Repeat(" ", padding)
+	}
+	return rendered
+}
+
+func renderTableSeparator(widths []int) string {
+	parts := make([]string, len(widths))
+	for i, width := range widths {
+		parts[i] = strings.Repeat("─", width)
+	}
+	return shared.MutedStyle.Render("  " + strings.Join(parts, "─┼─"))
 }
 
 func applyInlineMarkdown(line string) string {

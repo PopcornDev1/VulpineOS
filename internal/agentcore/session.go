@@ -83,6 +83,9 @@ Do not rush to a single narrow attempt. Be methodical:
 
 Start broad to map the landscape, then narrow into specific angles. When you encounter barriers (consent walls, paywalls, CAPTCHA), handle them interactively rather than treating them as dead ends — click through, fill forms, navigate the interface.
 
+## Output Formatting
+Write in a balanced chat style. Use **bold**, *italic*, inline code, fenced code blocks, bullets, numbered lists, tables and task checkboxes when they make the answer easier to scan. Do not use Markdown headings (#, ##, ###). Do not write horizontal rule divider lines (---, ***, ___); the VulpineOS UI owns message and tool dividers.
+
 ## Reporting
 Be concise. Your final message is the result, not a transcript of what you did. If a tool reports an error, timeout, or incomplete data, report that exactly — never claim an action succeeded when it did not. If the task asks for an exact reply or exact wording, perform the required actions first, then send that exact reply as your final message and stop.`
 

@@ -254,22 +254,19 @@ func TestRenderMarkdownDoesNotSplitStyledANSI(t *testing.T) {
 	}
 }
 
-func TestRenderMarkdownFormatsHeadings(t *testing.T) {
+func TestRenderMarkdownLeavesHeadingsPlain(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
 
 	lines := renderMarkdown("## Subheading", 80)
 	if len(lines) != 1 {
-		t.Fatalf("lines = %#v, want one heading line", lines)
+		t.Fatalf("lines = %#v, want one plain line", lines)
 	}
-	if strings.Contains(lines[0], "##") {
-		t.Fatalf("heading marker leaked into rendered text: %q", lines[0])
+	if !strings.Contains(lines[0], "## Subheading") {
+		t.Fatalf("heading marker should remain plain text: %q", lines[0])
 	}
-	if !strings.Contains(lines[0], "Subheading") {
-		t.Fatalf("heading text missing from rendered line: %q", lines[0])
-	}
-	if !strings.Contains(lines[0], "\x1b[1") {
-		t.Fatalf("heading should render bold ANSI style: %q", lines[0])
+	if strings.Contains(lines[0], "\x1b[1") {
+		t.Fatalf("heading should not render as a styled subheading: %q", lines[0])
 	}
 }
 
@@ -298,6 +295,48 @@ func TestRenderMarkdownFormatsBullets(t *testing.T) {
 		if strings.Contains(line, "- ") {
 			t.Fatalf("dash marker leaked into bullet line: %q", line)
 		}
+	}
+}
+
+func TestRenderMarkdownFormatsTaskLists(t *testing.T) {
+	lines := renderMarkdown("- [x] done\n- [ ] todo", 80)
+	if len(lines) != 2 {
+		t.Fatalf("lines = %#v, want two task lines", lines)
+	}
+	if !strings.Contains(lines[0], "☑ done") || !strings.Contains(lines[1], "☐ todo") {
+		t.Fatalf("task list did not render checkbox glyphs: %#v", lines)
+	}
+	if strings.Contains(strings.Join(lines, "\n"), "[x]") || strings.Contains(strings.Join(lines, "\n"), "[ ]") {
+		t.Fatalf("task list markers leaked into rendered lines: %#v", lines)
+	}
+}
+
+func TestRenderMarkdownFormatsNumberedLists(t *testing.T) {
+	lines := renderMarkdown("1. first\n2. second", 80)
+	if len(lines) != 2 {
+		t.Fatalf("lines = %#v, want two numbered lines", lines)
+	}
+	if !strings.HasPrefix(lines[0], "  1. ") || !strings.HasPrefix(lines[1], "  2. ") {
+		t.Fatalf("numbered lines should use aligned prefixes: %#v", lines)
+	}
+}
+
+func TestRenderMarkdownFormatsTables(t *testing.T) {
+	lines := renderMarkdown("| Name | Status |\n| --- | --- |\n| Build | Pass |\n| CI | Running |", 80)
+	if len(lines) != 4 {
+		t.Fatalf("lines = %#v, want four rendered table lines", lines)
+	}
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"Name", "Status", "Build", "Pass", "CI", "Running"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("table missing %q in rendered lines: %#v", want, lines)
+		}
+	}
+	if strings.Contains(joined, "| --- | --- |") || strings.Contains(joined, "| Build | Pass |") {
+		t.Fatalf("raw table syntax leaked into rendered lines: %#v", lines)
+	}
+	if !strings.Contains(joined, "─") {
+		t.Fatalf("table should include a terminal separator line: %#v", lines)
 	}
 }
 
