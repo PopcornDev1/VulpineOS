@@ -9,6 +9,8 @@ import (
 )
 
 func TestInlineViewShowsSectionsAndScrollbar(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+
 	m := New()
 	m.SetAgents([]Agent{
 		{Name: "Alpha", Status: "ready"},
@@ -42,6 +44,30 @@ func TestInlineViewShowsSectionsAndScrollbar(t *testing.T) {
 		if strings.Contains(view, border) {
 			t.Fatalf("inline command palette should not use rounded border %q, got:\n%s", border, view)
 		}
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > 48 {
+			t.Fatalf("inline command palette line %d width = %d, want <= 48:\n%s", i+1, width, view)
+		}
+	}
+}
+
+func TestInlineViewUsesSolidRailInAppleTerminal(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "Apple_Terminal")
+
+	m := New()
+	m.SetAgents([]Agent{{Name: "Alpha", Status: "ready"}})
+	m.Activate()
+
+	view := m.InlineView(48, 8)
+	if view == "" {
+		t.Fatal("inline command palette view should not be empty")
+	}
+	if strings.Contains(view, "▌") {
+		t.Fatalf("Apple Terminal command palette should use solid rail cell, not glyph rail:\n%s", view)
+	}
+	if !strings.Contains(view, "Commands") || !strings.Contains(view, "Alpha") {
+		t.Fatalf("inline command palette should keep content, got:\n%s", view)
 	}
 	for i, line := range strings.Split(view, "\n") {
 		if width := lipgloss.Width(line); width > 48 {

@@ -1,6 +1,7 @@
 package commandpalette
 
 import (
+	"os"
 	"slices"
 	"strings"
 
@@ -54,11 +55,14 @@ type paletteRow struct {
 }
 
 var (
-	paletteBg        = shared.ColorBg
-	selectedBg       = lipgloss.Color("#312E81")
-	paletteRailStyle = lipgloss.NewStyle().
+	paletteBg            = shared.ColorBg
+	selectedBg           = lipgloss.Color("#312E81")
+	paletteThinRailStyle = lipgloss.NewStyle().
 				Foreground(shared.ColorMuted).
 				Background(paletteBg)
+	paletteSolidRailStyle = lipgloss.NewStyle().
+				Foreground(shared.ColorMuted).
+				Background(shared.ColorMuted)
 	paletteBlockStyle = lipgloss.NewStyle().Background(paletteBg)
 	selectedStyle     = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#F472B6")).
@@ -485,14 +489,21 @@ func paletteShell(content string, width int) string {
 func paletteShellLine(content string, width int) string {
 	contentWidth := width - 1
 	if contentWidth < 1 {
-		return paletteRailStyle.Render("▌")
+		return paletteRailCell()
 	}
 	content = fitStyled(content, contentWidth)
 	padding := ""
 	if contentWidth > lipgloss.Width(content) {
 		padding = strings.Repeat(" ", contentWidth-lipgloss.Width(content))
 	}
-	return paletteRailStyle.Render("▌") + content + paletteBlockStyle.Render(padding)
+	return paletteRailCell() + content + paletteBlockStyle.Render(padding)
+}
+
+func paletteRailCell() string {
+	if os.Getenv("TERM_PROGRAM") == "Apple_Terminal" {
+		return paletteSolidRailStyle.Render(" ")
+	}
+	return paletteThinRailStyle.Render("▌")
 }
 
 func buildRows(commands []Command) []paletteRow {
