@@ -1550,7 +1550,7 @@ func (a App) conversationInputLocked() bool {
 
 func isGlobalLifecycleKey(msg tea.KeyMsg) bool {
 	switch msg.String() {
-	case "q", "ctrl+c", "p", "r", "P", "R", "X":
+	case "q", "ctrl+c":
 		return true
 	default:
 		return false
