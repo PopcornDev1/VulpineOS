@@ -972,7 +972,7 @@ func TestMouseWheelScrollsAgentList(t *testing.T) {
 	}
 }
 
-func TestMouseSelectsChatRowsAndCtrlCCopiesSelection(t *testing.T) {
+func TestMouseSelectsChatRowsAndCmdCCopiesSelection(t *testing.T) {
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.width = 100
@@ -1049,10 +1049,10 @@ func TestMouseSelectsChatRowsAndCtrlCCopiesSelection(t *testing.T) {
 		t.Fatal("conversation should have a selected chat range after mouse drag")
 	}
 
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[99;9u")})
 	app = model.(App)
 	if cmd == nil {
-		t.Fatal("ctrl+c with chat selection returned no copy command")
+		t.Fatal("cmd+c with chat selection returned no copy command")
 	}
 	msg := cmd()
 	notice, ok := msg.(statusNotice)
@@ -1069,7 +1069,61 @@ func TestMouseSelectsChatRowsAndCtrlCCopiesSelection(t *testing.T) {
 		t.Fatalf("copied text should not contain ANSI escapes: %q", copied)
 	}
 	if app.conversation.HasSelection() {
-		t.Fatal("selection should clear after ctrl+c copy")
+		t.Fatal("selection should clear after cmd+c copy")
+	}
+}
+
+func TestCtrlCWithChatSelectionConfirmsQuitInsteadOfCopying(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 24
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.selectedAgentID = "agent-1"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Agent 1")
+	app.conversation.SetAwake(true)
+	app.conversation.AddEntry("assistant", "copy this selected line")
+	app.updatePanelSizes()
+
+	copied := ""
+	app.clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	view := app.conversation.View()
+	lines := strings.Split(view, "\n")
+	row, col := findChatCell(t, lines, "copy")
+	rx, ry, _, _ := app.conversationContentRect()
+
+	model, _ := app.Update(tea.MouseMsg{X: rx + col, Y: ry + row, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + col + lipgloss.Width("copy this"), Y: ry + row, Type: tea.MouseMotion, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + col + lipgloss.Width("copy this"), Y: ry + row, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	app = model.(App)
+
+	if !app.conversation.HasSelection() {
+		t.Fatal("conversation should have a selected chat range after mouse drag")
+	}
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("first ctrl+c with selection should not quit")
+		}
+	}
+	if copied != "" {
+		t.Fatalf("copied = %q, want no clipboard write from ctrl+c", copied)
+	}
+	if !strings.Contains(app.notice, "Press Ctrl+C again") {
+		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
+	}
+	if !app.conversation.HasSelection() {
+		t.Fatal("ctrl+c should not clear chat selection")
 	}
 }
 
@@ -1194,10 +1248,10 @@ func TestShiftClickExtendsExistingChatSelection(t *testing.T) {
 	})
 	app = model.(App)
 
-	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[99;9u")})
 	app = model.(App)
 	if cmd == nil {
-		t.Fatal("ctrl+c after shift-click selection returned no copy command")
+		t.Fatal("cmd+c after shift-click selection returned no copy command")
 	}
 	_ = cmd()
 	if !strings.Contains(copied, "start anchor") || !strings.Contains(copied, "finish") {

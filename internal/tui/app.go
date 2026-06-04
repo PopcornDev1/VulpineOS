@@ -881,12 +881,6 @@ func (a *App) shutdown() tea.Cmd {
 }
 
 func (a App) handleCtrlC() (tea.Model, tea.Cmd) {
-	selected := a.conversation.SelectedText()
-	if strings.TrimSpace(selected) != "" {
-		a.conversation.ClearSelection()
-		a.quitConfirmArmed = false
-		return a, a.copyTextCommand(selected, "Copied selected chat text")
-	}
 	if a.quitConfirmArmed {
 		return a, a.shutdown()
 	}
@@ -894,6 +888,16 @@ func (a App) handleCtrlC() (tea.Model, tea.Cmd) {
 	a.noticeTTL = 4
 	a.quitConfirmArmed = true
 	return a, nil
+}
+
+func (a App) handleCopySelection() (tea.Model, tea.Cmd) {
+	selected := a.conversation.SelectedText()
+	if strings.TrimSpace(selected) == "" {
+		return a, nil
+	}
+	a.conversation.ClearSelection()
+	a.quitConfirmArmed = false
+	return a, a.copyTextCommand(selected, "Copied selected chat text")
 }
 
 func (a App) copyTextCommand(content, success string) tea.Cmd {
@@ -914,6 +918,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if key, ok := msg.(tea.KeyMsg); ok && isLeakedTerminalMouseReportKey(key) {
 		return a, nil
+	}
+	if key, ok := msg.(tea.KeyMsg); ok && isCopySelectionKey(key) {
+		return a.handleCopySelection()
 	}
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" {
 		return a.handleCtrlC()
@@ -981,9 +988,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(cmds...)
 		}
 
-		// Global controls are intentionally minimal: Ctrl+C confirms quit or
-		// copies selected chat text, Esc returns to the always-active chat
-		// composer, and "/" opens the command palette.
+		// Global controls are intentionally minimal: Ctrl+C confirms quit,
+		// Cmd/Meta+C copies selected chat text where the terminal reports it,
+		// Esc returns to the always-active chat composer, and "/" opens the
+		// command palette.
 		switch msg.String() {
 		case "ctrl+c":
 			return a.handleCtrlC()
@@ -1631,6 +1639,21 @@ func isGlobalLifecycleKey(msg tea.KeyMsg) bool {
 	default:
 		return false
 	}
+}
+
+func isCopySelectionKey(msg tea.KeyMsg) bool {
+	if msg.Paste {
+		return false
+	}
+	switch msg.String() {
+	case "cmd+c", "super+c", "meta+c":
+		return true
+	}
+	if msg.Type != tea.KeyRunes {
+		return false
+	}
+	raw := string(msg.Runes)
+	return raw == "\x1b[99;9u" || raw == "[99;9u" || raw == "\x1b[67;10u" || raw == "[67;10u"
 }
 
 func isLeakedTerminalMouseReportKey(msg tea.KeyMsg) bool {
