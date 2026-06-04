@@ -18,7 +18,7 @@ func TestAppendAndListRuntimeEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppendRuntimeEvent: %v", err)
 	}
-	_, err = db.AppendRuntimeEvent("nanoclaw", "warn", "restart_failed", "agent restart failed", nil)
+	_, err = db.AppendRuntimeEvent("agentcore", "warn", "restart_failed", "agent restart failed", nil)
 	if err != nil {
 		t.Fatalf("AppendRuntimeEvent: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestAppendAndListRuntimeEvents(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
-	if events[0].Component != "nanoclaw" || events[0].Event != "restart_failed" {
+	if events[0].Component != "agentcore" || events[0].Event != "restart_failed" {
 		t.Fatalf("unexpected newest event: %+v", events[0])
 	}
 	if got := events[1].Metadata["pid"]; got != "1234" {
@@ -73,7 +73,7 @@ func TestListRuntimeEventsFilters(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	_, _ = db.AppendRuntimeEvent("kernel", "info", "started", "kernel booted", map[string]string{"pid": "1"})
-	_, _ = db.AppendRuntimeEvent("nanoclaw", "warn", "restart_failed", "restart failed for agent", map[string]string{"agent": "a-1"})
+	_, _ = db.AppendRuntimeEvent("agentcore", "warn", "restart_failed", "restart failed for agent", map[string]string{"agent": "a-1"})
 	_, _ = db.AppendRuntimeEvent("foxbridge", "error", "crashed", "foxbridge crashed hard", map[string]string{"pid": "2"})
 
 	events, err := db.ListRuntimeEvents(RuntimeEventFilter{Level: "error", Limit: 10})
@@ -88,7 +88,7 @@ func TestListRuntimeEventsFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListRuntimeEvents query: %v", err)
 	}
-	if len(events) != 1 || events[0].Component != "nanoclaw" {
+	if len(events) != 1 || events[0].Component != "agentcore" {
 		t.Fatalf("unexpected query filter result: %+v", events)
 	}
 }

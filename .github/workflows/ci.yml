@@ -43,29 +43,8 @@ jobs:
 
       - name: Unit tests with race detector
         run: |
-          go test -race -v -count=1 \
-            ./internal/agentbus \
-            ./internal/config \
-            ./internal/costtrack \
-            ./internal/foxbridge \
-            ./internal/juggler \
-            ./internal/mcp \
-            ./internal/monitor \
-            ./internal/nanoclaw \
-            ./internal/orchestrator \
-            ./internal/pagecache \
-            ./internal/pool \
-            ./internal/proxy \
-            ./internal/recording \
-            ./internal/remote \
-            ./internal/scripting \
-            ./internal/security \
-            ./internal/slog \
-            ./internal/testutil \
-            ./internal/tokenopt \
-            ./internal/vault \
-            ./internal/webhooks \
-            2>&1 | tee test-output.txt
+          set -o pipefail
+          go test -race -v -count=1 ./... 2>&1 | tee test-output.txt
 
       - name: Validate test count
         run: |

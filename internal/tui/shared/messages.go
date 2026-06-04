@@ -55,7 +55,7 @@ type TargetDetachedMsg struct {
 	TargetID  string
 }
 
-// AgentStatusMsg carries NanoClaw agent status.
+// AgentStatusMsg carries agent runtime status.
 type AgentStatusMsg struct {
 	AgentID   string
 	ContextID string

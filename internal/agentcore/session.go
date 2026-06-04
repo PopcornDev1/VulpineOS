@@ -39,10 +39,9 @@ func (c Config) modelChain() []string {
 	return out
 }
 
-// browserSystemPrompt is the VulpineOS browser-operator persona. It mirrors the
-// identity the NanoClaw container skill provided, adapted for direct tool use:
-// the agent drives the host Camoufox via the vulpine_* tools (no agent-browser
-// CLI, no container).
+// browserSystemPrompt is the VulpineOS browser-operator persona. It preserves
+// the browser guidance previously supplied by the container skill, adapted for
+// direct tool use through the host Camoufox and vulpine_* tools.
 const browserSystemPrompt = `You are VulpineOS — an operator system for browser-based AI agents. Built on Camoufox (Firefox) with per-context fingerprint isolation, networklab TLS identity management, and deterministic security enforcement.
 
 ## Identity

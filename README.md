@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <b>Operate Stealth-Aware NanoClaw Agents from the Terminal</b>
+  <b>Operate Stealth-Aware Browser Agents from the Terminal</b>
 </p>
 
 <p align="center">
-VulpineOS is the operating system for AI browser agents: a Firefox/Camoufox-based platform for managing NanoClaw agents with unique identities, browser-engine security, and TUI-first runtime controls.
+VulpineOS is the operating system for AI browser agents: a Firefox/Camoufox-based platform for managing native in-process agents with unique identities, browser-engine security, and TUI-first runtime controls.
 </p>
 
 <p align="center">
@@ -45,7 +45,7 @@ VulpineOS was born from work on [Camoufox](https://github.com/daijro/camoufox), 
 
 [Clover Labs](https://cloverlabs.ai) took over maintenance of Camoufox, where Elliot built per-context fingerprint spoofing — the ability to run multiple browser contexts, each with a completely unique hardware identity, in a single Camoufox process. This work revealed that the same C++ interception techniques used for fingerprint rotation could solve the AI agent security problem: if you can intercept what the browser exposes to JavaScript, you can also intercept what the browser exposes to AI agents.
 
-VulpineOS builds on Camoufox's battle-tested stealth foundation (Firefox 146.0.1) and adds four security phases purpose-built for autonomous agents, a Go TUI for managing agents, and a VulpineOS-owned NanoClaw daemon for deploying AI agents at scale.
+VulpineOS builds on Camoufox's battle-tested stealth foundation (Firefox 146.0.1) and adds four security phases purpose-built for autonomous agents, a Go TUI for managing agents, and a native in-process agent runtime for deploying AI agents at scale.
 
 ---
 
@@ -66,11 +66,11 @@ VulpineOS builds on Camoufox's battle-tested stealth foundation (Firefox 146.0.1
 │  └── Trust Warming Service (idle-time profile warming)        │
 │                                                              │
 │  Go Runtime (38 packages, 500+ tests)                         │
-│  ├── Bubbletea TUI (3-column agent workbench)                 │
+│  ├── Bubbletea TUI (chat-first agent workbench)               │
 │  ├── Identity Vault (SQLite — citizens, templates, sessions)  │
 │  ├── Context Pool (pre-warm, recycle, memory limits)           │
 │  ├── Orchestrator (spawn citizens + nomads, auto-release)      │
-│  ├── NanoClaw Manager (daemon/socket agent control)             │
+│  ├── Native Agent Runtime (streaming model/tool loop)         │
 │  ├── Proxy Manager (geo-synced fingerprints, auto-rotation)    │
 │  ├── MCP Server (36 tools via stdio)                           │
 │  ├── Foxbridge CDP Proxy (Puppeteer compatibility)             │
@@ -170,69 +170,48 @@ Beyond the four core phases, VulpineOS includes hardened runtime security:
 
 ## Go TUI: Agent Workbench
 
-A terminal-based command center for managing AI agents, browser contexts, and identity profiles.
+A terminal-based command center for managing AI agents, browser contexts, and identity profiles. The current operator flow is chat-first: stay in the conversation input, use `/` commands for actions, and click agents in the sidebar to switch context.
 
 ```text
-+----------------+------------------------------+-----------------+
-| System         | Conversation                 | Agent Detail    |
-| Kernel: running|                              | Name: Scout-1   |
-| Mode: GUI      | you  Find cheap flights to   | Status: active  |
-| Route: CAMOUFOX|      Tokyo in March          | Tokens: 12,847  |
-| Window: VISIBLE|                              | Proxy: US-West  |
-| Gateway: up    | scout  Thinking...           | Profile: mac-m1 |
-|                |                              |                 |
-| Agents         |                              | Contexts        |
-| > Scout-1 act  |                              | ctx-a91 page    |
-|   Scout-2 new  |                              |   about:blank   |
-|   Research done|                              | ctx-b22 page    |
-|   Monitor pause| > Type a message...          |   google.com    |
-+----------------+------------------------------+-----------------+
++----------------+----------------------------------------------+
+| System         | Conversation                                 |
+| Kernel: running|                                              |
+| Mode: GUI      | you  Find cheap flights to Tokyo in March    |
+| Route: CAMOUFOX|                                              |
+| Window: VISIBLE| scout  Thinking...                           |
+|                |                                              |
+| Agents         |                                              |
+| > Scout-1 act  |                                              |
+|   Scout-2 new  | /agents                                      |
+|   Research done| > Type a message...                          |
++----------------+----------------------------------------------+
 ```
 
-**Keybinds:** `n` new agent · `j/k` navigate · `Enter` chat · `p/r` pause or resume selected agent · `P/R` pause or resume all agents · `X` kill all live agents · `x` delete · `v` show or hide Camoufox · `o` open raw session log · `t` toggle action trace · `m` toggle arrow-key mode · `S` settings · `c` reconfigure · `q` quit
+Use `/` in an empty chat input to open the command palette. It includes common actions such as creating agents, opening settings, viewing logs, toggling trace output, showing or hiding the browser, and opening the `/agents` picker. Clicking an agent row in the sidebar selects that agent.
 
-Arrow keys navigate the agent list and conversation by default. If you want panel resizing on arrow keys, enable **Arrow Keys Resize Panels** in `Settings -> General`. Press `m` to toggle resize mode for the current session without rewriting the saved default.
-The settings toggle controls the saved default; `m` is the temporary per-session mode switch.
-
-The generated NanoClaw workspace under `~/.vulpineos/nanoclaw` is owned by VulpineOS. Local configuration remains stable, while per-agent and remote runtime overlays are temporary.
-New agents start on the assigned task immediately and restate their assigned runtime name, reducing drift toward stale persona state.
-The generated workspace files force exact action/result reporting and explicitly forbid claiming a browser action succeeded after an error, timeout, or incomplete result.
-The footer always shows the current arrow-key mode as `mode:navigate` or `mode:resize`.
-The system panel shows both the browser mode (`GUI` or `HEADLESS`) and the active browser route (`CAMOUFOX` when NanoClaw is attached through foxbridge into Camoufox), so the operator can verify the runtime path without checking logs.
-The TUI also shows the current browser window state (`VISIBLE`, `HIDDEN`, `HEADLESS`, or `N/A`) so `v` no longer feels opaque when the window controller cannot act.
-Served mode starts the NanoClaw daemon with the same repair path as local mode, so browser-backed agents do not silently lose tool support when you move from the local TUI to a hosted backend.
+The native runtime keeps agent identity and browser guidance in the model prompt. New agents start on the assigned task immediately and restate their assigned runtime name, reducing drift toward stale persona state. The prompt forces exact action/result reporting and explicitly forbids claiming a browser action succeeded after an error, timeout, or incomplete result.
+The system panel shows both the browser mode (`GUI` or `HEADLESS`) and the active browser route (`CAMOUFOX`), so the operator can verify the runtime path without checking logs.
+The TUI also shows the current browser window state (`VISIBLE`, `HIDDEN`, `HEADLESS`, or `N/A`) so browser visibility is diagnosable without checking logs.
 Served mode also supports `--no-browser`, which keeps the TUI remote/control API available without launching a kernel.
-Daemon start, stop, and profile-repair failures land in the secret-redacted runtime audit stream, so startup problems appear in runtime views instead of only in raw log files.
-Pause/resume flows keep scoped NanoClaw runtime configs alive for the full resumed agent lifecycle, so a context-pinned agent does not silently fall back to the shared browser route after resume.
-If the conversation panel is awake but the cursor has dropped out of the input, the next typed character re-focuses chat automatically, while `v` still works as a browser show or hide shortcut from that unfocused state.
+Runtime startup failures land in the secret-redacted runtime audit stream, so startup problems appear in runtime views instead of only in raw log files.
 After a newly created agent sends its first real reply, VulpineOS automatically snaps focus back to the chat box so the conversation is immediately writable again.
 If the startup turn ends without an assistant reply, the first terminal agent status now also re-focuses chat so the input does not stay visually awake but functionally locked.
 Newly created active agents now stay visually locked until they actually reply or finish startup, so the disabled banner does not disappear before chat input is really available.
-The `v` shortcut now refreshes the actual macOS window visibility before toggling, so a stale cached state no longer turns the first show or hide into a no-op.
 When the macOS window-controller path fails, the toggle notice now preserves the underlying `osascript` error so permission problems and missing process targets are visible instead of being collapsed into a generic failure.
-Press `t` to switch the center panel into a trace-only view of system tool events so browser/tool starts, completions, and failures are easy to inspect without mixing them into the full conversation stream.
+The trace command switches the center panel into a trace-only view of system tool events so browser/tool starts, completions, and failures are easy to inspect without mixing them into the full conversation stream.
 If a tool fails and the agent still replies as if the task succeeded, VulpineOS now injects an explicit warning into that trace so false-success replies are visible immediately.
-Non-zero command exits in NanoClaw tool results are classified as failures even when the upstream payload reports `status:"completed"`, so trace output stays aligned with the real action result.
+Non-zero command exits in tool results are classified as failures even when an upstream payload reports `status:"completed"`, so trace output stays aligned with the real action result.
 Timeouts and incomplete tool results are classified separately from hard failures.
-When NanoClaw writes provider thinking blocks into the session log, VulpineOS exposes them inside the trace view as `Thinking:` entries instead of hiding them behind the raw JSONL.
 Tool-result summaries now preserve the exact tool-call context when available, so trace output says what action actually ran instead of falling back to generic `Tool completed: browser`.
-Press `o` to open the selected agent's raw NanoClaw session log in the system viewer for full JSONL trace inspection, including provider-emitted thinking blocks when the provider writes them.
-While the chat input is focused, `Ctrl+V`, `Ctrl+O`, and `Ctrl+T` trigger browser toggle, raw log open, and trace toggle without stealing ordinary typed letters. Plain `v`, `o`, and `t` also work from a focused chat box when the input is still empty.
+The raw-log command opens the selected agent's operator-visible session log in the system viewer.
 
 The agent list shows unread reply counts for non-selected agents so background work does not disappear while you are focused elsewhere.
 
 On quit, VulpineOS pauses active agents before exiting so the next launch can resume saved sessions instead of dropping in-flight work.
 
-Local TUI startup and runtime logs are written to `~/.vulpineos/logs/local-tui.log` so the terminal UI stays clean while the kernel, foxbridge, and NanoClaw subsystems initialize.
+Local TUI startup and runtime logs are written to `~/.vulpineos/logs/local-tui.log` so the terminal UI stays clean while the kernel, foxbridge, and native runtime initialize.
 
-Pressing `c` now queues the setup wizard for the next launch without clearing the active config first, so cancelling reconfigure no longer leaves the machine stuck in an unconfigured state.
-
-NanoClaw session log streaming is used as a fallback conversation source, so final assistant replies still reach the TUI and tests even when the socket stream misses the final response.
-New agents now start by working on the assigned task immediately instead of spending the first turn on a canned self-introduction, and exact-output tasks are passed through as direct task instructions.
-
-The live operator path is covered by env-gated soak tests in `internal/agent_soak_integration_test.go`, including persisted-session resume plus TUI-driven pause and kill flows.
-
-Live browser, NanoClaw, and MCP-browser integration tests in `internal/integration_test.go` and `internal/mcp/live_integration_test.go` are gated behind `VULPINEOS_RUN_LIVE=1` so the default `go test` and CI path stay hermetic even on machines that already have Camoufox installed. The scoped MCP soak harness requires both `VULPINEOS_RUN_SOAK=1` and `VULPINEOS_RUN_LIVE=1`; `./scripts/run-soak.sh` sets both before running it.
+Live browser and MCP-browser integration tests are gated behind `VULPINEOS_RUN_LIVE=1` so the default `go test` and CI path stay hermetic even on machines that already have Camoufox installed.
 
 ---
 
@@ -256,9 +235,8 @@ deployments, pass `--api-key` to use an explicit bearer access key instead.
 - **62/62 Puppeteer BiDi tests** passing
 - Dual backend: `--backend juggler` (pipe) or `--backend bidi` (WebSocket)
 - Fetch domain with request/response interception
-- Embedded into VulpineOS startup so NanoClaw browser tools route through the same Camoufox process as the TUI
-- NanoClaw is pinned to an isolated VulpineOS workspace under `~/.vulpineos/nanoclaw`
-- VulpineOS repairs the generated NanoClaw profile after daemon startup and runs agents against per-run config overlays
+- Embedded into VulpineOS startup so CDP-compatible tools can route through the same Camoufox process as the TUI
+- The native agent runtime uses VulpineOS MCP/Juggler browser tools directly inside the assigned browser context
 
 ---
 
@@ -281,8 +259,7 @@ browser assets for your platform.
 ### Installer Prerequisites
 
 - Python 3, `unzip`, and either `curl` or `wget`
-- Node.js 22.16+ and pnpm/corepack for NanoClaw
-- Docker installed and running for NanoClaw agents
+- Docker is optional and only needed when building or running the Vulpine-Box container
 
 ### Build From Source
 
@@ -404,7 +381,7 @@ The public ecosystem is split by repository:
 | Product | Source | Public Description |
 |---------|--------|--------------------|
 | VulpineOS | Open source | Browser-agent runtime, MCP tools, TUI, and remote server |
-| Foxbridge | Open source | CDP-to-Firefox bridge for NanoClaw browser tools and CDP clients |
+| Foxbridge | Open source | CDP-to-Firefox bridge for CDP clients |
 | Vulpine Mark | Open source | Set-of-Mark screenshots, element labels, and label-based interactions |
 | MobileBridge for Android | Open source | Android device discovery, CDP proxying, gestures, and sessions |
 

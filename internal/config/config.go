@@ -100,8 +100,8 @@ type Provider struct {
 	Hidden bool
 }
 
-// Providers is the full registry of NanoClaw-supported AI providers.
-// Matches https://docs.nanoclaw.ai/concepts/model-providers
+// Providers is the built-in fallback registry of AI providers. Runtime model
+// discovery merges this list with maintained provider catalogs when available.
 var Providers = []Provider{
 	// --- Tier 1: Major cloud providers ---
 	{ID: "anthropic", Name: "Anthropic (Claude)", EnvVar: "ANTHROPIC_API_KEY",
@@ -261,8 +261,8 @@ func GetProvider(id string) *Provider {
 	return nil
 }
 
-// CustomProvider creates a provider entry for any provider/model string not in the registry.
-// This allows users to use ANY NanoClaw-supported provider even if we don't list it.
+// CustomProvider creates a provider entry for a provider/model string not in
+// the registry.
 func CustomProvider(providerID, envVar string) Provider {
 	return Provider{
 		ID:           providerID,

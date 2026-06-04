@@ -1,9 +1,9 @@
 // Package agentcore implements VulpineOS's native, in-process agent runtime:
 // a streaming model loop that drives the host Camoufox browser through the
-// existing MCP/Juggler tools. It replaces the per-agent NanoClaw Docker
-// container for VulpineOS's narrow use case (one task -> one agent -> LLM +
-// browser-over-CDP -> reply), eliminating the container cold-start, the agent
-// image build, the daemon/gateway processes, and the fragile source-patch glue.
+// existing MCP/Juggler tools. It avoids per-agent containers for VulpineOS's
+// narrow use case (one task -> one agent -> LLM + browser tools -> reply),
+// eliminating container cold-starts, image builds, daemon/gateway processes,
+// and fragile source-patch glue.
 //
 // model.go is the provider layer: an OpenAI-compatible chat-completions client
 // with SSE streaming and tool-calling. It is provider-agnostic (OpenRouter,
@@ -122,8 +122,7 @@ const OpenRouterBaseURL = "https://openrouter.ai/api/v1"
 // the providers that expose a real OpenAI-compatible endpoint we can call
 // directly. Anthropic and Codex are NOT here — they use bespoke clients
 // (anthropic.go / codex.go) selected by providerKind. Providers without a known
-// direct endpoint fall back to OpenRouter (the multiplexer), matching the prior
-// NanoClaw behavior of routing everything through OpenRouter.
+// direct endpoint fall back to OpenRouter (the multiplexer).
 var providerBaseURLs = map[string]string{
 	// Routing/gateway
 	"openrouter":            OpenRouterBaseURL,

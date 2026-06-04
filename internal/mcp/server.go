@@ -18,7 +18,7 @@ const (
 	serverVersion = "0.1.0"
 )
 
-// Server is an MCP server that bridges NanoClaw to VulpineOS via stdio.
+// Server is an MCP server that bridges tool calls to VulpineOS via stdio.
 type Server struct {
 	client      *juggler.Client
 	tracker     *ContextTracker

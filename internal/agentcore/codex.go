@@ -16,8 +16,7 @@ import (
 // codex.go is the native ChatGPT/Codex client for the "openai-oauth" provider.
 // It calls the Codex Responses API at chatgpt.com with the OAuth access token
 // (refreshed via internal/auth), translating the loop's ChatMessage/ToolDef
-// shapes into Responses "input" items and back into a Completion. It mirrors the
-// request/response shape NanoClaw's codex provider used.
+// shapes into Responses "input" items and back into a Completion.
 
 // codexAPI is the Codex Responses endpoint.
 const codexAPI = "https://chatgpt.com/backend-api/codex/responses"

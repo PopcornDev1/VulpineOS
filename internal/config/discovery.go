@@ -1,12 +1,7 @@
 package config
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -35,12 +30,7 @@ type DiscoveryResult struct {
 var (
 	discoveryCache   *DiscoveryResult
 	discoveryCacheMu sync.RWMutex
-	nanoclawBinary   string
 )
-
-func SetNanoClawBinary(path string) {
-	nanoclawBinary = path
-}
 
 func DiscoverModels() (*DiscoveryResult, error) {
 	discoveryCacheMu.RLock()
@@ -67,82 +57,10 @@ func DiscoverModels() (*DiscoveryResult, error) {
 }
 
 func discoverModelsImpl() (*DiscoveryResult, error) {
-	binary := nanoclawBinary
-	if binary == "" {
-		binary = findNanoClawBinary()
-	}
-	if binary == "" {
-		if result := discoverModelsFromProviderRegistry(); result != nil {
-			return result, nil
-		}
-		return nil, fmt.Errorf("nanoclaw binary not found")
-	}
-
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		if attempt > 0 {
-			time.Sleep(2 * time.Second)
-		}
-		ctx, cancel := contextWithTimeout(15 * time.Second)
-		cmd := exec.CommandContext(ctx, binary, "models", "list", "--all", "--json")
-		out, err := cmd.Output()
-		cancel()
-		if err == nil {
-			var raw struct {
-				Models []struct {
-					Key           string `json:"key"`
-					Name          string `json:"name"`
-					Input         string `json:"input"`
-					ContextWindow int    `json:"contextWindow"`
-					Local         bool   `json:"local"`
-				} `json:"models"`
-			}
-			if err := json.Unmarshal(out, &raw); err == nil {
-				byProvider := make(map[string]*DiscoveredProvider)
-				for _, m := range raw.Models {
-					providerID, _, ok := strings.Cut(m.Key, "/")
-					if !ok || providerID == "" {
-						continue
-					}
-					providerID = strings.ToLower(strings.TrimSpace(providerID))
-					if _, ok := byProvider[providerID]; !ok {
-						byProvider[providerID] = &DiscoveredProvider{
-							ID:       providerID,
-							Name:     providerDisplayName(providerID),
-							NeedsKey: true,
-						}
-					}
-					byProvider[providerID].Models = append(byProvider[providerID].Models, DiscoveredModel{
-						Key:           m.Key,
-						Name:          m.Name,
-						Input:         m.Input,
-						ContextWindow: m.ContextWindow,
-						Local:         m.Local,
-					})
-				}
-
-				providers := make([]DiscoveredProvider, 0, len(byProvider))
-				for _, p := range byProvider {
-					if p.ID == "opencode-go" {
-						p.NeedsKey = false
-					}
-					if p.ID == "ollama" || p.ID == "vllm" || p.ID == "sglang" {
-						p.NeedsKey = false
-					}
-					providers = append(providers, *p)
-				}
-
-				return &DiscoveryResult{Providers: providers}, nil
-			}
-			lastErr = err
-		} else {
-			lastErr = err
-		}
-	}
 	if result := discoverModelsFromProviderRegistry(); result != nil {
 		return result, nil
 	}
-	return nil, fmt.Errorf("nanoclaw models list: %w", lastErr)
+	return nil, fmt.Errorf("provider registry is empty")
 }
 
 func discoverModelsFromProviderRegistry() *DiscoveryResult {
@@ -179,47 +97,6 @@ func discoverModelsFromProviderRegistry() *DiscoveryResult {
 		return nil
 	}
 	return &DiscoveryResult{Providers: out}
-}
-
-func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), d)
-}
-
-func findNanoClawBinary() string {
-	if path, err := exec.LookPath("nanoclaw"); err == nil {
-		return path
-	}
-	if path, err := exec.LookPath("ncl"); err == nil {
-		return path
-	}
-
-	paths := []string{
-		"./node_modules/.bin/nanoclaw",
-		"./node_modules/.bin/ncl",
-		"node_modules/.bin/nanoclaw",
-		"node_modules/.bin/ncl",
-		filepath.Join(Dir(), "nanoclaw", "nanoclaw"),
-		filepath.Join(Dir(), "nanoclaw-src", "bin", "ncl"),
-		filepath.Join(Dir(), "nanoclaw", "nanoclaw.sh"),
-		"/opt/homebrew/bin/nanoclaw",
-		"/opt/homebrew/bin/ncl",
-		"/usr/local/bin/nanoclaw",
-		"/usr/local/bin/ncl",
-		"/usr/bin/nanoclaw",
-		"/usr/bin/ncl",
-	}
-	for _, p := range paths {
-		if abs, err := filepath.Abs(p); err == nil {
-			if _, err := os.Stat(abs); err == nil {
-				return abs
-			}
-		} else {
-			if _, err := os.Stat(p); err == nil {
-				return p
-			}
-		}
-	}
-	return ""
 }
 
 func providerDisplayName(id string) string {

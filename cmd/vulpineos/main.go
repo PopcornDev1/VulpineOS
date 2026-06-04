@@ -242,7 +242,7 @@ func Run(args []string) int {
 		noTLS      = fs.Bool("no-tls", true, "Disable TLS for --listen")
 		tlsCert    = fs.String("tls-cert", "", "TLS certificate file for --listen")
 		tlsKey     = fs.String("tls-key", "", "TLS key file for --listen")
-		mcpServer  = fs.Bool("mcp-server", false, "Run as MCP stdio server (used by NanoClaw)")
+		mcpServer  = fs.Bool("mcp-server", false, "Run as MCP stdio server")
 		mcpConnect = fs.String("mcp-connect", "", "WebSocket URL to connect MCP server to remote kernel")
 		listExt    = fs.Bool("list-extensions", false, "Print the status of optional extension providers and exit")
 		showVer    = fs.Bool("version", false, "Print version and exit")
@@ -646,7 +646,7 @@ func pairingURL(wsURL string) (string, error) {
 	return u.String(), nil
 }
 
-// runMCPServer runs as an MCP stdio server for NanoClaw integration.
+// runMCPServer runs as an MCP stdio server.
 // It connects to a running VulpineOS kernel and translates MCP tool calls to Juggler protocol.
 func runMCPServer(binaryPath string, headless bool, profileDir string, connectURL string, apiKey string) error {
 	if strings.TrimSpace(connectURL) != "" {

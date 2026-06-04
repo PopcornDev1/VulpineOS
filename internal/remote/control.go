@@ -3,7 +3,6 @@ package remote
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"regexp"
 	"strings"
 
@@ -16,10 +15,6 @@ import (
 	"vulpineos/internal/vault"
 )
 
-type daemonStatus interface {
-	Running() bool
-}
-
 // ControlAPI handles remote TUI control messages. The public remote surface is
 // the TUI protocol.
 type ControlAPI struct {
@@ -27,7 +22,6 @@ type ControlAPI struct {
 	Config           *config.Config
 	Vault            *vault.DB
 	Kernel           *kernel.Kernel
-	Daemon           daemonStatus
 	FoxbridgeRunning func() bool
 	Client           *juggler.Client
 }
@@ -714,21 +708,19 @@ func (api *ControlAPI) agentRuntimeConfig(agent *vault.Agent) (string, func(), e
 func (api *ControlAPI) statusGet() (json.RawMessage, error) {
 	route, source := api.browserRoute()
 	out := map[string]any{
-		"kernel_running":              false,
-		"kernel_pid":                  0,
-		"kernel_headless":             false,
-		"browser_route":               route,
-		"browser_route_source":        source,
-		"browser_window":              api.browserWindow(),
-		"nanoclaw_daemon_running":     false,
-		"nanoclaw_profile_configured": false,
+		"kernel_running":       false,
+		"kernel_pid":           0,
+		"kernel_headless":      false,
+		"browser_route":        route,
+		"browser_route_source": source,
+		"browser_window":       api.browserWindow(),
+		"agent_runtime":        "native",
 	}
 	if api.Kernel != nil {
 		out["kernel_running"] = api.Kernel.Running()
 		out["kernel_pid"] = api.Kernel.PID()
 		out["kernel_headless"] = api.Kernel.IsHeadless()
 	}
-	out["nanoclaw_daemon_running"] = daemonRunning(api.Daemon)
 	if api.Orchestrator != nil {
 		status := api.Orchestrator.Status()
 		out["orchestrator"] = &status
@@ -743,17 +735,6 @@ func (api *ControlAPI) statusGet() (json.RawMessage, error) {
 		out["total_cost_usd"] = status.TotalCostUSD
 	}
 	return json.Marshal(out)
-}
-
-func daemonRunning(daemon daemonStatus) bool {
-	if daemon == nil {
-		return false
-	}
-	value := reflect.ValueOf(daemon)
-	if value.Kind() == reflect.Ptr && value.IsNil() {
-		return false
-	}
-	return daemon.Running()
 }
 
 func (api *ControlAPI) browserRoute() (string, string) {

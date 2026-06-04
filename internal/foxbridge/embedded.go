@@ -264,7 +264,7 @@ func reservePort() (int, error) {
 	return addr.Port, nil
 }
 
-// CDPURL returns the CDP WebSocket URL for connecting clients (e.g., NanoClaw).
+// CDPURL returns the CDP WebSocket URL for connecting clients.
 func (es *EmbeddedServer) CDPURL() string {
 	return fmt.Sprintf("ws://127.0.0.1:%d", es.port)
 }

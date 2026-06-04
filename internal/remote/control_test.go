@@ -142,17 +142,17 @@ func TestControlAPIConfigSetPreservesBlankAPIKey(t *testing.T) {
 	}
 }
 
-func TestControlAPIStatusGetHandlesNilDaemon(t *testing.T) {
+func TestControlAPIStatusGetReportsNativeRuntime(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	api := &ControlAPI{}
 
 	out := callControl[struct {
-		NanoClawDaemonRunning bool   `json:"nanoclaw_daemon_running"`
-		BrowserRoute          string `json:"browser_route"`
+		AgentRuntime string `json:"agent_runtime"`
+		BrowserRoute string `json:"browser_route"`
 	}](t, api, "status.get", map[string]any{})
 
-	if out.NanoClawDaemonRunning {
-		t.Fatal("daemon should report stopped when no daemon is set")
+	if out.AgentRuntime != "native" {
+		t.Fatalf("agent runtime = %q, want native", out.AgentRuntime)
 	}
 	if out.BrowserRoute != "disabled" {
 		t.Fatalf("browser route = %q, want disabled", out.BrowserRoute)

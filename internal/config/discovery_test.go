@@ -3,42 +3,14 @@ package config
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestFindNanoClawBinary(t *testing.T) {
-	path := findNanoClawBinary()
-	if path == "" {
-		t.Skip("nanoclaw binary not found")
-	}
-	if !isNanoClawBinaryPath(path) {
-		t.Errorf("findNanoClawBinary(): got %q, want nanoclaw or ncl binary", path)
-	}
-}
-
-func TestFindNanoClawBinaryAcceptsNCL(t *testing.T) {
-	tmpDir := t.TempDir()
-	bin := tmpDir + "/ncl"
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
-		t.Fatalf("write ncl: %v", err)
-	}
-	t.Setenv("PATH", tmpDir)
-
-	path := findNanoClawBinary()
-	if path != bin {
-		t.Fatalf("findNanoClawBinary() = %q, want %q", path, bin)
-	}
-}
-
 func TestDiscoverModels(t *testing.T) {
-	path := findNanoClawBinary()
-	if path == "" {
-		t.Skip("nanoclaw binary not found")
-	}
+	t.Setenv("HOME", t.TempDir())
+	resetProviderRegistryCache()
+	t.Cleanup(resetProviderRegistryCache)
 
 	result, err := DiscoverModels()
 	if err != nil {
@@ -84,11 +56,6 @@ func TestDiscoverModels(t *testing.T) {
 	if hasCredentials {
 		t.Error("opencode model keys should not contain embedded credentials")
 	}
-}
-
-func isNanoClawBinaryPath(path string) bool {
-	base := filepath.Base(path)
-	return strings.Contains(path, "nanoclaw") || base == "ncl"
 }
 
 func TestMergedProviders(t *testing.T) {
@@ -295,10 +262,17 @@ func TestProviderDisplayName(t *testing.T) {
 }
 
 func TestDiscoveryCache(t *testing.T) {
-	path := findNanoClawBinary()
-	if path == "" {
-		t.Skip("nanoclaw binary not found")
-	}
+	t.Setenv("HOME", t.TempDir())
+	discoveryCacheMu.Lock()
+	discoveryCache = nil
+	discoveryCacheMu.Unlock()
+	resetProviderRegistryCache()
+	t.Cleanup(func() {
+		discoveryCacheMu.Lock()
+		discoveryCache = nil
+		discoveryCacheMu.Unlock()
+		resetProviderRegistryCache()
+	})
 
 	first, err := DiscoverModels()
 	if err != nil {
@@ -314,10 +288,9 @@ func TestDiscoveryCache(t *testing.T) {
 }
 
 func TestDiscoverProviderModels(t *testing.T) {
-	path := findNanoClawBinary()
-	if path == "" {
-		t.Skip("nanoclaw binary not found")
-	}
+	t.Setenv("HOME", t.TempDir())
+	resetProviderRegistryCache()
+	t.Cleanup(resetProviderRegistryCache)
 
 	models, err := DiscoverProviderModels("opencode")
 	if err != nil {
@@ -331,24 +304,4 @@ func TestDiscoverProviderModels(t *testing.T) {
 	if err == nil {
 		t.Error("DiscoverProviderModels(unknown): expected error")
 	}
-}
-
-func TestOpenclawBinaryDetection(t *testing.T) {
-	paths := []string{
-		"./node_modules/.bin/nanoclaw",
-		"node_modules/.bin/nanoclaw",
-		"nanoclaw",
-	}
-	for _, p := range paths {
-		cmd := exec.Command(p, "version")
-		if cmd.Run() != nil {
-			continue
-		}
-		found := findNanoClawBinary()
-		if found == "" {
-			t.Errorf("findNanoClawBinary() returned empty despite %s being runnable", p)
-		}
-		return
-	}
-	t.Skip("no nanoclaw binary available")
 }

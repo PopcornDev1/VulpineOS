@@ -51,7 +51,7 @@ type AgentResult struct {
 	Err     error
 }
 
-// Orchestrator ties together kernel, pool, vault, and NanoClaw manager.
+// Orchestrator ties together kernel, pool, vault, and the native agent runtime.
 type Orchestrator struct {
 	Kernel *kernel.Kernel
 	Client *juggler.Client
@@ -101,8 +101,7 @@ type Opts struct {
 	MemoryMonitor   *pool.MemoryMonitor
 	MutationMonitor *security.MutationMonitor
 	// AgentRuntime overrides the agent-execution backend. When nil, the
-	// orchestrator uses the NanoClaw manager. Set it to an *agentcore.Manager
-	// to run agents in-process (native backend).
+	// orchestrator uses an in-process *agentcore.Manager.
 	AgentRuntime AgentRuntime
 }
 
@@ -290,7 +289,7 @@ func (o *Orchestrator) KillAgent(agentID string) error {
 }
 
 // EnsureAgentBrowserContext gives a persistent chat agent a browser context and
-// applies its current fingerprint before NanoClaw is routed into that context.
+// applies its current fingerprint before the native runtime uses that context.
 func (o *Orchestrator) EnsureAgentBrowserContext(agent *vault.Agent) (string, error) {
 	if o == nil || o.Pool == nil || o.Client == nil {
 		return "", fmt.Errorf("orchestrator browser context pool not available")
@@ -343,7 +342,7 @@ func (o *Orchestrator) EnsureAgentBrowserContext(agent *vault.Agent) (string, er
 }
 
 // ReleaseAgentContext releases a persistent chat agent's browser context. It is
-// used for explicit kill/delete, not for ordinary per-turn NanoClaw completion.
+// used for explicit kill/delete, not for ordinary per-turn native completion.
 func (o *Orchestrator) ReleaseAgentContext(agentID string) {
 	if o == nil || agentID == "" {
 		return

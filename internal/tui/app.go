@@ -209,7 +209,7 @@ type App struct {
 	newAgentContext         string
 	renameAgentID           string // agent ID being renamed
 	notice                  string
-	noticeTTL               int  // number of ticks before notice is cleared
+	noticeTTL               int // number of ticks before notice is cleared
 	pendingChatFocusAgentID string
 	liveAgentContexts       map[string]string
 
@@ -230,7 +230,7 @@ func NewApp(k *kernel.Kernel, client *juggler.Client, orch *orchestrator.Orchest
 }
 
 // SetFoxbridgeRunning wires the local embedded foxbridge liveness check used
-// to avoid displaying or repairing NanoClaw with a stale CDP URL.
+// to avoid displaying a stale CDP route.
 func (a *App) SetFoxbridgeRunning(fn func() bool) {
 	a.foxbridgeRunning = fn
 }
@@ -899,7 +899,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 
-			// Normal keybinds
+		// Normal keybinds
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return a, a.shutdown()
@@ -2510,7 +2510,7 @@ func (a App) renderStatusBar() string {
 
 	prefix := shared.TitleStyle.Render("VULPINE") +
 		shared.MutedStyle.Render(" | ") +
-		shared.RunningStyle.Render("* " + mode)
+		shared.RunningStyle.Render("* "+mode)
 
 	return fitTerminalLine(prefix, a.width)
 }
@@ -2896,7 +2896,7 @@ func (a App) tick() tea.Cmd {
 }
 
 // createAgent creates an agent profile and opens an unlocked chat. The first
-// user message starts the NanoClaw turn, matching a normal CLI chat flow.
+// user message starts the native agent turn, matching a normal CLI chat flow.
 func (a *App) createAgent(name, description, contextID string) tea.Cmd {
 	if a.control != nil {
 		return a.createRemoteAgent(name, description, contextID)
@@ -3024,10 +3024,9 @@ func (a *App) deleteAgent(agentID string) tea.Cmd {
 	}
 }
 
-// sendMessageToAgent spawns an NanoClaw process for one turn of conversation.
-// Stateless per-turn like Claude Code: spawn → load session → respond → exit.
-// NanoClaw's --session-id handles history and compaction automatically.
-// Zero memory between messages. No idle processes.
+// sendMessageToAgent runs one native agent turn for a conversation message.
+// The browser context and visible chat history provide continuity between
+// turns; no idle per-agent process is kept alive between messages.
 func (a App) sendMessageToAgent(agentID, text, displayText string) tea.Cmd {
 	if a.control != nil {
 		return a.sendRemoteMessageToAgent(agentID, text, displayText)

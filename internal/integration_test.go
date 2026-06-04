@@ -46,7 +46,7 @@ func skipIfNoBrowser(t *testing.T) string {
 	return binary
 }
 
-func requireLiveNanoClaw(t *testing.T) {
+func requireLiveVulpineOS(t *testing.T) {
 	t.Helper()
 	if strings.TrimSpace(os.Getenv("VULPINEOS_RUN_LIVE")) == "" {
 		t.Skip("set VULPINEOS_RUN_LIVE=1 to run live VulpineOS integration tests")
@@ -55,7 +55,7 @@ func requireLiveNanoClaw(t *testing.T) {
 
 // startKernel launches Camoufox in headless mode and returns the kernel + client.
 func startKernel(t *testing.T) (*kernel.Kernel, *juggler.Client) {
-	requireLiveNanoClaw(t)
+	requireLiveVulpineOS(t)
 	binary := skipIfNoBrowser(t)
 
 	k := kernel.New()
@@ -745,7 +745,6 @@ func TestIntegration_MCPNavigateAndClick(t *testing.T) {
 	}
 	t.Log("Click via MCP: OK")
 }
-
 
 func min(a, b int) int {
 	if a < b {

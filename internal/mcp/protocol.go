@@ -4,7 +4,7 @@ import "encoding/json"
 
 // MCP JSON-RPC 2.0 message types (Model Context Protocol spec).
 
-// Request is an incoming JSON-RPC request from the MCP client (NanoClaw).
+// Request is an incoming JSON-RPC request from the MCP client.
 type Request struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      interface{}     `json:"id"` // int or string
@@ -48,8 +48,8 @@ type ClientInfo struct {
 
 // InitializeResult returned by the server.
 type InitializeResult struct {
-	ProtocolVersion string     `json:"protocolVersion"`
-	ServerInfo      ServerInfo `json:"serverInfo"`
+	ProtocolVersion string       `json:"protocolVersion"`
+	ServerInfo      ServerInfo   `json:"serverInfo"`
 	Capabilities    Capabilities `json:"capabilities"`
 }
 
@@ -72,9 +72,9 @@ type ToolDefinition struct {
 }
 
 type InputSchema struct {
-	Type       string                `json:"type"` // always "object"
-	Properties map[string]Property   `json:"properties"`
-	Required   []string              `json:"required,omitempty"`
+	Type       string              `json:"type"` // always "object"
+	Properties map[string]Property `json:"properties"`
+	Required   []string            `json:"required,omitempty"`
 }
 
 type Property struct {
@@ -100,8 +100,8 @@ type ToolCallResult struct {
 }
 
 type ContentBlock struct {
-	Type string `json:"type"` // "text" or "image"
-	Text string `json:"text,omitempty"`
-	Data string `json:"data,omitempty"` // base64 for images
+	Type     string `json:"type"` // "text" or "image"
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"` // base64 for images
 	MimeType string `json:"mimeType,omitempty"`
 }

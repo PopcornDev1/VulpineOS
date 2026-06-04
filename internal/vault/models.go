@@ -37,7 +37,7 @@ type Template struct {
 	ID              string    `json:"id"`
 	Name            string    `json:"name"`
 	Description     string    `json:"description"`
-	SOP             string    `json:"sop"`              // NanoClaw Standard Operating Procedure
+	SOP             string    `json:"sop"`              // Standard Operating Procedure
 	InteractionMode string    `json:"interaction_mode"` // readonly, form_fill, full
 	AllowedDomains  string    `json:"allowed_domains"`  // JSON array of domain patterns
 	Constraints     string    `json:"constraints"`      // JSON blob

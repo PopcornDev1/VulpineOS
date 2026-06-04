@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -22,17 +23,14 @@ type agentStore interface {
 	GetAgent(id string) (*vault.Agent, error)
 }
 
-// Manager is the native, in-process agent runtime. It implements the same
-// method surface the orchestrator/TUI/remote use on the NanoClaw manager, so it
-// is a drop-in alternative behind the agent_provider flag — but instead of
-// spawning Docker containers via a daemon, it runs the model<->tool loop
-// in-process and drives the host Camoufox directly through the MCP/Juggler
-// tools.
+// Manager is the native, in-process agent runtime. It implements the method
+// surface the orchestrator, TUI, and remote API use for agent execution, while
+// running the model<->tool loop in-process and driving the host Camoufox
+// directly through the MCP/Juggler tools.
 //
 // It emits the existing agentmsg.ConversationMsg / agentmsg.AgentStatus value
 // types so existing consumers (TUI, web panel, remote broadcasts) work
-// unchanged. That dependency is transitional and can move to a neutral package
-// once NanoClaw is removed.
+// unchanged.
 type Manager struct {
 	client *juggler.Client
 	cfg    Config
@@ -42,6 +40,8 @@ type Manager struct {
 	closed bool
 	audit  *runtimeaudit.Manager
 	store  agentStore
+	wg     sync.WaitGroup
+	fanout sync.WaitGroup
 	// toolsets holds one persistent browser toolset (one reused page/tab + its
 	// MCP execution-context tracker) per agent id, so successive chat turns reuse
 	// the same tab instead of opening a new one each time. Closed on Kill.
@@ -59,6 +59,7 @@ type nativeAgent struct {
 	cancel    context.CancelFunc
 	cleanup   func()
 	status    string
+	terminal  string
 	objective string
 	tokens    int // cumulative tokens consumed this run
 }
@@ -76,6 +77,7 @@ func NewManager(client *juggler.Client, cfg Config) *Manager {
 		statusSubs:         make(map[chan agentmsg.AgentStatus]struct{}),
 		conversationSubs:   make(map[chan agentmsg.ConversationMsg]struct{}),
 	}
+	m.fanout.Add(2)
 	go m.fanOutStatus()
 	go m.fanOutConversation()
 	return m
@@ -146,7 +148,7 @@ func (m *Manager) ConversationChan() <-chan agentmsg.ConversationMsg {
 }
 
 // SpawnIsolated starts a native agent on a pooled, caller-owned context. sopFile
-// (or extraArgs) provides the task. configPath is ignored (no NanoClaw config).
+// (or extraArgs) provides the task. configPath is ignored by the native runtime.
 func (m *Manager) SpawnIsolated(contextID string, sopFile string, configPath string, cleanup func(), extraArgs ...string) (string, error) {
 	id := uuid.New().String()[:8]
 	task := readTask(sopFile, extraArgs)
@@ -185,15 +187,18 @@ func (m *Manager) spawn(agentID, contextID, task string, reusePage bool, cleanup
 		return "", fmt.Errorf("manager closed")
 	}
 	if existing, ok := m.agents[agentID]; ok {
+		existing.terminal = "interrupted"
 		existing.cancel()
 	}
 	m.agents[agentID] = ag
+	m.wg.Add(1)
 	m.mu.Unlock()
 
 	ev := &managerEvents{m: m, agentID: agentID}
 	m.emitStatus(agentID, contextID, "running", task)
 
 	go func() {
+		defer m.wg.Done()
 		var err error
 		switch {
 		case contextID != "" && reusePage:
@@ -212,8 +217,19 @@ func (m *Manager) spawn(agentID, contextID, task string, reusePage bool, cleanup
 		final := "completed"
 		if err != nil {
 			final = "error"
-			m.emitConversation(agentID, "system", "agent error: "+err.Error())
-			m.logRuntimeEvent("error", "native_agent_failed", err.Error(), map[string]string{"agent_id": agentID})
+			m.mu.RLock()
+			terminal := ag.terminal
+			m.mu.RUnlock()
+			if terminal != "" && errors.Is(err, context.Canceled) {
+				m.finish(agentID, ag)
+				return
+			}
+			if terminal != "" {
+				final = terminal
+			} else {
+				m.emitConversation(agentID, "system", "agent error: "+err.Error())
+				m.logRuntimeEvent("error", "native_agent_failed", err.Error(), map[string]string{"agent_id": agentID})
+			}
 		}
 		m.emitStatus(agentID, contextID, final, task)
 		m.finish(agentID, ag)
@@ -264,9 +280,12 @@ func (m *Manager) closeToolset(agentID string) {
 // Kill cancels a running agent's loop and releases its reused tab. Idempotent:
 // safe to call when the agent is idle between turns.
 func (m *Manager) Kill(agentID string) error {
-	m.mu.RLock()
+	m.mu.Lock()
 	ag, ok := m.agents[agentID]
-	m.mu.RUnlock()
+	if ok {
+		ag.terminal = "interrupted"
+	}
+	m.mu.Unlock()
 	if ok {
 		ag.cancel()
 		m.emitStatus(agentID, ag.contextID, "interrupted", ag.objective)
@@ -279,9 +298,12 @@ func (m *Manager) Kill(agentID string) error {
 // PauseAgent stops the current turn. Native turns are request/response, so a
 // pause is a cancel; the conversation history persists for the next turn.
 func (m *Manager) PauseAgent(agentID string) error {
-	m.mu.RLock()
+	m.mu.Lock()
 	ag, ok := m.agents[agentID]
-	m.mu.RUnlock()
+	if ok {
+		ag.terminal = "paused"
+	}
+	m.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("agent %s not found", agentID)
 	}
@@ -314,6 +336,7 @@ func (m *Manager) KillAll() {
 	m.mu.Lock()
 	agents := make([]*nativeAgent, 0, len(m.agents))
 	for _, ag := range m.agents {
+		ag.terminal = "interrupted"
 		agents = append(agents, ag)
 	}
 	toolsets := make([]*BrowserToolset, 0, len(m.toolsets))
@@ -333,15 +356,36 @@ func (m *Manager) KillAll() {
 
 // Dispose cancels all agents and closes subscriber channels.
 func (m *Manager) Dispose() {
-	m.KillAll()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		return
 	}
 	m.closed = true
+	agents := make([]*nativeAgent, 0, len(m.agents))
+	for _, ag := range m.agents {
+		ag.terminal = "interrupted"
+		agents = append(agents, ag)
+	}
+	toolsets := make([]*BrowserToolset, 0, len(m.toolsets))
+	for id, ts := range m.toolsets {
+		toolsets = append(toolsets, ts)
+		delete(m.toolsets, id)
+	}
 	close(m.statusSource)
 	close(m.conversationSource)
+	m.mu.Unlock()
+
+	for _, ag := range agents {
+		ag.cancel()
+	}
+	for _, ts := range toolsets {
+		ts.Close()
+	}
+	m.wg.Wait()
+	m.fanout.Wait()
+
+	m.mu.Lock()
 	for ch := range m.statusSubs {
 		close(ch)
 		delete(m.statusSubs, ch)
@@ -354,14 +398,18 @@ func (m *Manager) Dispose() {
 }
 
 func (m *Manager) finish(agentID string, ag *nativeAgent) {
+	var cleanup func()
 	m.mu.Lock()
 	if cur, ok := m.agents[agentID]; ok && cur == ag {
 		delete(m.agents, agentID)
 	}
-	m.mu.Unlock()
 	if ag.cleanup != nil {
-		ag.cleanup()
+		cleanup = ag.cleanup
 		ag.cleanup = nil
+	}
+	m.mu.Unlock()
+	if cleanup != nil {
+		cleanup()
 	}
 }
 
@@ -402,6 +450,11 @@ func (m *Manager) agentTokens(agentID string) int {
 
 func (m *Manager) safeSendStatus(s agentmsg.AgentStatus) {
 	defer func() { _ = recover() }()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return
+	}
 	select {
 	case m.statusSource <- s:
 	default:
@@ -410,6 +463,11 @@ func (m *Manager) safeSendStatus(s agentmsg.AgentStatus) {
 
 func (m *Manager) safeSendConversation(c agentmsg.ConversationMsg) {
 	defer func() { _ = recover() }()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.closed {
+		return
+	}
 	select {
 	case m.conversationSource <- c:
 	default:
@@ -417,6 +475,7 @@ func (m *Manager) safeSendConversation(c agentmsg.ConversationMsg) {
 }
 
 func (m *Manager) fanOutStatus() {
+	defer m.fanout.Done()
 	for s := range m.statusSource {
 		m.mu.RLock()
 		for ch := range m.statusSubs {
@@ -430,6 +489,7 @@ func (m *Manager) fanOutStatus() {
 }
 
 func (m *Manager) fanOutConversation() {
+	defer m.fanout.Done()
 	for c := range m.conversationSource {
 		m.mu.RLock()
 		for ch := range m.conversationSubs {
