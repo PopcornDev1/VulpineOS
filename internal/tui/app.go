@@ -870,6 +870,10 @@ func (a *App) shutdown() tea.Cmd {
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	if key, ok := msg.(tea.KeyMsg); ok && isLeakedTerminalMouseReportKey(key) {
+		return a, nil
+	}
+
 	if a.setupActive {
 		switch msg.(type) {
 		case tea.KeyMsg, tea.WindowSizeMsg:
@@ -898,9 +902,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if isLeakedTerminalMouseReportKey(msg) {
-			return a, nil
-		}
 		// The slash-command palette owns key input whenever it is open.
 		if a.commandPalette.Active() {
 			return a.updateCommandPaletteInput(msg)
@@ -1573,7 +1574,7 @@ func isGlobalLifecycleKey(msg tea.KeyMsg) bool {
 }
 
 func isLeakedTerminalMouseReportKey(msg tea.KeyMsg) bool {
-	return msg.Type == tea.KeyRunes && !msg.Paste && isOnlySGRMouseReports(string(msg.Runes))
+	return msg.Type == tea.KeyRunes && isOnlySGRMouseReports(string(msg.Runes))
 }
 
 func isOnlySGRMouseReports(s string) bool {

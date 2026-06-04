@@ -1991,6 +1991,48 @@ func TestChatPasteDisplaysMarkerAndPersistsRawContent(t *testing.T) {
 }
 
 func TestFocusedChatIgnoresLeakedMouseReports(t *testing.T) {
+	tests := []struct {
+		name   string
+		report string
+		paste  bool
+	}{
+		{name: "single motion report", report: "[<65;43;23M"},
+		{name: "repeated motion reports", report: "[<65;72;20M[<65;72;20M"},
+		{name: "paste-marked report", report: "[<65;43;23M", paste: true},
+		{name: "paste-marked repeated reports", report: "[<65;43;23M[<65;43;23M", paste: true},
+		{name: "escape-prefixed release report", report: "\x1b[<65;43;23m"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openTestVault(t)
+			cfg := &config.Config{}
+			app := NewApp(nil, nil, nil, db, cfg, nil)
+			app.conversation.SetSize(80, 20)
+
+			agent, err := db.CreateAgent("Scraper", "Scrape prices", "{}")
+			if err != nil {
+				t.Fatalf("create agent: %v", err)
+			}
+			app.selectedAgentID = agent.ID
+			app.focus = FocusConversation
+			app.inputMode = "chat"
+			app.conversation.SetAgentID(agent.ID)
+			app.conversation.SetAgentName(agent.Name)
+			app.conversation.SetAwake(true)
+			app.conversation.Focus()
+
+			model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.report), Paste: tt.paste})
+			app = model.(App)
+
+			if got := app.conversation.TextInput().Value(); got != "" {
+				t.Fatalf("conversation input = %q, want leaked mouse reports ignored", got)
+			}
+		})
+	}
+}
+
+func TestChatPasteWithMouseLikeTextStillUsesPasteMarker(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -2008,12 +2050,12 @@ func TestFocusedChatIgnoresLeakedMouseReports(t *testing.T) {
 	app.conversation.SetAwake(true)
 	app.conversation.Focus()
 
-	report := "[<65;72;20M[<65;72;20M"
-	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(report)})
+	raw := "keep this [<65;43;23M text"
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(raw), Paste: true})
 	app = model.(App)
 
-	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("conversation input = %q, want leaked mouse reports ignored", got)
+	if got := app.conversation.TextInput().Value(); got != "[Pasted Content 26 Chars]" {
+		t.Fatalf("visible input = %q, want paste marker", got)
 	}
 }
 
