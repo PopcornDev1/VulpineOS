@@ -1574,41 +1574,81 @@ func isGlobalLifecycleKey(msg tea.KeyMsg) bool {
 }
 
 func isLeakedTerminalMouseReportKey(msg tea.KeyMsg) bool {
-	return msg.Type == tea.KeyRunes && isOnlySGRMouseReports(string(msg.Runes))
+	return msg.Type == tea.KeyRunes && isOnlyTerminalMouseReports(string(msg.Runes))
 }
 
-func isOnlySGRMouseReports(s string) bool {
+func isOnlyTerminalMouseReports(s string) bool {
 	if s == "" {
 		return false
 	}
 	for s != "" {
-		if strings.HasPrefix(s, "\x1b") {
-			s = s[1:]
-		}
-		if !strings.HasPrefix(s, "[<") {
+		next, ok := consumeTerminalMouseReport(s)
+		if !ok {
 			return false
 		}
-		s = s[2:]
-		for field := 0; field < 3; field++ {
-			if s == "" || !isASCIIDigit(s[0]) {
-				return false
-			}
-			for s != "" && isASCIIDigit(s[0]) {
-				s = s[1:]
-			}
-			if field < 2 {
-				if s == "" || s[0] != ';' {
-					return false
-				}
-				s = s[1:]
-			}
-		}
-		if s == "" || (s[0] != 'M' && s[0] != 'm') {
-			return false
-		}
-		s = s[1:]
+		s = next
 	}
 	return true
+}
+
+func consumeTerminalMouseReport(s string) (string, bool) {
+	if next, ok := consumeSGRMouseReport(s); ok {
+		return next, true
+	}
+	return consumeLegacyMouseReport(s)
+}
+
+func consumeSGRMouseReport(s string) (string, bool) {
+	switch {
+	case strings.HasPrefix(s, "\x1b["):
+		s = s[2:]
+	case strings.HasPrefix(s, "\u009b"):
+		s = strings.TrimPrefix(s, "\u009b")
+	case strings.HasPrefix(s, "["):
+		s = s[1:]
+	default:
+		return "", false
+	}
+	if !strings.HasPrefix(s, "<") {
+		return "", false
+	}
+	s = s[1:]
+	for field := 0; field < 3; field++ {
+		if s == "" || !isASCIIDigit(s[0]) {
+			return "", false
+		}
+		for s != "" && isASCIIDigit(s[0]) {
+			s = s[1:]
+		}
+		if field < 2 {
+			if s == "" || s[0] != ';' {
+				return "", false
+			}
+			s = s[1:]
+		}
+	}
+	if s == "" || (s[0] != 'M' && s[0] != 'm') {
+		return "", false
+	}
+	return s[1:], true
+}
+
+func consumeLegacyMouseReport(s string) (string, bool) {
+	switch {
+	case strings.HasPrefix(s, "\x1b[M"):
+		s = s[3:]
+	case strings.HasPrefix(s, "\u009bM"):
+		s = strings.TrimPrefix(s, "\u009bM")
+	case strings.HasPrefix(s, "[M"):
+		s = s[2:]
+	default:
+		return "", false
+	}
+	runes := []rune(s)
+	if len(runes) < 3 {
+		return "", false
+	}
+	return string(runes[3:]), true
 }
 
 func isASCIIDigit(b byte) bool {

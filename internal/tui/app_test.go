@@ -2001,6 +2001,10 @@ func TestFocusedChatIgnoresLeakedMouseReports(t *testing.T) {
 		{name: "paste-marked report", report: "[<65;43;23M", paste: true},
 		{name: "paste-marked repeated reports", report: "[<65;43;23M[<65;43;23M", paste: true},
 		{name: "escape-prefixed release report", report: "\x1b[<65;43;23m"},
+		{name: "legacy x10 report", report: "\x1b[M !!"},
+		{name: "legacy x10 report without escape prefix", report: "[M !!"},
+		{name: "paste-marked legacy x10 report", report: "\x1b[M !!", paste: true},
+		{name: "repeated legacy x10 reports", report: "\x1b[M !!\x1b[M!\"#"},
 	}
 
 	for _, tt := range tests {
@@ -2055,6 +2059,33 @@ func TestChatPasteWithMouseLikeTextStillUsesPasteMarker(t *testing.T) {
 	app = model.(App)
 
 	if got := app.conversation.TextInput().Value(); got != "[Pasted Content 26 Chars]" {
+		t.Fatalf("visible input = %q, want paste marker", got)
+	}
+}
+
+func TestChatPasteWithLegacyMouseLikeTextStillUsesPasteMarker(t *testing.T) {
+	db := openTestVault(t)
+	cfg := &config.Config{}
+	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Scraper", "Scrape prices", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.SetAgentName(agent.Name)
+	app.conversation.SetAwake(true)
+	app.conversation.Focus()
+
+	raw := "keep this [M !! text"
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(raw), Paste: true})
+	app = model.(App)
+
+	if got := app.conversation.TextInput().Value(); got != "[Pasted Content 20 Chars]" {
 		t.Fatalf("visible input = %q, want paste marker", got)
 	}
 }
