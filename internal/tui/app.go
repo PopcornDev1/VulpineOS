@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"vulpineos/internal/agentcore"
 	"vulpineos/internal/agentprompt"
 	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
@@ -2978,6 +2979,24 @@ func (a *App) completeEmbeddedReconfigure() {
 	a.noticeTTL = 3
 }
 
+// nativeFallbackModels returns the rate-limit fallback chain for a provider.
+// Mirrors the helper in cmd/vulpineos/main.go.
+func nativeFallbackModels(provider string) []string {
+	if override := strings.TrimSpace(os.Getenv("OPENCODE_FALLBACK_MODELS")); override != "" {
+		var out []string
+		for _, m := range strings.Split(override, ",") {
+			if m = strings.TrimSpace(m); m != "" {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	if strings.EqualFold(strings.TrimSpace(provider), "openrouter") {
+		return agentcore.DefaultFallbackModels()
+	}
+	return nil
+}
+
 func (a *App) applySetupConfig(updated *config.Config) error {
 	if updated == nil {
 		return fmt.Errorf("setup returned no configuration")
@@ -3023,6 +3042,17 @@ func (a *App) applySetupConfig(updated *config.Config) error {
 		}
 	} else {
 		a.cfg.AgentSkills = nil
+	}
+	if a.orch != nil {
+		if mgr, ok := a.orch.Agents.(*agentcore.Manager); ok {
+			fallbackModels := nativeFallbackModels(updated.Provider)
+			mgr.Reconfigure(agentcore.Config{
+				Provider:       updated.Provider,
+				Model:          updated.Model,
+				APIKey:         updated.APIKey,
+				FallbackModels: fallbackModels,
+			})
+		}
 	}
 	return a.cfg.Save()
 }

@@ -34,6 +34,7 @@ type agentStore interface {
 type Manager struct {
 	client *juggler.Client
 	cfg    Config
+	cfgMu  sync.RWMutex
 
 	mu     sync.RWMutex
 	agents map[string]*nativeAgent
@@ -97,6 +98,14 @@ func (m *Manager) SetVault(store agentStore) {
 	m.mu.Lock()
 	m.store = store
 	m.mu.Unlock()
+}
+
+// Reconfigure updates the provider/model config. Next agent spawns will use
+// the new settings; already-running agents are unaffected.
+func (m *Manager) Reconfigure(cfg Config) {
+	m.cfgMu.Lock()
+	m.cfg = cfg
+	m.cfgMu.Unlock()
 }
 
 // resolveContextID returns the agent's stored browser context id (set by the
@@ -197,6 +206,12 @@ func (m *Manager) spawn(agentID, contextID, task string, reusePage bool, cleanup
 	ev := &managerEvents{m: m, agentID: agentID}
 	m.emitStatus(agentID, contextID, "running", task)
 
+	// Snapshot config so the goroutine is not affected by a concurrent
+	// Reconfigure call.
+	m.cfgMu.RLock()
+	cfg := m.cfg
+	m.cfgMu.RUnlock()
+
 	go func() {
 		defer m.wg.Done()
 		var err error
@@ -207,15 +222,15 @@ func (m *Manager) spawn(agentID, contextID, task string, reusePage bool, cleanup
 			var toolset *BrowserToolset
 			toolset, err = m.acquireToolset(ctx, agentID, contextID)
 			if err == nil {
-				_, err = RunBrowserAgentWithToolset(ctx, toolset, m.cfg, task, ev)
+				_, err = RunBrowserAgentWithToolset(ctx, toolset, cfg, task, ev)
 				if closeErr := toolset.CloseExtraTabs(); closeErr != nil {
 					m.logRuntimeEvent("warn", "native_agent_extra_tabs_close_failed", closeErr.Error(), map[string]string{"agent_id": agentID})
 				}
 			}
 		case contextID != "":
-			_, err = RunBrowserAgentInContext(ctx, m.client, contextID, m.cfg, task, ev)
+			_, err = RunBrowserAgentInContext(ctx, m.client, contextID, cfg, task, ev)
 		default:
-			_, err = RunBrowserAgent(ctx, m.client, m.cfg, task, ev)
+			_, err = RunBrowserAgent(ctx, m.client, cfg, task, ev)
 		}
 		final := "completed"
 		if err != nil {
