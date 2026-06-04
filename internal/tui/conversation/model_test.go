@@ -138,6 +138,63 @@ func TestInputBlockUsesOpenCodeRailBox(t *testing.T) {
 	}
 }
 
+func TestInputBlockSoftWrapsLongDraft(t *testing.T) {
+	m := New()
+	m.SetSize(46, 18)
+	m.SetAgentID("agent-1")
+	m.SetAgentName("Agent 1")
+	m.SetModelLabel("model")
+	m.SetAwake(true)
+	m.Focus()
+	m.TextInput().SetValue("alpha beta gamma delta epsilon zeta eta theta iota kappa")
+
+	block := m.inputBlock(m.inputArea())
+	if got := lipgloss.Height(block); got < 6 {
+		t.Fatalf("input block height = %d, want growth for wrapped draft:\n%s", got, block)
+	}
+	view := m.View()
+	for _, want := range []string{"alpha beta", "theta iota"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("wrapped draft missing %q:\n%s", want, view)
+		}
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > 46 {
+			t.Fatalf("line %d width = %d, want <= 46:\n%s", i+1, width, view)
+		}
+	}
+}
+
+func TestInputBlockCapsWrappedDraftHeight(t *testing.T) {
+	m := New()
+	m.SetSize(50, 20)
+	m.SetAgentID("agent-1")
+	m.SetAwake(true)
+	m.Focus()
+	m.TextInput().SetValue(strings.Repeat("wrapped words ", 20))
+
+	block := m.inputBlock(m.inputArea())
+	wantHeight := inputBlockChromeLines + maxDraftInputLines
+	if got := lipgloss.Height(block); got != wantHeight {
+		t.Fatalf("input block height = %d, want capped height %d:\n%s", got, wantHeight, block)
+	}
+}
+
+func TestInputBlockUsesCompactDraftHeightOnShortTerminals(t *testing.T) {
+	m := New()
+	m.SetSize(50, 10)
+	m.SetAgentID("agent-1")
+	m.SetAwake(true)
+	m.Focus()
+	m.TextInput().SetValue(strings.Repeat("wrapped words ", 20))
+
+	block := m.inputBlock(m.inputArea())
+	wantHeight := inputBlockChromeLines + compactDraftInputMax
+	if got := lipgloss.Height(block); got != wantHeight {
+		t.Fatalf("compact input block height = %d, want %d:\n%s", got, wantHeight, block)
+	}
+}
+
 func TestSetSizeRewrapsRenderedEntries(t *testing.T) {
 	m := New()
 	m.SetSize(80, 20)
@@ -164,8 +221,8 @@ func TestSetSizeAllowsVeryNarrowContentWidth(t *testing.T) {
 	m.SetAgentID("agent-1")
 	m.AddEntry("assistant", "abcdef")
 
-	if m.textInput.Width > 2 {
-		t.Fatalf("text input width = %d, want <= 2", m.textInput.Width)
+	if m.textInput.Width() > 2 {
+		t.Fatalf("text input width = %d, want <= 2", m.textInput.Width())
 	}
 	for _, line := range m.entries[0].renderedLines {
 		if got := ansiVisualWidth(line); got > 1 {

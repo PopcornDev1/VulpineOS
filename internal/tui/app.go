@@ -577,7 +577,6 @@ func (a App) Init() tea.Cmd {
 		a.waitForEvent(),
 		a.tick(),
 		a.replayBrowserTargets(),
-		conversation.InputPulseTick(),
 	}
 	if a.shouldCreateDefaultAgent() {
 		cmds = append(cmds, a.createDefaultAgent())
@@ -1460,13 +1459,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
-	case conversation.InputPulseTickMsg:
-		var cmd tea.Cmd
-		a.conversation, cmd = a.conversation.Update(msg)
-		if cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-
 	case statusNotice:
 		a.notice = msg.text
 		a.noticeTTL = 3
@@ -1700,7 +1692,7 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// "/" on an empty input opens the slash-command palette.
-	if msg.String() == "/" && strings.TrimSpace(a.conversation.TextInput().Value()) == "" {
+	if msg.String() == "/" && strings.TrimSpace(a.conversation.DraftValue()) == "" {
 		a.syncCommandPaletteAgents()
 		a.commandPalette.Activate()
 		return a.updateCommandPaletteInput(msg)
@@ -1732,18 +1724,15 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.focus = FocusAgentList
 		return a, nil
 	default:
-		ti := a.conversation.TextInput()
 		if !a.conversation.Focused() {
-			ti.Focus()
+			a.conversation.Focus()
 		}
-		var cmd tea.Cmd
-		*ti, cmd = ti.Update(msg)
-		return a, cmd
+		return a, a.conversation.UpdateDraftInput(msg)
 	}
 }
 
 // updateCommandPaletteInput routes keys while the slash-command palette is open.
-// The chat textinput keeps the typed query (so the user sees "/foo") and each
+// The chat draft keeps the typed query (so the user sees "/foo") and each
 // keystroke re-filters the palette; navigation/selection keys drive the palette.
 func (a App) updateCommandPaletteInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -1752,7 +1741,7 @@ func (a App) updateCommandPaletteInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "enter":
 		var cmd tea.Cmd
 		a.commandPalette, cmd = a.commandPalette.Update(msg)
-		a.conversation.TextInput().Reset()
+		a.conversation.ResetDraft()
 		return a, cmd
 	case "up", "down":
 		var cmd tea.Cmd
@@ -1760,17 +1749,15 @@ func (a App) updateCommandPaletteInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, cmd
 	}
 
-	ti := a.conversation.TextInput()
 	if !a.conversation.Focused() {
 		a.conversation.Focus()
 	}
-	var cmd tea.Cmd
-	*ti, cmd = ti.Update(msg)
-	if strings.TrimSpace(ti.Value()) == "" {
+	cmd := a.conversation.UpdateDraftInput(msg)
+	if strings.TrimSpace(a.conversation.DraftValue()) == "" {
 		a.commandPalette.Deactivate()
 		return a, cmd
 	}
-	a.commandPalette.SetQuery(ti.Value())
+	a.commandPalette.SetQuery(a.conversation.DraftValue())
 	return a, cmd
 }
 

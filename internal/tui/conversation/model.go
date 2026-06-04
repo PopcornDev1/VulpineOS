@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -54,33 +54,24 @@ var (
 				Foreground(shared.ColorPrimary).
 				Background(inputBlockBg).
 				Bold(true)
-	inputModelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5E7EB")).Background(inputBlockBg)
-	inputMutedStyle  = lipgloss.NewStyle().Foreground(shared.ColorMuted).Background(inputBlockBg)
-	inputCursorStyle = lipgloss.NewStyle().
-				Foreground(inputBlockBg).
-				Background(lipgloss.Color("#E5E7EB"))
+	inputModelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5E7EB")).Background(inputBlockBg)
+	inputMutedStyle = lipgloss.NewStyle().Foreground(shared.ColorMuted).Background(inputBlockBg)
 )
 
-// inputBlockHeight is the fixed number of rendered lines the chat input block occupies.
-const inputBlockHeight = 5
+const (
+	minDraftInputLines    = 1
+	maxDraftInputLines    = 4
+	compactDraftInputMax  = 2
+	inputBlockChromeLines = 4 // top spacer, spacer, metadata, bottom half-border
+)
 
 // ThinkingTickMsg triggers animation updates for the thinking indicator.
 type ThinkingTickMsg struct{}
-
-// InputPulseTickMsg advances the chat input caret pulse.
-type InputPulseTickMsg struct{}
 
 // ThinkingTick returns a command that ticks every 120ms for animation.
 func ThinkingTick() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg {
 		return ThinkingTickMsg{}
-	})
-}
-
-// InputPulseTick keeps the chat input caret blinking while the TUI is open.
-func InputPulseTick() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
-		return InputPulseTickMsg{}
 	})
 }
 
@@ -110,26 +101,25 @@ type pasteSnippet struct {
 
 // Model holds the conversation panel state.
 type Model struct {
-	entries         []Entry
-	agentID         string
-	agentName       string
-	agentStatus     string
-	traceOnly       bool
-	thinking        bool // true while waiting for agent response
-	awake           bool // true after agent has sent its first message
-	textInput       textinput.Model
-	width           int
-	height          int
-	scroll          int  // scroll offset in rendered lines (not entries)
-	autoScroll      bool // whether to auto-scroll to bottom on new messages
-	spinnerFrame    int  // current spinner animation frame
-	phraseIdx       int  // current thinking phrase index
-	shimmerOffset   int  // shimmer position for the gradient effect
-	phraseTicks     int  // ticks since last phrase change
-	pasteSnippets   []pasteSnippet
-	modelLabel      string // provider/model shown in the input block metadata
-	notice          string // transient message rendered just under the chatbox
-	inputPulseFrame int    // caret blink frame for the chat input
+	entries       []Entry
+	agentID       string
+	agentName     string
+	agentStatus   string
+	traceOnly     bool
+	thinking      bool // true while waiting for agent response
+	awake         bool // true after agent has sent its first message
+	textInput     textarea.Model
+	width         int
+	height        int
+	scroll        int  // scroll offset in rendered lines (not entries)
+	autoScroll    bool // whether to auto-scroll to bottom on new messages
+	spinnerFrame  int  // current spinner animation frame
+	phraseIdx     int  // current thinking phrase index
+	shimmerOffset int  // shimmer position for the gradient effect
+	phraseTicks   int  // ticks since last phrase change
+	pasteSnippets []pasteSnippet
+	modelLabel    string // provider/model shown in the input block metadata
+	notice        string // transient message rendered just under the chatbox
 }
 
 // SetAgentName sets the display name for the agent.
@@ -184,9 +174,19 @@ func (m Model) IsThinking() bool {
 
 // New creates a new conversation panel.
 func New() Model {
-	ti := textinput.New()
+	ti := textarea.New()
 	ti.Placeholder = "Type a message..."
-	ti.Width = 60
+	ti.Prompt = ""
+	ti.ShowLineNumbers = false
+	ti.EndOfBufferCharacter = ' '
+	ti.CharLimit = 0
+	ti.MaxHeight = 0
+	ti.MaxWidth = 0
+	ti.SetWidth(60)
+	ti.SetHeight(minDraftInputLines)
+	style := textareaStyle()
+	ti.FocusedStyle = style
+	ti.BlurredStyle = style
 	return Model{
 		textInput:  ti,
 		width:      40,
@@ -195,15 +195,24 @@ func New() Model {
 	}
 }
 
+func textareaStyle() textarea.Style {
+	base := lipgloss.NewStyle().Background(inputBlockBg)
+	return textarea.Style{
+		Base:        base,
+		CursorLine:  inputModelStyle,
+		EndOfBuffer: inputBlockStyle,
+		Placeholder: inputMutedStyle,
+		Prompt:      inputBlockStyle,
+		Text:        inputModelStyle,
+	}
+}
+
 // SetSize sets the render dimensions.
 func (m *Model) SetSize(w, h int) {
 	oldContentWidth := m.contentWidth()
 	m.width = w
 	m.height = h
-	m.textInput.Width = w - 4
-	if m.textInput.Width < 1 {
-		m.textInput.Width = 1
-	}
+	m.syncDraftInputSize()
 	if newContentWidth := m.contentWidth(); newContentWidth != oldContentWidth {
 		m.rewrapEntries(newContentWidth)
 	}
@@ -211,6 +220,94 @@ func (m *Model) SetSize(w, h int) {
 	if m.autoScroll {
 		m.scrollToBottom()
 	}
+}
+
+func (m *Model) syncDraftInputSize() {
+	m.configureDraftInput(&m.textInput)
+}
+
+func (m Model) configureDraftInput(ti *textarea.Model) {
+	width := m.draftInputWidth()
+	ti.SetWidth(width)
+	ti.SetHeight(m.draftVisibleLinesForValue(ti.Value(), width))
+}
+
+func (m Model) inputBlockHeight() int {
+	return inputBlockChromeLines + m.inputAreaLineCount()
+}
+
+func (m Model) inputAreaLineCount() int {
+	if m.textInput.Focused() && m.awake {
+		return m.draftVisibleLines()
+	}
+	if m.textInput.Focused() {
+		return m.draftVisibleLines()
+	}
+	return minDraftInputLines
+}
+
+func (m Model) draftVisibleLines() int {
+	return m.draftVisibleLinesForValue(m.textInput.Value(), m.draftInputWidth())
+}
+
+func (m Model) draftVisibleLinesForValue(value string, width int) int {
+	lines := draftWrappedLineCount(value, width)
+	capacity := m.maxDraftVisibleLines()
+	if lines > capacity {
+		return capacity
+	}
+	if lines < minDraftInputLines {
+		return minDraftInputLines
+	}
+	return lines
+}
+
+func (m Model) maxDraftVisibleLines() int {
+	limit := maxDraftInputLines
+	if m.height > 0 && m.height < 14 {
+		limit = compactDraftInputMax
+	}
+	if m.height > 0 {
+		// Leave room for the title, input chrome, and at least one message row.
+		budget := m.height - 1 - inputBlockChromeLines - 1
+		if budget < limit {
+			limit = budget
+		}
+	}
+	if limit < minDraftInputLines {
+		return minDraftInputLines
+	}
+	return limit
+}
+
+func (m Model) draftInputWidth() int {
+	blockWidth := m.width - 2
+	if blockWidth < 4 {
+		return max(1, m.width)
+	}
+	contentWidth := blockWidth - 1
+	return max(1, contentWidth-2)
+}
+
+func draftWrappedLineCount(value string, width int) int {
+	if width < 1 {
+		width = 1
+	}
+	if value == "" {
+		return minDraftInputLines
+	}
+	total := 0
+	for _, rawLine := range strings.Split(value, "\n") {
+		if rawLine == "" {
+			total++
+			continue
+		}
+		total += len(wordWrap(rawLine, width))
+	}
+	if total < minDraftInputLines {
+		return minDraftInputLines
+	}
+	return total
 }
 
 // Init implements tea.Model.
@@ -237,9 +334,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return m, ThinkingTick()
 		}
-	case InputPulseTickMsg:
-		m.inputPulseFrame++
-		return m, InputPulseTick()
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up":
@@ -426,12 +520,32 @@ func (m *Model) rewrapEntries(maxWidth int) {
 	}
 }
 
-// TextInput returns a pointer to the text input for external update.
-func (m *Model) TextInput() *textinput.Model {
+// TextInput returns a pointer to the draft textarea for external update.
+func (m *Model) TextInput() *textarea.Model {
 	return &m.textInput
 }
 
-// IsInputFocused reports whether the text input is focused.
+// DraftValue returns the current draft text.
+func (m Model) DraftValue() string {
+	return m.textInput.Value()
+}
+
+// ResetDraft clears the current draft and resizes the draft viewport.
+func (m *Model) ResetDraft() {
+	m.textInput.Reset()
+	m.syncDraftInputSize()
+}
+
+// UpdateDraftInput routes a key message to the draft textarea.
+func (m *Model) UpdateDraftInput(msg tea.Msg) tea.Cmd {
+	m.syncDraftInputSize()
+	var cmd tea.Cmd
+	m.textInput, cmd = m.textInput.Update(msg)
+	m.syncDraftInputSize()
+	return cmd
+}
+
+// IsInputFocused reports whether the draft input is focused.
 func (m *Model) IsInputFocused() bool {
 	return m.textInput.Focused()
 }
@@ -449,21 +563,8 @@ func (m *Model) InsertPastedContent(raw string) {
 	}
 	marker := pasteMarker(raw)
 	m.pasteSnippets = append(m.pasteSnippets, pasteSnippet{Marker: marker, Raw: raw})
-
-	value := []rune(m.textInput.Value())
-	pos := m.textInput.Position()
-	if pos < 0 {
-		pos = 0
-	}
-	if pos > len(value) {
-		pos = len(value)
-	}
-	next := make([]rune, 0, len(value)+utf8.RuneCountInString(marker))
-	next = append(next, value[:pos]...)
-	next = append(next, []rune(marker)...)
-	next = append(next, value[pos:]...)
-	m.textInput.SetValue(string(next))
-	m.textInput.SetCursor(pos + utf8.RuneCountInString(marker))
+	m.textInput.InsertString(marker)
+	m.syncDraftInputSize()
 }
 
 // InputPayloadAndDisplay returns the agent payload and operator-facing display text, then clears the input.
@@ -527,8 +628,8 @@ func (m Model) Focused() bool {
 
 // visibleLines returns how many rendered lines fit in the message area.
 func (m Model) visibleLines() int {
-	// Layout: title(1) + messages + thinking(0-1) + input block(inputBlockHeight) + notice(0-1)
-	reserved := 1 + inputBlockHeight // title + input block
+	// Layout: title(1) + messages + thinking(0-1) + input block + notice(0-1)
+	reserved := 1 + m.inputBlockHeight()
 	if m.thinking {
 		reserved++ // thinking indicator between messages and input block
 	}
@@ -692,22 +793,25 @@ func (m *Model) clampScroll() {
 
 // View renders the conversation panel.
 // Messages are bottom-aligned: empty space at top, messages grow upward from the input box.
-// inputBlock renders the 5-line OpenCode-style chat input box: a top blank rail
-// line, the input line, a blank rail line, the agent/model metadata line, and a
-// half-block bottom border.
+// inputBlock renders the OpenCode-style chat input box: a top blank rail line,
+// one to four draft rows, a blank rail line, the agent/model metadata line, and
+// a half-block bottom border.
 func (m Model) inputBlock(inputArea string) string {
 	blockWidth := m.width - 2
 	if blockWidth < 4 {
 		return fitCellLine(inputArea, max(1, m.width))
 	}
 	contentWidth := blockWidth - 1
-	return strings.Join([]string{
-		inputBlockLine("", blockWidth),
-		inputBlockLine(inputBlockStyle.Render("  ")+inputArea, blockWidth),
+	lines := []string{inputBlockLine("", blockWidth)}
+	for _, line := range inputAreaLines(inputArea) {
+		lines = append(lines, inputBlockLine(inputBlockStyle.Render("  ")+line, blockWidth))
+	}
+	lines = append(lines,
 		inputBlockLine("", blockWidth),
 		inputBlockLine(inputBlockStyle.Render("  ")+m.inputMetadata(contentWidth-2), blockWidth),
 		inputBlockHalfLine(blockWidth),
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) inputArea() string {
@@ -730,32 +834,10 @@ func (m Model) inputArea() string {
 }
 
 func (m Model) inputTextView() string {
-	value := m.textInput.Value()
-	if value == "" {
-		return m.inputCaret(" ") + inputMutedStyle.Render(m.textInput.Placeholder)
-	}
-	runes := []rune(value)
-	pos := m.textInput.Position()
-	if pos < 0 {
-		pos = 0
-	}
-	if pos > len(runes) {
-		pos = len(runes)
-	}
-	before := inputModelStyle.Render(string(runes[:pos]))
-	if pos == len(runes) {
-		return before + m.inputCaret(" ")
-	}
-	cursor := m.inputCaret(string(runes[pos]))
-	after := inputModelStyle.Render(string(runes[pos+1:]))
-	return before + cursor + after
-}
-
-func (m Model) inputCaret(text string) string {
-	if m.inputPulseFrame%2 == 0 {
-		return inputCursorStyle.Render(text)
-	}
-	return inputModelStyle.Render(text)
+	ti := m.textInput
+	m.configureDraftInput(&ti)
+	ti, _ = ti.Update(nil)
+	return strings.TrimRight(ti.View(), "\n")
 }
 
 func (m Model) inputMetadata(maxWidth int) string {
@@ -787,6 +869,14 @@ func inputBlockLine(content string, blockWidth int) string {
 		padding = strings.Repeat(" ", contentWidth-ansiVisualWidth(content))
 	}
 	return inputRailStyle.Render("▌") + content + inputBlockStyle.Render(padding)
+}
+
+func inputAreaLines(inputArea string) []string {
+	inputArea = strings.TrimRight(inputArea, "\n")
+	if inputArea == "" {
+		return []string{""}
+	}
+	return strings.Split(inputArea, "\n")
 }
 
 func inputBlockHalfLine(blockWidth int) string {
@@ -877,9 +967,9 @@ func (m Model) view(palette string) string {
 		thinkingLine = "  " + shimmerText
 	}
 
-	// Calculate available lines for messages
-	// Layout (bottom to top): notice(0-1) + input block(5) + palette(0-n) + thinking(0-1) + messages + title(1)
-	bottomLines := inputBlockHeight + len(paletteLines)
+	// Calculate available lines for messages.
+	// Layout (bottom to top): notice(0-1) + input block + palette(0-n) + thinking(0-1) + messages + title(1)
+	bottomLines := m.inputBlockHeight() + len(paletteLines)
 	if m.thinking {
 		bottomLines++
 	}
