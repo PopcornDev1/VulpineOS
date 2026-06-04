@@ -263,6 +263,14 @@ func openPageWithToolset(ctx context.Context, client *juggler.Client, toolset *B
 	toolset.active = 0
 	toolset.mu.Unlock()
 
+	// Wait for the tracker to capture initial frame + execution context so the
+	// first navigate call can include the required frameId and Runtime.evaluate
+	// calls can include executionContextId (required by newer Camoufox Juggler).
+	if waitErr := toolset.executor.WaitForTrackerInit(out.SessionID); waitErr != nil {
+		// Non-fatal: the retry logic in handleNavigate / evalJSWithTracker will
+		// resolve the context at call time if this initial wait times out.
+	}
+
 	return out.ContextID, out.SessionID, nil
 }
 
@@ -357,6 +365,9 @@ func openPageInContextWithToolset(ctx context.Context, client *juggler.Client, c
 	toolset.tabs = []string{sessionID}
 	toolset.active = 0
 	toolset.mu.Unlock()
+
+	if waitErr := toolset.executor.WaitForTrackerInit(sessionID); waitErr != nil {
+	}
 
 	return sessionID, nil
 }

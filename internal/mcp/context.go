@@ -212,64 +212,92 @@ func (ct *ContextTracker) InvalidateExecutionContext(sessionID string) {
 
 // Resolve discovers the execution context and frame for a session.
 // If not already tracked, triggers an AX tree probe to init the content process.
+// Probe timeout is 2s; total wait is up to 5s.
 func (ct *ContextTracker) Resolve(sessionID string) (*SessionContext, error) {
-	// Check if already tracked
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return ct.ResolveCtx(ctx, sessionID)
+}
+
+// ResolveCtx discovers the execution context and frame using the given
+// context for the probe timeout and total wait deadline.
+func (ct *ContextTracker) ResolveCtx(ctx context.Context, sessionID string) (*SessionContext, error) {
 	ct.mu.RLock()
-	ctx := cloneSessionContext(ct.contexts[sessionID])
+	cached := cloneSessionContext(ct.contexts[sessionID])
 	ct.mu.RUnlock()
 
-	if ctx != nil && ctx.ExecutionContextID != "" && ctx.FrameID != "" {
-		return ctx, nil
+	if cached != nil && cached.ExecutionContextID != "" && cached.FrameID != "" {
+		return cached, nil
 	}
 
 	// Trigger content process init via AX tree probe.
-	probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := ct.client.CallWithContext(probeCtx, sessionID, "Accessibility.getFullAXTree", mustJSONMap(map[string]interface{}{}))
-	cancel()
+	_, err := ct.client.CallWithContext(ctx, sessionID, "Accessibility.getFullAXTree", mustJSONMap(map[string]interface{}{}))
 	if err != nil {
 		return nil, fmt.Errorf("probe accessibility tree for session %s: %w", sessionID, err)
 	}
 
-	// Wait for the context to appear
-	for i := 0; i < 20; i++ {
-		time.Sleep(250 * time.Millisecond)
-		ct.mu.RLock()
-		ctx = cloneSessionContext(ct.contexts[sessionID])
-		ct.mu.RUnlock()
-		if ctx != nil && ctx.ExecutionContextID != "" && ctx.FrameID != "" {
-			return ctx, nil
+	// Wait for the context to appear (poll with ctx deadline)
+	for {
+		select {
+		case <-ctx.Done():
+			ct.mu.RLock()
+			ctx2 := cloneSessionContext(ct.contexts[sessionID])
+			ct.mu.RUnlock()
+			if ctx2 != nil && ctx2.ExecutionContextID != "" && ctx2.FrameID != "" {
+				return ctx2, nil
+			}
+			return nil, fmt.Errorf("could not discover execution context for session %s (ctx deadline)", sessionID)
+		default:
 		}
+		ct.mu.RLock()
+		cached = cloneSessionContext(ct.contexts[sessionID])
+		ct.mu.RUnlock()
+		if cached != nil && cached.ExecutionContextID != "" && cached.FrameID != "" {
+			return cached, nil
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-
-	return nil, fmt.Errorf("could not discover execution context for session %s (timed out after 5s)", sessionID)
 }
 
 func (ct *ContextTracker) ResolveFrame(sessionID string) (*SessionContext, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return ct.ResolveFrameCtx(ctx, sessionID)
+}
+
+func (ct *ContextTracker) ResolveFrameCtx(ctx context.Context, sessionID string) (*SessionContext, error) {
 	ct.mu.RLock()
-	ctx := cloneSessionContext(ct.contexts[sessionID])
+	cached := cloneSessionContext(ct.contexts[sessionID])
 	ct.mu.RUnlock()
-	if ctx != nil && ctx.FrameID != "" {
-		return ctx, nil
+	if cached != nil && cached.FrameID != "" {
+		return cached, nil
 	}
 
-	probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_, err := ct.client.CallWithContext(probeCtx, sessionID, "Accessibility.getFullAXTree", mustJSONMap(map[string]interface{}{}))
-	cancel()
+	_, err := ct.client.CallWithContext(ctx, sessionID, "Accessibility.getFullAXTree", mustJSONMap(map[string]interface{}{}))
 	if err != nil {
 		return nil, fmt.Errorf("probe accessibility tree for session %s: %w", sessionID, err)
 	}
 
-	for i := 0; i < 20; i++ {
-		time.Sleep(250 * time.Millisecond)
-		ct.mu.RLock()
-		ctx = cloneSessionContext(ct.contexts[sessionID])
-		ct.mu.RUnlock()
-		if ctx != nil && ctx.FrameID != "" {
-			return ctx, nil
+	for {
+		select {
+		case <-ctx.Done():
+			ct.mu.RLock()
+			cached = cloneSessionContext(ct.contexts[sessionID])
+			ct.mu.RUnlock()
+			if cached != nil && cached.FrameID != "" {
+				return cached, nil
+			}
+			return nil, fmt.Errorf("could not discover frame for session %s (ctx deadline)", sessionID)
+		default:
 		}
+		ct.mu.RLock()
+		cached = cloneSessionContext(ct.contexts[sessionID])
+		ct.mu.RUnlock()
+		if cached != nil && cached.FrameID != "" {
+			return cached, nil
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-
-	return nil, fmt.Errorf("could not discover frame for session %s (timed out after 5s)", sessionID)
 }
 
 func mustJSONMap(v interface{}) json.RawMessage {

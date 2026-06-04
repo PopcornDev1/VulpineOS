@@ -414,6 +414,25 @@ func (e *ToolExecutor) Close() {
 	}
 }
 
+// WaitForTrackerInit blocks until the tracker has captured frame and execution
+// context for the given session. Returns immediately if already tracked. This
+// ensures the first navigate call can include frameId and first evalJS call
+// can include executionContextId — both required by newer Camoufox Juggler.
+func (e *ToolExecutor) WaitForTrackerInit(sessionID string) error {
+	if e.tracker == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := e.tracker.ResolveCtx(ctx, sessionID)
+	return err
+}
+
+// Tracker exposes the tracker for direct use by agentcore session setup.
+func (e *ToolExecutor) Tracker() *ContextTracker {
+	return e.tracker
+}
+
 // HandleToolCallDirect dispatches a tool call directly (for testing).
 func HandleToolCallDirect(client *juggler.Client, name string, args json.RawMessage) (*ToolCallResult, error) {
 	return HandleToolCallDirectCtx(context.Background(), client, name, args)
