@@ -94,6 +94,13 @@ Be concise. Your final message is the result, not a transcript of what you did. 
 // vulpine_* tools, and returns the agent's final reply. The temporary context
 // is removed on return. events may be nil.
 //
+// The toolset (with its persistent ContextTracker) is created BEFORE the page
+// so it catches all Runtime.executionContextCreated, Page.frameAttached, and
+// Browser.attachedToTarget events. Previously a throwaway tracker was used
+// for page creation and the toolset's fresh tracker missed these events,
+// causing every subsequent tool call to fail (unknown tab, missing frameId,
+// no execution context, method-not-supported cascades).
+//
 // This is the standalone entrypoint (used by the live E2E and as the basis for
 // the orchestrator-integrated path, which supplies its own pooled context).
 func RunBrowserAgent(ctx context.Context, client *juggler.Client, cfg Config, task string, events Events) (string, error) {
@@ -105,38 +112,54 @@ func RunBrowserAgent(ctx context.Context, client *juggler.Client, cfg Config, ta
 		return "", fmt.Errorf("no model configured")
 	}
 
-	contextID, sessionID, err := openPage(ctx, client)
+	// Create toolset FIRST so its ContextTracker captures all page-creation
+	// events. We'll populate contextID and sessionID after opening the page.
+	toolset := NewBrowserToolset(client, "", "")
+	defer toolset.Close()
+
+	contextID, _, err := openPageWithToolset(ctx, client, toolset)
 	if err != nil {
 		return "", fmt.Errorf("open page: %w", err)
 	}
-	defer cleanupContext(client, contextID)
 
 	model := newCompleter(cfg)
-	toolset := NewBrowserToolset(client, contextID, sessionID)
-	defer toolset.Close()
 	loop := NewLoop(model, toolset, events, LoopConfig{
 		Models:        models,
 		SystemPrompt:  browserSystemPrompt,
 		Tools:         BrowserTools(),
 		MaxIterations: cfg.MaxIterations,
 	})
-	return loop.Run(ctx, task, nil)
+	result, loopErr := loop.Run(ctx, task, nil)
+
+	// Keep the browser context alive on failure so agents can be resumed
+	// or inspected. Only clean up on success.
+	if loopErr == nil {
+		cleanupContext(client, contextID)
+	}
+
+	return result, loopErr
 }
 
 // RunBrowserAgentInContext runs a native agent for one task against a page
 // created inside an existing (caller-owned) browser context — e.g. a pooled,
 // identity-applied context from the orchestrator. It does NOT create or remove
 // the context; the caller owns its lifecycle. Returns the agent's final reply.
+//
+// The toolset (with its persistent ContextTracker) is created BEFORE the page
+// so it captures all initialisation events.
 func RunBrowserAgentInContext(ctx context.Context, client *juggler.Client, contextID string, cfg Config, task string, events Events) (string, error) {
 	if client == nil {
 		return "", fmt.Errorf("juggler client is required")
 	}
-	sessionID, err := openPageInContext(ctx, client, contextID)
+
+	toolset := NewBrowserToolset(client, "", "")
+	defer toolset.Close()
+
+	_, err := openPageInContextWithToolset(ctx, client, contextID, toolset)
 	if err != nil {
 		return "", fmt.Errorf("open page in context: %w", err)
 	}
-	toolset := NewBrowserToolset(client, contextID, sessionID)
-	defer toolset.Close()
+
 	return RunBrowserAgentWithToolset(ctx, toolset, cfg, task, events)
 }
 
@@ -185,6 +208,8 @@ func openPageSession(ctx context.Context, client *juggler.Client, contextID stri
 
 // openPage creates a fresh browser context with one page and returns the
 // context id + the page's juggler session id, via the canonical MCP handler.
+// Note: this uses a throwaway ContextTracker and is only suitable for one-shot
+// callers. Agent loops should use openPageWithToolset instead.
 func openPage(ctx context.Context, client *juggler.Client) (contextID, sessionID string, err error) {
 	res, err := mcp.HandleToolCallDirectCtx(ctx, client, "vulpine_new_context", json.RawMessage(`{}`))
 	if err != nil {
@@ -206,11 +231,48 @@ func openPage(ctx context.Context, client *juggler.Client) (contextID, sessionID
 	return out.ContextID, out.SessionID, nil
 }
 
+// openPageWithToolset opens a fresh browser context+page using the toolset's
+// persistent ContextTracker so the tracker captures all initialisation events.
+// The toolset's tabs and contextID are populated on success.
+func openPageWithToolset(ctx context.Context, client *juggler.Client, toolset *BrowserToolset) (contextID, sessionID string, err error) {
+	if toolset == nil || toolset.executor == nil {
+		return "", "", fmt.Errorf("toolset with executor is required")
+	}
+
+	res, err := toolset.executor.Call(ctx, "vulpine_new_context", json.RawMessage(`{}`))
+	if err != nil {
+		return "", "", err
+	}
+	if res == nil || res.IsError {
+		return "", "", fmt.Errorf("new_context failed: %s", contentText(res))
+	}
+	var out struct {
+		ContextID string `json:"contextId"`
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal([]byte(contentText(res)), &out); err != nil {
+		return "", "", fmt.Errorf("parse new_context result: %w", err)
+	}
+	if out.SessionID == "" {
+		return "", "", fmt.Errorf("new_context returned empty sessionId")
+	}
+
+	toolset.mu.Lock()
+	toolset.contextID = out.ContextID
+	toolset.tabs = []string{out.SessionID}
+	toolset.active = 0
+	toolset.mu.Unlock()
+
+	return out.ContextID, out.SessionID, nil
+}
+
 // openPageInContext creates a page inside an already-existing browser context
 // (e.g. one acquired + identity-applied by the orchestrator's pool) and returns
 // the new page's juggler session id. Mirrors the MCP new-context handler's
 // attachedToTarget capture, but reuses the caller's context instead of making a
 // fresh one.
+// Note: uses a throwaway event subscription so event tracking is best-effort.
+// Agent loops should use openPageInContextWithToolset instead.
 func openPageInContext(ctx context.Context, client *juggler.Client, contextID string) (string, error) {
 	if strings.TrimSpace(contextID) == "" {
 		return "", fmt.Errorf("contextID is required")
@@ -244,6 +306,59 @@ func openPageInContext(ctx context.Context, client *juggler.Client, contextID st
 	case <-time.After(15 * time.Second):
 		return "", fmt.Errorf("timed out waiting for page session in context %s", contextID)
 	}
+}
+
+// openPageInContextWithToolset creates a page inside an existing browser context
+// using the toolset's persistent ContextTracker so all initialisation events
+// are captured. The toolset's tab list is updated on success.
+func openPageInContextWithToolset(ctx context.Context, client *juggler.Client, contextID string, toolset *BrowserToolset) (string, error) {
+	if strings.TrimSpace(contextID) == "" {
+		return "", fmt.Errorf("contextID is required")
+	}
+	if toolset == nil {
+		return "", fmt.Errorf("toolset is required")
+	}
+
+	// The toolset's ContextTracker is already subscribed to events. Create
+	// the page — the tracker will capture attachedToTarget and
+	// executionContextCreated automatically.
+	sessionCh := make(chan string, 4)
+	cancel := client.SubscribeWithCancel("Browser.attachedToTarget", func(_ string, params json.RawMessage) {
+		var ev struct {
+			SessionID  string `json:"sessionId"`
+			TargetInfo struct {
+				BrowserContextID string `json:"browserContextId"`
+			} `json:"targetInfo"`
+		}
+		_ = json.Unmarshal(params, &ev)
+		if ev.SessionID != "" && ev.TargetInfo.BrowserContextID == contextID {
+			select {
+			case sessionCh <- ev.SessionID:
+			default:
+			}
+		}
+	})
+	defer cancel()
+
+	if _, err := client.Call("", "Browser.newPage", map[string]interface{}{"browserContextId": contextID}); err != nil {
+		return "", fmt.Errorf("Browser.newPage: %w", err)
+	}
+	var sessionID string
+	select {
+	case sessionID = <-sessionCh:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(15 * time.Second):
+		return "", fmt.Errorf("timed out waiting for page session in context %s", contextID)
+	}
+
+	toolset.mu.Lock()
+	toolset.contextID = contextID
+	toolset.tabs = []string{sessionID}
+	toolset.active = 0
+	toolset.mu.Unlock()
+
+	return sessionID, nil
 }
 
 func cleanupContext(client *juggler.Client, contextID string) {

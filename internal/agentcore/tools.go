@@ -384,15 +384,21 @@ func (t *BrowserToolset) listTabs(ctx context.Context) (string, bool, error) {
 	fmt.Fprintf(&b, "%d open tab(s):\n", len(tabs))
 	for i, sid := range tabs {
 		url := ""
+		errStr := ""
 		info, _ := json.Marshal(map[string]interface{}{sessionIDArg: sid})
 		if res, err := t.executor.Call(ctx, "vulpine_page_info", info); err == nil {
 			url = extractURL(contentText(res))
+			if url == "" {
+				url = "(loading)"
+			}
+		} else {
+			errStr = fmt.Sprintf(" [error: %v]", err)
 		}
 		marker := " "
 		if i == active {
 			marker = "*"
 		}
-		fmt.Fprintf(&b, " %s tab %d: %s\n", marker, i+1, url)
+		fmt.Fprintf(&b, " %s tab %d: %s%s\n", marker, i+1, url, errStr)
 	}
 	return strings.TrimRight(b.String(), "\n"), false, nil
 }

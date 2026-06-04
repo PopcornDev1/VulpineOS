@@ -696,6 +696,20 @@ func isFrameIDRequiredError(err error) bool {
 	return strings.Contains(msg, "frameid") && (strings.Contains(msg, "required") || strings.Contains(msg, "missing") || strings.Contains(msg, "expected"))
 }
 
+// isMethodNotSupported reports whether a Juggler/CDP error indicates the
+// target method is not implemented by the browser — either because the
+// Juggler Dispatcher doesn't recognise it (standard Camoufox without
+// VulpineOS additions) or the session handler doesn't implement it.
+func isMethodNotSupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "is not supported") ||
+		strings.Contains(msg, "method not found") ||
+		strings.Contains(msg, "does not implement")
+}
+
 func handleSnapshot(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
 	var p struct {
 		SessionID     string `json:"sessionId"`
@@ -744,6 +758,15 @@ func handleSnapshot(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 
 	result, err := client.Call(p.SessionID, "Page.getOptimizedDOM", params)
 	if err != nil {
+		// If the Juggler variant isn't available (standard Camoufox without
+		// VulpineOS additions), fall back to the AX tree.
+		if isMethodNotSupported(err) {
+			axResult, axErr := client.Call(p.SessionID, "Accessibility.getFullAXTree", nil)
+			if axErr != nil {
+				return errorResult(axErr), nil
+			}
+			return textResult(string(axResult)), nil
+		}
 		return errorResult(err), nil
 	}
 
