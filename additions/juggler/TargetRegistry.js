@@ -321,6 +321,42 @@ export class TargetRegistry {
 
   async _newPageInternal({browserContextId}) {
     const browserContext = this.browserContextForId(browserContextId);
+    const {browser} = await this._openPageInBrowserContext(browserContext);
+    let target = this._browserToTarget.get(browser);
+    while (!target) {
+      await helper.awaitEvent(this, TargetRegistry.Events.TargetCreated);
+      target = this._browserToTarget.get(browser);
+    }
+    browser.focus();
+    if (browserContext.crossProcessCookie.settings.timezoneId) {
+      if (await target.hasFailedToOverrideTimezone())
+        throw new Error('Failed to override timezone');
+    }
+    didCreateFirstPage = true;
+    return target.id();
+  }
+
+  async _openPageInBrowserContext(browserContext) {
+    const existingPage = browserContext.pages.values().next().value;
+    if (existingPage)
+      return this._openTabInWindow(existingPage._window, browserContext);
+    return this._openWindowForBrowserContext(browserContext);
+  }
+
+  async _openTabInWindow(window, browserContext) {
+    await waitForWindowReady(window);
+    const options = {
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      skipAnimation: true,
+    };
+    if (browserContext.userContextId)
+      options.userContextId = browserContext.userContextId;
+    const tab = window.gBrowser.addTab('about:blank', options);
+    window.gBrowser.selectedTab = tab;
+    return {window, browser: tab.linkedBrowser};
+  }
+
+  async _openWindowForBrowserContext(browserContext) {
     const features = "chrome,dialog=no,all";
     // See _callWithURIToLoad in browser.js for the structure of window.arguments
     // window.arguments[1]: unused (bug 871161)
@@ -358,18 +394,7 @@ export class TargetRegistry {
     if (window.gBrowser.browsers.length !== 1)
       throw new Error(`Unexpected number of tabs in the new window: ${window.gBrowser.browsers.length}`);
     const browser = window.gBrowser.browsers[0];
-    let target = this._browserToTarget.get(browser);
-    while (!target) {
-      await helper.awaitEvent(this, TargetRegistry.Events.TargetCreated);
-      target = this._browserToTarget.get(browser);
-    }
-    browser.focus();
-    if (browserContext.crossProcessCookie.settings.timezoneId) {
-      if (await target.hasFailedToOverrideTimezone())
-        throw new Error('Failed to override timezone');
-    }
-    didCreateFirstPage = true;
-    return target.id();
+    return {window, browser};
   }
 
   targets() {

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/mcp"
@@ -187,6 +188,40 @@ func (t *BrowserToolset) Close() {
 	if t.executor != nil {
 		t.executor.Close()
 	}
+}
+
+// CloseExtraTabs closes all non-primary tabs and resets the active tab to the
+// first page. The primary tab remains open across turns so the chat agent keeps
+// its context and current page, while temporary multi-page work is cleaned up
+// when the turn is finished.
+func (t *BrowserToolset) CloseExtraTabs() error {
+	if t == nil || t.client == nil {
+		return nil
+	}
+	t.mu.Lock()
+	if len(t.tabs) <= 1 {
+		t.active = 0
+		t.mu.Unlock()
+		return nil
+	}
+	extra := append([]string(nil), t.tabs[1:]...)
+	t.tabs = t.tabs[:1]
+	t.active = 0
+	t.mu.Unlock()
+
+	var failures []string
+	for _, sid := range extra {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_, err := t.client.CallWithContext(ctx, sid, "Page.close", map[string]interface{}{"runBeforeUnload": false})
+		cancel()
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", sid, err))
+		}
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("close extra tabs: %s", strings.Join(failures, "; "))
+	}
+	return nil
 }
 
 // IsBrowserTool reports whether name is a browser tool this toolset handles.

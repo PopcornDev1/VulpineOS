@@ -1,6 +1,12 @@
 package agentcore
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+
+	"vulpineos/internal/juggler"
+	"vulpineos/internal/testutil"
+)
 
 func TestBrowserToolsStripSessionIDAndCurate(t *testing.T) {
 	tools := BrowserTools()
@@ -58,5 +64,46 @@ func TestBrowserToolsStripSessionIDAndCurate(t *testing.T) {
 
 	if !IsBrowserTool("vulpine_navigate") || IsBrowserTool("vulpine_new_context") {
 		t.Error("IsBrowserTool allow-list mismatch")
+	}
+}
+
+func TestBrowserToolsetCloseExtraTabsKeepsPrimaryTab(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	ts := NewBrowserToolset(client, "ctx-agent", "session-1")
+	ts.tabs = []string{"session-1", "session-2", "session-3"}
+	ts.active = 2
+
+	if err := ts.CloseExtraTabs(); err != nil {
+		t.Fatalf("CloseExtraTabs failed: %v", err)
+	}
+
+	if len(ts.tabs) != 1 || ts.tabs[0] != "session-1" {
+		t.Fatalf("tabs after cleanup = %#v, want primary session only", ts.tabs)
+	}
+	if ts.active != 0 {
+		t.Fatalf("active tab = %d, want 0", ts.active)
+	}
+
+	calls := transport.CallsByMethod("Page.close")
+	if len(calls) != 2 {
+		t.Fatalf("Page.close calls = %d, want 2", len(calls))
+	}
+	for i, call := range calls {
+		wantSession := []string{"session-2", "session-3"}[i]
+		if call.SessionID != wantSession {
+			t.Fatalf("Page.close call %d session = %q, want %q", i, call.SessionID, wantSession)
+		}
+		var params struct {
+			RunBeforeUnload bool `json:"runBeforeUnload"`
+		}
+		if err := json.Unmarshal(call.Params, &params); err != nil {
+			t.Fatalf("unmarshal close params: %v", err)
+		}
+		if params.RunBeforeUnload {
+			t.Fatal("CloseExtraTabs should skip beforeunload prompts")
+		}
 	}
 }

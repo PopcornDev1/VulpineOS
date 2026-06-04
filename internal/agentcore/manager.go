@@ -208,6 +208,9 @@ func (m *Manager) spawn(agentID, contextID, task string, reusePage bool, cleanup
 			toolset, err = m.acquireToolset(ctx, agentID, contextID)
 			if err == nil {
 				_, err = RunBrowserAgentWithToolset(ctx, toolset, m.cfg, task, ev)
+				if closeErr := toolset.CloseExtraTabs(); closeErr != nil {
+					m.logRuntimeEvent("warn", "native_agent_extra_tabs_close_failed", closeErr.Error(), map[string]string{"agent_id": agentID})
+				}
 			}
 		case contextID != "":
 			_, err = RunBrowserAgentInContext(ctx, m.client, contextID, m.cfg, task, ev)
