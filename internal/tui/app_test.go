@@ -929,6 +929,79 @@ func TestMouseWheelScrollsAgentList(t *testing.T) {
 	}
 }
 
+func TestSelectingAgentFocusesChatComposer(t *testing.T) {
+	db := openTestVault(t)
+	first, err := db.CreateAgent("first-agent", "first task", "{}")
+	if err != nil {
+		t.Fatalf("create first agent: %v", err)
+	}
+	second, err := db.CreateAgent("second-agent", "second task", "{}")
+	if err != nil {
+		t.Fatalf("create second agent: %v", err)
+	}
+	if _, err := db.Conn().Exec(`UPDATE agents SET last_active = ? WHERE id = ?`, time.Now().Unix()+10, first.ID); err != nil {
+		t.Fatalf("set first last_active: %v", err)
+	}
+	if _, err := db.Conn().Exec(`UPDATE agents SET last_active = ? WHERE id = ?`, time.Now().Unix(), second.ID); err != nil {
+		t.Fatalf("set second last_active: %v", err)
+	}
+
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.conversation.SetSize(80, 20)
+	app.focus = FocusAgentList
+	app.inputMode = ""
+	app.conversation.Blur()
+
+	app.agentList.MoveDown()
+	if cmd := app.selectCurrentAgent(); cmd != nil {
+		if msg := cmd(); msg != nil {
+			t.Fatalf("selectCurrentAgent returned unexpected msg: %#v", msg)
+		}
+	}
+
+	if app.focus != FocusConversation || app.inputMode != "chat" {
+		t.Fatalf("focus/inputMode = %d/%q, want conversation/chat", app.focus, app.inputMode)
+	}
+	if !app.conversation.Focused() {
+		t.Fatal("chat composer should be focused after selecting an agent")
+	}
+	view := app.conversation.View()
+	if !strings.Contains(view, "Type a message...") {
+		t.Fatalf("focused composer should show placeholder, got:\n%s", view)
+	}
+	if strings.Contains(view, "Press Enter to chat") {
+		t.Fatalf("focused composer should not show legacy enter prompt, got:\n%s", view)
+	}
+}
+
+func TestNewAppFocusesExistingAgentChatComposer(t *testing.T) {
+	db := openTestVault(t)
+	agent, err := db.CreateAgent("existing-agent", "existing task", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if _, err := db.Conn().Exec(`UPDATE agents SET status = ? WHERE id = ?`, "completed", agent.ID); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.conversation.SetSize(80, 20)
+
+	if app.focus != FocusConversation || app.inputMode != "chat" {
+		t.Fatalf("focus/inputMode = %d/%q, want conversation/chat", app.focus, app.inputMode)
+	}
+	if !app.conversation.Focused() {
+		t.Fatal("chat composer should be focused on startup with an existing agent")
+	}
+	view := app.conversation.View()
+	if !strings.Contains(view, "Type a message...") {
+		t.Fatalf("focused startup composer should show placeholder, got:\n%s", view)
+	}
+	if strings.Contains(view, "Press Enter to chat") {
+		t.Fatalf("focused startup composer should not show legacy enter prompt, got:\n%s", view)
+	}
+}
+
 func TestUpdatePanelSizesUsesInnerPanelWidthForConversation(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, nil, nil)
 	app.width = 120

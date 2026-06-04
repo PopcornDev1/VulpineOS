@@ -347,6 +347,7 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 				app.focus = FocusConversation
 				app.inputMode = "chat"
 				app.conversation.SetAwake(true)
+				app.conversation.Focus()
 			} else {
 				app.prepareDefaultChatPlaceholder()
 			}
@@ -601,6 +602,7 @@ func (a *App) prepareDefaultChatPlaceholder() {
 	a.agentDetail.Clear()
 	a.focus = FocusConversation
 	a.inputMode = "chat"
+	a.conversation.Focus()
 }
 
 func (a *App) createDefaultAgent() tea.Cmd {
@@ -2867,6 +2869,9 @@ func (a *App) selectCurrentAgent() tea.Cmd {
 	a.selectedAgentID = newID
 	a.conversation.SetAgentID(newID)
 	a.agentList.ClearUnread(newID)
+	a.focus = FocusConversation
+	a.inputMode = "chat"
+	a.conversation.Focus()
 
 	if a.control != nil && a.vault == nil {
 		if item, ok := a.agentList.SelectedAgent(); ok {
