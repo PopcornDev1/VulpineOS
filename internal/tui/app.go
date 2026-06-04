@@ -175,6 +175,8 @@ const (
 	remoteAPIKeyPlaceholder = "__vulpine_remote_api_key_set__"
 )
 
+type selectionAutoScrollMsg struct{}
+
 // App is the root Bubbletea model for the 3-column agent workbench.
 type App struct {
 	kernel           *kernel.Kernel
@@ -214,6 +216,8 @@ type App struct {
 	notice                  string
 	noticeTTL               int // number of ticks before notice is cleared
 	quitConfirmArmed        bool
+	selectionAutoScrollDir  int
+	selectionAutoScrollCol  int
 	pendingChatFocusAgentID string
 	liveAgentContexts       map[string]string
 	clipboardWrite          func(string) error
@@ -1491,7 +1495,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, tea.Batch(cmds...)
 			}
 		}
-		if a.handleConversationSelectionMouse(msg) {
+		if handled, cmd := a.handleConversationSelectionMouse(msg); handled {
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 			return a, tea.Batch(cmds...)
 		}
 		// Forward mouse events (e.g. wheel scroll) to the conversation.
@@ -1509,6 +1516,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+
+	case selectionAutoScrollMsg:
+		if a.selectionAutoScrollDir == 0 || !a.conversation.SelectionDragging() {
+			return a, tea.Batch(cmds...)
+		}
+		a.extendConversationSelectionAtEdge(a.selectionAutoScrollDir, a.selectionAutoScrollCol)
+		return a, selectionAutoScrollTick()
 
 	case conversation.InputPulseTickMsg:
 		var cmd tea.Cmd
@@ -2373,44 +2387,108 @@ func (a App) conversationContentRect() (int, int, int, int) {
 	return x, y, panelContentWidth(widths.center), bodyHeight - 2
 }
 
-func (a *App) handleConversationSelectionMouse(msg tea.MouseMsg) bool {
-	if a.commandPalette.Active() || a.inputMode == "new-agent-name" || a.inputMode == "new-agent-desc" {
+func selectionAutoScrollTick() tea.Cmd {
+	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
+		return selectionAutoScrollMsg{}
+	})
+}
+
+func (a *App) stopConversationSelectionAutoScroll() {
+	a.selectionAutoScrollDir = 0
+	a.selectionAutoScrollCol = 0
+}
+
+func (a *App) startConversationSelectionAutoScroll(dir, col int) tea.Cmd {
+	if dir == 0 {
+		a.stopConversationSelectionAutoScroll()
+		return nil
+	}
+	wasStopped := a.selectionAutoScrollDir == 0
+	a.selectionAutoScrollDir = dir
+	a.selectionAutoScrollCol = col
+	a.extendConversationSelectionAtEdge(dir, col)
+	if wasStopped {
+		return selectionAutoScrollTick()
+	}
+	return nil
+}
+
+func (a *App) extendConversationSelectionAtEdge(dir, col int) bool {
+	if dir == 0 {
 		return false
+	}
+	a.conversation.ScrollBy(dir)
+	first, last, ok := a.conversation.VisibleMessageRowBounds()
+	if !ok {
+		return false
+	}
+	row := first
+	if dir > 0 {
+		row = last
+	}
+	return a.conversation.ExtendSelectionAtViewCell(row, col)
+}
+
+func (a *App) handleConversationSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
+	if a.commandPalette.Active() || a.inputMode == "new-agent-name" || a.inputMode == "new-agent-desc" {
+		return false, nil
 	}
 	rx, ry, rw, rh := a.conversationContentRect()
 	if rw <= 0 || rh <= 0 {
-		return false
+		return false, nil
 	}
 	inside := msg.X >= rx && msg.X < rx+rw && msg.Y >= ry && msg.Y < ry+rh
+	verticalInside := msg.Y >= ry && msg.Y < ry+rh
 	switch msg.Action {
 	case tea.MouseActionPress:
 		if msg.Button != tea.MouseButtonLeft || !inside {
-			return false
+			return false, nil
 		}
-		if !a.conversation.BeginSelectionAtViewRow(msg.Y - ry) {
-			return false
+		a.stopConversationSelectionAutoScroll()
+		if msg.Shift && a.conversation.HasSelection() {
+			if !a.conversation.ExtendSelectionAtViewCell(msg.Y-ry, msg.X-rx) {
+				return false, nil
+			}
+			a.quitConfirmArmed = false
+			return true, nil
+		}
+		if !a.conversation.BeginSelectionAtViewCell(msg.Y-ry, msg.X-rx) {
+			return false, nil
 		}
 		a.quitConfirmArmed = false
-		return true
+		return true, nil
 	case tea.MouseActionMotion:
 		if msg.Button != tea.MouseButtonLeft || !a.conversation.SelectionDragging() {
-			return false
+			return false, nil
 		}
-		if inside {
-			a.conversation.ExtendSelectionAtViewRow(msg.Y - ry)
+		if verticalInside {
+			a.stopConversationSelectionAutoScroll()
+			a.conversation.ExtendSelectionAtViewCell(msg.Y-ry, msg.X-rx)
+			return true, nil
 		}
-		return true
+		if msg.Y < ry {
+			return true, a.startConversationSelectionAutoScroll(-1, msg.X-rx)
+		}
+		if msg.Y >= ry+rh {
+			return true, a.startConversationSelectionAutoScroll(1, msg.X-rx)
+		}
+		return true, nil
 	case tea.MouseActionRelease:
 		if !a.conversation.SelectionDragging() {
-			return false
+			return false, nil
 		}
-		if inside {
-			a.conversation.ExtendSelectionAtViewRow(msg.Y - ry)
+		a.stopConversationSelectionAutoScroll()
+		if verticalInside && a.conversation.HasSelection() {
+			a.conversation.ExtendSelectionAtViewCell(msg.Y-ry, msg.X-rx)
+		} else if msg.Y < ry && a.conversation.HasSelection() {
+			a.extendConversationSelectionAtEdge(-1, msg.X-rx)
+		} else if msg.Y >= ry+rh && a.conversation.HasSelection() {
+			a.extendConversationSelectionAtEdge(1, msg.X-rx)
 		}
 		a.conversation.EndSelection()
-		return true
+		return true, nil
 	default:
-		return false
+		return false, nil
 	}
 }
 

@@ -127,6 +127,11 @@ type visibleMessageWindow struct {
 	emptyLines   int
 }
 
+type selectionPoint struct {
+	line int
+	col  int
+}
+
 // Model holds the conversation panel state.
 type Model struct {
 	entries         []Entry
@@ -151,8 +156,8 @@ type Model struct {
 	notice          string // transient message rendered just under the chatbox
 	selecting       bool
 	selectionActive bool
-	selectionStart  int
-	selectionEnd    int
+	selectionStart  selectionPoint
+	selectionEnd    selectionPoint
 }
 
 // SetAgentName sets the display name for the agent.
@@ -496,6 +501,31 @@ func (m *Model) ForceScrollToBottom() {
 	m.scrollToBottom()
 }
 
+// ScrollBy moves the message viewport by rendered lines.
+func (m *Model) ScrollBy(delta int) {
+	if delta == 0 {
+		return
+	}
+	m.scroll += delta
+	if delta < 0 {
+		m.autoScroll = false
+	}
+	total := len(m.renderLines())
+	maxScroll := total - m.visibleLines()
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.scroll >= maxScroll {
+		m.scroll = maxScroll
+		if delta > 0 {
+			m.autoScroll = true
+		}
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
+}
+
 func (m Model) contentWidth() int {
 	maxWidth := m.width - 8
 	if maxWidth < 1 {
@@ -504,24 +534,25 @@ func (m Model) contentWidth() int {
 	return maxWidth
 }
 
-// BeginSelectionAtViewRow starts a line selection from a row in the rendered
-// conversation view. The row is relative to the conversation content, not the
-// outer workbench.
-func (m *Model) BeginSelectionAtViewRow(row int) bool {
+// BeginSelectionAtViewCell records the start of a possible drag selection from
+// a cell in the rendered conversation view. The row/column are relative to the
+// conversation content, not the outer workbench.
+func (m *Model) BeginSelectionAtViewCell(row, col int) bool {
 	idx, ok := m.renderedLineIndexForViewRow(row)
 	if !ok {
 		m.ClearSelection()
 		return false
 	}
+	col = m.clampedColumnForRenderedLine(idx, col)
 	m.selecting = true
-	m.selectionActive = true
-	m.selectionStart = idx
-	m.selectionEnd = idx
+	m.selectionActive = false
+	m.selectionStart = selectionPoint{line: idx, col: col}
+	m.selectionEnd = m.selectionStart
 	return true
 }
 
-// ExtendSelectionAtViewRow extends the active line selection to a rendered row.
-func (m *Model) ExtendSelectionAtViewRow(row int) bool {
+// ExtendSelectionAtViewCell extends the active selection to a rendered cell.
+func (m *Model) ExtendSelectionAtViewCell(row, col int) bool {
 	if !m.selecting && !m.selectionActive {
 		return false
 	}
@@ -529,12 +560,18 @@ func (m *Model) ExtendSelectionAtViewRow(row int) bool {
 	if !ok {
 		return false
 	}
-	m.selectionEnd = idx
+	col = m.clampedColumnForRenderedLine(idx, col)
+	m.selectionEnd = selectionPoint{line: idx, col: col}
+	m.selectionActive = !m.selectionStart.equal(m.selectionEnd)
 	return true
 }
 
 // EndSelection stops drag selection while keeping the selected range visible.
 func (m *Model) EndSelection() {
+	if !m.selectionActive {
+		m.ClearSelection()
+		return
+	}
 	m.selecting = false
 }
 
@@ -545,61 +582,94 @@ func (m Model) SelectionDragging() bool {
 
 // HasSelection reports whether there is a selected conversation range.
 func (m Model) HasSelection() bool {
-	return m.selectionActive
+	return m.selectionActive && !m.selectionStart.equal(m.selectionEnd)
 }
 
 // ClearSelection clears the selected conversation range.
 func (m *Model) ClearSelection() {
 	m.selecting = false
 	m.selectionActive = false
-	m.selectionStart = 0
-	m.selectionEnd = 0
+	m.selectionStart = selectionPoint{}
+	m.selectionEnd = selectionPoint{}
 }
 
-// SelectedText returns the selected visible conversation rows without ANSI
+// SelectedText returns the selected visible conversation cells without ANSI
 // styling, suitable for clipboard copy.
 func (m Model) SelectedText() string {
-	if !m.selectionActive {
+	if !m.HasSelection() {
 		return ""
 	}
 	rendered := m.getDisplayLines()
 	if len(rendered) == 0 {
 		return ""
 	}
-	start, end := m.normalizedSelectionRange()
-	if start >= len(rendered) {
+	start, end, ok := m.normalizedSelectionRange()
+	if !ok || start.line >= len(rendered) {
 		return ""
 	}
-	if end >= len(rendered) {
-		end = len(rendered) - 1
+	if end.line >= len(rendered) {
+		end.line = len(rendered) - 1
 	}
-	lines := make([]string, 0, end-start+1)
-	for i := start; i <= end; i++ {
-		lines = append(lines, strings.TrimRight(stripANSI(rendered[i]), " "))
+	lines := make([]string, 0, end.line-start.line+1)
+	for i := start.line; i <= end.line; i++ {
+		line := stripANSI(rendered[i])
+		width := ansiVisualWidth(line)
+		from, to := 0, width
+		if i == start.line {
+			from = start.col
+		}
+		if i == end.line {
+			to = end.col
+		}
+		if from < 0 {
+			from = 0
+		}
+		if to > width {
+			to = width
+		}
+		if from > to {
+			from = to
+		}
+		lines = append(lines, sliceCells(line, from, to))
 	}
 	return strings.Trim(strings.Join(lines, "\n"), "\n")
 }
 
-func (m Model) normalizedSelectionRange() (int, int) {
+func (m Model) normalizedSelectionRange() (selectionPoint, selectionPoint, bool) {
 	start, end := m.selectionStart, m.selectionEnd
-	if start > end {
+	if !m.HasSelection() {
+		return selectionPoint{}, selectionPoint{}, false
+	}
+	if compareSelectionPoint(start, end) > 0 {
 		start, end = end, start
 	}
-	if start < 0 {
-		start = 0
+	if start.line < 0 {
+		start.line = 0
 	}
-	if end < 0 {
-		end = 0
+	if end.line < 0 {
+		end.line = 0
 	}
-	return start, end
+	return start, end, true
 }
 
-func (m Model) isSelectedRenderedLine(idx int) bool {
-	if !m.selectionActive {
-		return false
+func (p selectionPoint) equal(other selectionPoint) bool {
+	return p.line == other.line && p.col == other.col
+}
+
+func compareSelectionPoint(a, b selectionPoint) int {
+	if a.line < b.line {
+		return -1
 	}
-	start, end := m.normalizedSelectionRange()
-	return idx >= start && idx <= end
+	if a.line > b.line {
+		return 1
+	}
+	if a.col < b.col {
+		return -1
+	}
+	if a.col > b.col {
+		return 1
+	}
+	return 0
 }
 
 func (m Model) renderedLineIndexForViewRow(row int) (int, bool) {
@@ -613,6 +683,56 @@ func (m Model) renderedLineIndexForViewRow(row int) (int, bool) {
 		return 0, false
 	}
 	return window.start + (row - messageStart), true
+}
+
+// VisibleMessageRowBounds returns the first and last content rows containing
+// rendered messages in the current view.
+func (m Model) VisibleMessageRowBounds() (int, int, bool) {
+	window := m.visibleMessageWindow(0)
+	if len(window.visibleLines) == 0 {
+		return 0, 0, false
+	}
+	first := 1 + window.emptyLines
+	return first, first + len(window.visibleLines) - 1, true
+}
+
+func (m Model) clampedColumnForRenderedLine(idx, col int) int {
+	if col < 0 {
+		return 0
+	}
+	rendered := m.getDisplayLines()
+	if idx < 0 || idx >= len(rendered) {
+		return col
+	}
+	width := ansiVisualWidth(stripANSI(rendered[idx]))
+	if col > width {
+		return width
+	}
+	return col
+}
+
+func (m Model) selectedCellRangeForLine(idx, width int) (int, int, bool) {
+	start, end, ok := m.normalizedSelectionRange()
+	if !ok || idx < start.line || idx > end.line {
+		return 0, 0, false
+	}
+	from, to := 0, width
+	if idx == start.line {
+		from = start.col
+	}
+	if idx == end.line {
+		to = end.col
+	}
+	if from < 0 {
+		from = 0
+	}
+	if to > width {
+		to = width
+	}
+	if from >= to {
+		return 0, 0, false
+	}
+	return from, to, true
 }
 
 func (m Model) visibleMessageWindow(extraBottomLines int) visibleMessageWindow {
@@ -1272,16 +1392,17 @@ func fitCellLine(line string, width int) string {
 	return lines[0]
 }
 
-func (m Model) selectedLine(line string) string {
+func (m Model) selectedLine(idx int, line string) string {
 	plain := stripANSI(line)
-	width := m.width
-	if width < 1 {
-		width = ansiVisualWidth(plain)
+	width := ansiVisualWidth(plain)
+	from, to, ok := m.selectedCellRangeForLine(idx, width)
+	if !ok {
+		return line
 	}
-	if padding := width - ansiVisualWidth(plain); padding > 0 {
-		plain += strings.Repeat(" ", padding)
-	}
-	return selectedLineStyle.Render(plain)
+	before := sliceCells(plain, 0, from)
+	selected := sliceCells(plain, from, to)
+	after := sliceCells(plain, to, width)
+	return before + selectedLineStyle.Render(selected) + after
 }
 
 func (m Model) View() string {
@@ -1338,9 +1459,7 @@ func (m Model) view(palette string) string {
 
 	// 3. Messages
 	for i, line := range window.visibleLines {
-		if m.isSelectedRenderedLine(window.start + i) {
-			line = m.selectedLine(line)
-		}
+		line = m.selectedLine(window.start+i, line)
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
@@ -1729,6 +1848,32 @@ func stripANSI(s string) string {
 			continue
 		}
 		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func sliceCells(s string, start, end int) string {
+	if end <= start {
+		return ""
+	}
+	if start < 0 {
+		start = 0
+	}
+	var b strings.Builder
+	width := 0
+	for _, r := range s {
+		runeWidth := runewidth.RuneWidth(r)
+		if runeWidth < 1 {
+			runeWidth = 1
+		}
+		nextWidth := width + runeWidth
+		if nextWidth > start && width < end {
+			b.WriteRune(r)
+		}
+		if width >= end {
+			break
+		}
+		width = nextWidth
 	}
 	return b.String()
 }

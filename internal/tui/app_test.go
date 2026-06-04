@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1006,13 +1008,20 @@ func TestMouseSelectsChatRowsAndCtrlCCopiesSelection(t *testing.T) {
 	if startRow < 0 || endRow < 0 {
 		t.Fatalf("could not locate chat rows:\n%s", view)
 	}
+	startLine := stripANSITest(lines[startRow])
+	endLine := stripANSITest(lines[endRow])
+	startCol := cellIndexOfTest(startLine, "copy")
+	endCol := cellIndexOfTest(endLine, "one") + lipgloss.Width("one")
+	if startCol < 0 || endCol < lipgloss.Width("one") {
+		t.Fatalf("could not locate selection columns in %q / %q", startLine, endLine)
+	}
 	rx, ry, rw, rh := app.conversationContentRect()
 	if rw <= 0 || rh <= 0 {
 		t.Fatalf("conversation rect = (%d,%d,%d,%d), want usable rect", rx, ry, rw, rh)
 	}
 
 	model, _ := app.Update(tea.MouseMsg{
-		X:      rx + 2,
+		X:      rx + startCol,
 		Y:      ry + startRow,
 		Type:   tea.MouseLeft,
 		Button: tea.MouseButtonLeft,
@@ -1020,7 +1029,7 @@ func TestMouseSelectsChatRowsAndCtrlCCopiesSelection(t *testing.T) {
 	})
 	app = model.(App)
 	model, _ = app.Update(tea.MouseMsg{
-		X:      rx + 2,
+		X:      rx + endCol,
 		Y:      ry + endRow,
 		Type:   tea.MouseMotion,
 		Button: tea.MouseButtonLeft,
@@ -1028,7 +1037,7 @@ func TestMouseSelectsChatRowsAndCtrlCCopiesSelection(t *testing.T) {
 	})
 	app = model.(App)
 	model, _ = app.Update(tea.MouseMsg{
-		X:      rx + 2,
+		X:      rx + endCol,
 		Y:      ry + endRow,
 		Type:   tea.MouseLeft,
 		Button: tea.MouseButtonLeft,
@@ -1061,6 +1070,173 @@ func TestMouseSelectsChatRowsAndCtrlCCopiesSelection(t *testing.T) {
 	}
 	if app.conversation.HasSelection() {
 		t.Fatal("selection should clear after ctrl+c copy")
+	}
+}
+
+func TestMouseClickChatRowDoesNotSelectOrCopy(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 24
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.selectedAgentID = "agent-1"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Agent 1")
+	app.conversation.SetAwake(true)
+	app.conversation.AddEntry("assistant", "click does not select")
+	app.updatePanelSizes()
+
+	copied := ""
+	app.clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	view := app.conversation.View()
+	lines := strings.Split(view, "\n")
+	row := -1
+	col := -1
+	for i, line := range lines {
+		if strings.Contains(line, "click does not select") {
+			row = i
+			col = cellIndexOfTest(stripANSITest(line), "click")
+			break
+		}
+	}
+	if row < 0 || col < 0 {
+		t.Fatalf("could not locate chat row:\n%s", view)
+	}
+	rx, ry, _, _ := app.conversationContentRect()
+
+	model, _ := app.Update(tea.MouseMsg{
+		X:      rx + col,
+		Y:      ry + row,
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{
+		X:      rx + col + 6,
+		Y:      ry + row,
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionRelease,
+	})
+	app = model.(App)
+
+	if app.conversation.HasSelection() {
+		t.Fatal("plain click should not create chat selection")
+	}
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("first ctrl+c after plain click should not quit")
+		}
+	}
+	if copied != "" {
+		t.Fatalf("copied = %q, want no clipboard write after plain click", copied)
+	}
+	if !strings.Contains(app.notice, "Press Ctrl+C again") {
+		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
+	}
+}
+
+func TestShiftClickExtendsExistingChatSelection(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 24
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.selectedAgentID = "agent-1"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Agent 1")
+	app.conversation.SetAwake(true)
+	app.conversation.AddEntry("assistant", "start anchor")
+	app.conversation.AddEntry("assistant", "middle selected")
+	app.conversation.AddEntry("assistant", "finish target")
+	app.updatePanelSizes()
+
+	copied := ""
+	app.clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	view := app.conversation.View()
+	lines := strings.Split(view, "\n")
+	startRow, startCol := findChatCell(t, lines, "start")
+	middleRow, middleCol := findChatCell(t, lines, "middle")
+	finishRow, finishCol := findChatCell(t, lines, "finish")
+	rx, ry, _, _ := app.conversationContentRect()
+
+	model, _ := app.Update(tea.MouseMsg{X: rx + startCol, Y: ry + startRow, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + middleCol + lipgloss.Width("middle"), Y: ry + middleRow, Type: tea.MouseMotion, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + middleCol + lipgloss.Width("middle"), Y: ry + middleRow, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	app = model.(App)
+
+	if !app.conversation.HasSelection() {
+		t.Fatal("initial drag should create a chat selection")
+	}
+
+	model, _ = app.Update(tea.MouseMsg{
+		X:      rx + finishCol + lipgloss.Width("finish"),
+		Y:      ry + finishRow,
+		Shift:  true,
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	app = model.(App)
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("ctrl+c after shift-click selection returned no copy command")
+	}
+	_ = cmd()
+	if !strings.Contains(copied, "start anchor") || !strings.Contains(copied, "finish") {
+		t.Fatalf("copied = %q, want selection extended from anchor through shift-click target", copied)
+	}
+}
+
+func TestDraggingSelectionAboveConversationAutoscrollsUp(t *testing.T) {
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 16
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.selectedAgentID = "agent-1"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Agent 1")
+	app.conversation.SetAwake(true)
+	for i := 0; i < 40; i++ {
+		app.conversation.AddEntry("assistant", fmt.Sprintf("line %02d", i))
+	}
+	app.updatePanelSizes()
+
+	beforeLines := strings.Split(app.conversation.View(), "\n")
+	firstBefore := firstVisibleChatLineNumber(t, beforeLines)
+	lastRow, lastCol := findChatCell(t, beforeLines, "line 39")
+	rx, ry, _, _ := app.conversationContentRect()
+
+	model, _ := app.Update(tea.MouseMsg{X: rx + lastCol, Y: ry + lastRow, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + lastCol, Y: ry - 1, Type: tea.MouseMotion, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	app = model.(App)
+
+	wantOlder := fmt.Sprintf("line %02d", firstBefore-1)
+	if firstBefore <= 0 {
+		t.Fatalf("first visible line before scroll = %d, want scrollable view", firstBefore)
+	}
+	if got := app.conversation.SelectedText(); !strings.Contains(got, wantOlder) {
+		t.Fatalf("selected text after edge drag = %q, want autoscrolled selection to include %q", got, wantOlder)
 	}
 }
 
@@ -3171,4 +3347,76 @@ func TestWaitForEventReturnsAfterStop(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("waitForEvent did not return after TUI stop")
 	}
+}
+
+func stripANSITest(s string) string {
+	var b strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if inEscape {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func cellIndexOfTest(s, sub string) int {
+	idx := strings.Index(s, sub)
+	if idx < 0 {
+		return -1
+	}
+	return lipgloss.Width(s[:idx])
+}
+
+func findChatCell(t *testing.T, lines []string, needle string) (int, int) {
+	t.Helper()
+	for i, line := range lines {
+		plain := stripANSITest(line)
+		if !strings.Contains(plain, needle) {
+			continue
+		}
+		col := cellIndexOfTest(plain, needle)
+		if col >= 0 {
+			return i, col
+		}
+	}
+	t.Fatalf("could not locate %q in view:\n%s", needle, strings.Join(lines, "\n"))
+	return 0, 0
+}
+
+func firstVisibleChatLineNumber(t *testing.T, lines []string) int {
+	t.Helper()
+	minLine := int(^uint(0) >> 1)
+	found := false
+	for _, line := range lines {
+		plain := stripANSITest(line)
+		idx := strings.Index(plain, "line ")
+		if idx < 0 {
+			continue
+		}
+		tail := plain[idx+len("line "):]
+		if len(tail) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(tail[:2])
+		if err != nil {
+			continue
+		}
+		if n < minLine {
+			minLine = n
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("could not locate a visible numbered chat line in:\n%s", strings.Join(lines, "\n"))
+	}
+	return minLine
 }

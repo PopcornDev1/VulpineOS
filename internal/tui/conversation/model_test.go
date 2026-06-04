@@ -404,10 +404,18 @@ func TestVisibleRowSelectionCopiesPlainRenderedText(t *testing.T) {
 		t.Fatalf("could not locate selectable rows:\n%s", view)
 	}
 
-	if !m.BeginSelectionAtViewRow(start) {
+	startLine := stripANSI(lines[start])
+	endLine := stripANSI(lines[end])
+	startCol := cellIndexOf(startLine, "alpha")
+	endCol := cellIndexOf(endLine, "line") + ansiVisualWidth("line")
+	if startCol < 0 || endCol < ansiVisualWidth("line") {
+		t.Fatalf("could not locate selection columns in %q / %q", startLine, endLine)
+	}
+
+	if !m.BeginSelectionAtViewCell(start, startCol) {
 		t.Fatalf("begin selection row %d failed:\n%s", start, view)
 	}
-	if !m.ExtendSelectionAtViewRow(end) {
+	if !m.ExtendSelectionAtViewCell(end, endCol) {
 		t.Fatalf("extend selection row %d failed:\n%s", end, view)
 	}
 
@@ -424,6 +432,84 @@ func TestVisibleRowSelectionCopiesPlainRenderedText(t *testing.T) {
 	selectedView := m.View()
 	if selectedView == view {
 		t.Fatalf("view did not change after selection:\n%s", selectedView)
+	}
+}
+
+func TestVisibleCellSelectionCopiesPartialLineOnly(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	m := New()
+	m.SetSize(80, 16)
+	m.SetAgentID("agent-1")
+	m.SetAwake(true)
+	m.AddEntry("assistant", "prefix target suffix")
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	row := -1
+	for i, line := range lines {
+		if strings.Contains(line, "prefix target suffix") {
+			row = i
+			break
+		}
+	}
+	if row < 0 {
+		t.Fatalf("could not locate selectable row:\n%s", view)
+	}
+	plain := stripANSI(lines[row])
+	startCol := cellIndexOf(plain, "target")
+	endCol := startCol + ansiVisualWidth("target")
+	if startCol < 0 {
+		t.Fatalf("could not locate target in %q", plain)
+	}
+
+	if !m.BeginSelectionAtViewCell(row, startCol) {
+		t.Fatalf("begin selection row %d failed:\n%s", row, view)
+	}
+	if !m.ExtendSelectionAtViewCell(row, endCol) {
+		t.Fatalf("extend selection row %d failed:\n%s", row, view)
+	}
+
+	if got := m.SelectedText(); got != "target" {
+		t.Fatalf("selected text = %q, want target", got)
+	}
+	selectedView := m.View()
+	if strings.Contains(selectedView, selectedLineStyle.Render(plain)) {
+		t.Fatalf("selection highlighted the full line, want partial selection:\n%s", selectedView)
+	}
+}
+
+func TestVisibleClickDoesNotCreateSelection(t *testing.T) {
+	m := New()
+	m.SetSize(80, 16)
+	m.SetAgentID("agent-1")
+	m.SetAwake(true)
+	m.AddEntry("assistant", "click only")
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	row := -1
+	for i, line := range lines {
+		if strings.Contains(line, "click only") {
+			row = i
+			break
+		}
+	}
+	if row < 0 {
+		t.Fatalf("could not locate selectable row:\n%s", view)
+	}
+
+	if !m.BeginSelectionAtViewCell(row, 2) {
+		t.Fatalf("begin selection row %d failed:\n%s", row, view)
+	}
+	m.EndSelection()
+
+	if m.HasSelection() {
+		t.Fatal("click without drag should not leave a selection")
+	}
+	if got := m.SelectedText(); got != "" {
+		t.Fatalf("selected text = %q, want empty after click without drag", got)
 	}
 }
 
@@ -601,4 +687,12 @@ func hasUnclosedSGR(line string) bool {
 		i = end
 	}
 	return active
+}
+
+func cellIndexOf(s, sub string) int {
+	idx := strings.Index(s, sub)
+	if idx < 0 {
+		return -1
+	}
+	return ansiVisualWidth(s[:idx])
 }
