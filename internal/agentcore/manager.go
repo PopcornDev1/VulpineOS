@@ -205,6 +205,12 @@ func (m *Manager) spawn(agentID, contextID, task string, reusePage bool, cleanup
 
 	ev := &managerEvents{m: m, agentID: agentID}
 	m.emitStatus(agentID, contextID, "running", task)
+	m.logRuntimeEvent("info", "native_agent_started", "native agent started", map[string]string{
+		"agent_id":   agentID,
+		"context_id": contextID,
+		"reuse_page": fmt.Sprintf("%t", reusePage),
+		"task_bytes": fmt.Sprintf("%d", len(task)),
+	})
 
 	// Snapshot config so the goroutine is not affected by a concurrent
 	// Reconfigure call.
@@ -248,6 +254,8 @@ func (m *Manager) spawn(agentID, contextID, task string, reusePage bool, cleanup
 				m.emitConversation(agentID, "system", "agent error: "+err.Error())
 				m.logRuntimeEvent("error", "native_agent_failed", err.Error(), map[string]string{"agent_id": agentID})
 			}
+		} else {
+			m.logRuntimeEvent("info", "native_agent_completed", "native agent completed", map[string]string{"agent_id": agentID})
 		}
 		m.emitStatus(agentID, contextID, final, task)
 		m.finish(agentID, ag)
@@ -566,13 +574,27 @@ func (e *managerEvents) OnAssistant(text string) {
 }
 func (e *managerEvents) OnToolCall(name, args string) {
 	e.m.emitConversation(e.agentID, "system", "Running tool: "+toolCallSummary(name, args))
+	metadata := map[string]string{"agent_id": e.agentID, "tool": name}
+	if args = traceSnippet(args); args != "" {
+		metadata["args"] = args
+	}
+	e.m.logRuntimeEvent("info", "native_agent_tool_call", "tool call: "+name, metadata)
 }
 func (e *managerEvents) OnToolResult(name, result string, isErr bool) {
 	if isErr {
 		e.m.emitConversation(e.agentID, "system", fmt.Sprintf("Tool failed: %s — %s", name, traceSnippet(result)))
+		e.m.logRuntimeEvent("warn", "native_agent_tool_failed", "tool failed: "+name, map[string]string{
+			"agent_id": e.agentID,
+			"tool":     name,
+			"result":   traceSnippet(result),
+		})
 		return
 	}
 	e.m.emitConversation(e.agentID, "system", fmt.Sprintf("Tool completed: %s", name))
+	e.m.logRuntimeEvent("info", "native_agent_tool_completed", "tool completed: "+name, map[string]string{
+		"agent_id": e.agentID,
+		"tool":     name,
+	})
 }
 func (e *managerEvents) OnStatus(status string) {}
 func (e *managerEvents) OnUsage(turn Usage)     { e.m.addTokens(e.agentID, turn) }

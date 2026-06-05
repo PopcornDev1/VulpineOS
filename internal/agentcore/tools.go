@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -49,9 +51,9 @@ var browserToolAllowList = map[string]bool{
 // schema the model sees.
 const sessionIDArg = "sessionId"
 
-// BrowserTools returns the curated browser tools as OpenAI function schemas,
-// derived from the canonical MCP definitions (mcp.ToolDefinitions) with the
-// sessionId argument removed. Output is deterministically ordered.
+// BrowserTools returns the curated agent tools as OpenAI function schemas:
+// browser tools derived from the canonical MCP definitions plus local workspace
+// file tools. Output is deterministically ordered.
 func BrowserTools() []ToolDef {
 	defs := mcp.ToolDefinitions()
 	out := make([]ToolDef, 0, len(defs))
@@ -94,6 +96,7 @@ func BrowserTools() []ToolDef {
 		})
 	}
 	out = append(out, tabTools()...)
+	out = append(out, fileTools()...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Function.Name < out[j].Function.Name })
 	return out
 }
@@ -138,7 +141,60 @@ const (
 	toolSwitchTab = "vulpine_switch_tab"
 	toolCloseTab  = "vulpine_close_tab"
 	toolListTabs  = "vulpine_list_tabs"
+
+	toolListFiles = "vulpine_list_files"
+	toolReadFile  = "vulpine_read_file"
+	toolWriteFile = "vulpine_write_file"
 )
+
+func fileTools() []ToolDef {
+	strProp := func(desc string) map[string]interface{} {
+		return map[string]interface{}{"type": "string", "description": desc}
+	}
+	boolProp := func(desc string) map[string]interface{} {
+		return map[string]interface{}{"type": "boolean", "description": desc}
+	}
+	intProp := func(desc string) map[string]interface{} {
+		return map[string]interface{}{"type": "integer", "description": desc}
+	}
+	return []ToolDef{
+		{Type: "function", Function: FunctionDef{
+			Name:        toolListFiles,
+			Description: "List files under the local VulpineOS file workspace. Paths must be relative to the workspace root; absolute paths and .. traversal are rejected.",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+				"path":        strProp("Directory to list, relative to the workspace root. Defaults to ."),
+				"recursive":   boolProp("Whether to recursively list descendants. Defaults to false."),
+				"max_entries": intProp("Maximum entries to return. Defaults to 200, capped at 1000."),
+			}},
+		}},
+		{Type: "function", Function: FunctionDef{
+			Name:        toolReadFile,
+			Description: "Read a UTF-8 text file from the local VulpineOS file workspace. Paths must be relative to the workspace root; absolute paths and .. traversal are rejected.",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+				"path":      strProp("File path to read, relative to the workspace root."),
+				"max_bytes": intProp("Maximum bytes to return. Defaults to 100000, capped at 1000000."),
+			}, "required": []string{"path"}},
+		}},
+		{Type: "function", Function: FunctionDef{
+			Name:        toolWriteFile,
+			Description: "Create or update a UTF-8 text file in the local VulpineOS file workspace. Parent directories are created as needed. Paths must be relative to the workspace root; absolute paths and .. traversal are rejected.",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+				"path":    strProp("File path to write, relative to the workspace root."),
+				"content": strProp("Complete UTF-8 text content to write, or text to append when append is true."),
+				"append":  boolProp("Append content instead of replacing the file. Defaults to false."),
+			}, "required": []string{"path", "content"}},
+		}},
+	}
+}
+
+func isFileTool(name string) bool {
+	switch name {
+	case toolListFiles, toolReadFile, toolWriteFile:
+		return true
+	default:
+		return false
+	}
+}
 
 // BrowserToolset dispatches model tool calls to the live browser via the MCP
 // handlers. It holds a persistent mcp.ToolExecutor so page execution contexts
@@ -151,6 +207,7 @@ type BrowserToolset struct {
 	client    *juggler.Client
 	contextID string // the agent's context; "" disables tab management (single page)
 	loopDet   *mcp.LoopDetector
+	workspace string
 
 	mu     sync.Mutex
 	tabs   []string // open page session ids (tabs) in this context
@@ -168,6 +225,7 @@ func NewBrowserToolset(client *juggler.Client, contextID, sessionID string) *Bro
 		client:    client,
 		contextID: contextID,
 		loopDet:   mcp.NewLoopDetector(3),
+		workspace: agentWorkspaceRoot(),
 		tabs:      []string{sessionID},
 		active:    0,
 	}
@@ -236,6 +294,10 @@ func IsBrowserTool(name string) bool {
 // error, so the loop can feed it back to the model; err is non-nil only for
 // dispatch-level failures (unknown tool, malformed args).
 func (t *BrowserToolset) Dispatch(ctx context.Context, name string, rawArgs string) (result string, isErr bool, err error) {
+	if isFileTool(name) {
+		return t.dispatchFileTool(name, rawArgs)
+	}
+
 	// Tab-management tools are handled in-toolset (one context, many tabs).
 	switch name {
 	case toolOpenTab:
@@ -291,6 +353,272 @@ func (t *BrowserToolset) Dispatch(ctx context.Context, name string, rawArgs stri
 		t.loopDet.Reset(session)
 	}
 	return text, isErr, nil
+}
+
+type fileToolArgs struct {
+	Path       string `json:"path"`
+	Content    string `json:"content"`
+	Append     bool   `json:"append"`
+	Recursive  bool   `json:"recursive"`
+	MaxBytes   int    `json:"max_bytes"`
+	MaxEntries int    `json:"max_entries"`
+}
+
+func (t *BrowserToolset) dispatchFileTool(name, rawArgs string) (string, bool, error) {
+	args := fileToolArgs{}
+	trimmed := strings.TrimSpace(rawArgs)
+	if trimmed != "" && trimmed != "null" {
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return "", false, fmt.Errorf("parse arguments for %s: %w", name, err)
+		}
+	}
+	switch name {
+	case toolListFiles:
+		return t.listWorkspaceFiles(args)
+	case toolReadFile:
+		return t.readWorkspaceFile(args)
+	case toolWriteFile:
+		return t.writeWorkspaceFile(args)
+	default:
+		return "", false, fmt.Errorf("unknown file tool: %s", name)
+	}
+}
+
+func agentWorkspaceRoot() string {
+	root := strings.TrimSpace(os.Getenv("VULPINEOS_AGENT_WORKSPACE"))
+	if root == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			root = cwd
+		}
+	}
+	if root == "" {
+		root = "."
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	return root
+}
+
+func (t *BrowserToolset) workspacePath(relPath string, existing bool) (string, string, error) {
+	root := t.workspace
+	if strings.TrimSpace(root) == "" {
+		root = agentWorkspaceRoot()
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", "", err
+	}
+	if resolvedRoot, err := filepath.EvalSymlinks(rootAbs); err == nil {
+		rootAbs = resolvedRoot
+	}
+
+	if strings.TrimSpace(relPath) == "" {
+		relPath = "."
+	}
+	if filepath.IsAbs(relPath) {
+		return "", "", fmt.Errorf("absolute paths are not allowed")
+	}
+	clean := filepath.Clean(relPath)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("path escapes workspace root")
+	}
+	candidate := filepath.Join(rootAbs, clean)
+	checkPath := candidate
+	if !existing {
+		checkPath = filepath.Dir(candidate)
+		resolved, err := existingAncestor(checkPath)
+		if err != nil {
+			return "", "", err
+		}
+		if err := ensurePathWithin(rootAbs, resolved); err != nil {
+			return "", "", err
+		}
+		return candidate, clean, nil
+	}
+	resolved, err := filepath.EvalSymlinks(checkPath)
+	if err != nil {
+		return "", "", err
+	}
+	if err := ensurePathWithin(rootAbs, resolved); err != nil {
+		return "", "", err
+	}
+	return candidate, clean, nil
+}
+
+func existingAncestor(path string) (string, error) {
+	for {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			return resolved, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return path, nil
+		}
+		path = parent
+	}
+}
+
+func ensurePathWithin(root, path string) error {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("path escapes workspace root")
+	}
+	return nil
+}
+
+func (t *BrowserToolset) listWorkspaceFiles(args fileToolArgs) (string, bool, error) {
+	path, rel, err := t.workspacePath(args.Path, true)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	if !info.IsDir() {
+		return fmt.Sprintf("%s is not a directory", rel), true, nil
+	}
+	maxEntries := args.MaxEntries
+	if maxEntries <= 0 {
+		maxEntries = 200
+	}
+	if maxEntries > 1000 {
+		maxEntries = 1000
+	}
+
+	entries := make([]string, 0)
+	if args.Recursive {
+		walkErr := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if p == path {
+				return nil
+			}
+			if len(entries) >= maxEntries {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			item, err := filepath.Rel(path, p)
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				item += "/"
+			}
+			entries = append(entries, item)
+			return nil
+		})
+		if walkErr != nil {
+			return walkErr.Error(), true, nil
+		}
+	} else {
+		dirEntries, err := os.ReadDir(path)
+		if err != nil {
+			return err.Error(), true, nil
+		}
+		for _, entry := range dirEntries {
+			if len(entries) >= maxEntries {
+				break
+			}
+			name := entry.Name()
+			if entry.IsDir() {
+				name += "/"
+			}
+			entries = append(entries, name)
+		}
+	}
+	sort.Strings(entries)
+	if len(entries) == 0 {
+		return "(empty)", false, nil
+	}
+	return strings.Join(entries, "\n"), false, nil
+}
+
+func (t *BrowserToolset) readWorkspaceFile(args fileToolArgs) (string, bool, error) {
+	path, _, err := t.workspacePath(args.Path, true)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	if info.IsDir() {
+		return "path is a directory", true, nil
+	}
+	maxBytes := args.MaxBytes
+	if maxBytes <= 0 {
+		maxBytes = 100000
+	}
+	if maxBytes > 1000000 {
+		maxBytes = 1000000
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	if len(data) > maxBytes {
+		return string(data[:maxBytes]) + fmt.Sprintf("\n[truncated: %d bytes omitted]", len(data)-maxBytes), false, nil
+	}
+	return string(data), false, nil
+}
+
+func (t *BrowserToolset) writeWorkspaceFile(args fileToolArgs) (string, bool, error) {
+	if strings.TrimSpace(args.Path) == "" {
+		return "path is required", true, nil
+	}
+	path, rel, err := t.workspacePath(args.Path, false)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.IsDir() {
+			return "path is a directory", true, nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "refusing to write through a symlink", true, nil
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err.Error(), true, nil
+	}
+	content := []byte(args.Content)
+	if args.Append {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			return err.Error(), true, nil
+		}
+		_, writeErr := f.Write(content)
+		closeErr := f.Close()
+		if writeErr != nil {
+			return writeErr.Error(), true, nil
+		}
+		if closeErr != nil {
+			return closeErr.Error(), true, nil
+		}
+		return fmt.Sprintf("appended %d bytes to %s", len(content), rel), false, nil
+	}
+	if err := os.WriteFile(path, content, 0600); err != nil {
+		return err.Error(), true, nil
+	}
+	return fmt.Sprintf("wrote %d bytes to %s", len(content), rel), false, nil
 }
 
 // openTab opens a new tab (page) in the agent's context, makes it active, and

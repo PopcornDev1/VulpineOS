@@ -707,7 +707,7 @@ func TestStartupLockedChatRequiresSecondCtrlCToQuit(t *testing.T) {
 			t.Fatal("first ctrl+c should not quit locked startup chat")
 		}
 	}
-	if !strings.Contains(app.notice, "Press Ctrl+C again") {
+	if !strings.Contains(app.notice, "Press Ctrl+Shift+C again") {
 		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
 	}
 	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -761,7 +761,7 @@ func TestNewAgentPromptsRequireSecondCtrlCToQuit(t *testing.T) {
 				t.Fatalf("%s first ctrl+c should not quit", mode)
 			}
 		}
-		if !strings.Contains(app.notice, "Press Ctrl+C again") {
+		if !strings.Contains(app.notice, "Press Ctrl+Shift+C again") {
 			t.Fatalf("%s notice = %q, want second-press quit hint", mode, app.notice)
 		}
 
@@ -791,7 +791,7 @@ func TestFocusedChatRequiresSecondCtrlCToQuit(t *testing.T) {
 			t.Fatal("first focused chat ctrl+c should not quit")
 		}
 	}
-	if !strings.Contains(app.notice, "Press Ctrl+C again") {
+	if !strings.Contains(app.notice, "Press Ctrl+Shift+C again") {
 		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
 	}
 	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -841,7 +841,7 @@ func TestSettingsRequiresSecondCtrlCToQuit(t *testing.T) {
 			t.Fatal("settings first ctrl+c should not quit")
 		}
 	}
-	if !strings.Contains(app.notice, "Press Ctrl+C again") {
+	if !strings.Contains(app.notice, "Press Ctrl+Shift+C again") {
 		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
 	}
 	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -1116,7 +1116,7 @@ func TestMouseSelectsChatRowsAndCmdCCopiesSelection(t *testing.T) {
 	}
 }
 
-func TestCtrlCWithChatSelectionConfirmsQuitInsteadOfCopying(t *testing.T) {
+func TestCtrlCWithChatSelectionCopiesSelectedText(t *testing.T) {
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.width = 100
@@ -1154,19 +1154,18 @@ func TestCtrlCWithChatSelectionConfirmsQuitInsteadOfCopying(t *testing.T) {
 
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	app = model.(App)
-	if cmd != nil {
-		if _, ok := cmd().(tea.QuitMsg); ok {
-			t.Fatal("first ctrl+c with selection should not quit")
-		}
+	if cmd == nil {
+		t.Fatal("ctrl+c with selection returned no copy command")
 	}
-	if copied != "" {
-		t.Fatalf("copied = %q, want no clipboard write from ctrl+c", copied)
+	msg := cmd()
+	if notice, ok := msg.(statusNotice); !ok || notice.text != "Copied selected chat text" {
+		t.Fatalf("copy command returned %#v, want selected chat copy notice", msg)
 	}
-	if !strings.Contains(app.notice, "Press Ctrl+C again") {
-		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
+	if copied != "copy this" {
+		t.Fatalf("copied = %q, want selected chat text", copied)
 	}
-	if !app.conversation.HasSelection() {
-		t.Fatal("ctrl+c should not clear chat selection")
+	if app.conversation.HasSelection() {
+		t.Fatal("selection should clear after ctrl+c copy")
 	}
 }
 
@@ -1236,7 +1235,7 @@ func TestMouseClickChatRowDoesNotSelectOrCopy(t *testing.T) {
 	if copied != "" {
 		t.Fatalf("copied = %q, want no clipboard write after plain click", copied)
 	}
-	if !strings.Contains(app.notice, "Press Ctrl+C again") {
+	if !strings.Contains(app.notice, "Press Ctrl+Shift+C again") {
 		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
 	}
 }
@@ -1374,7 +1373,7 @@ func TestPlainClickClearsExistingChatSelection(t *testing.T) {
 	if copied != "" {
 		t.Fatalf("copied = %q, want no clipboard write after plain click clears selection", copied)
 	}
-	if !strings.Contains(app.notice, "Press Ctrl+C again") {
+	if !strings.Contains(app.notice, "Press Ctrl+Shift+C again") {
 		t.Fatalf("notice = %q, want second-press quit hint", app.notice)
 	}
 }

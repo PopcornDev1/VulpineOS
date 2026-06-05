@@ -3,6 +3,8 @@ package agentcore
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +70,80 @@ func TestBrowserToolsStripSessionIDAndCurate(t *testing.T) {
 	if !IsBrowserTool("vulpine_navigate") || IsBrowserTool("vulpine_new_context") {
 		t.Error("IsBrowserTool allow-list mismatch")
 	}
+}
+
+func TestAgentToolsExposeWorkspaceFileTools(t *testing.T) {
+	tools := BrowserTools()
+	byName := map[string]ToolDef{}
+	for _, td := range tools {
+		byName[td.Function.Name] = td
+	}
+	for _, name := range []string{toolListFiles, toolReadFile, toolWriteFile} {
+		if _, ok := byName[name]; !ok {
+			t.Fatalf("%s missing from exposed tools", name)
+		}
+	}
+	write := byName[toolWriteFile]
+	req, _ := write.Function.Parameters["required"].([]string)
+	if !containsString(req, "path") || !containsString(req, "content") {
+		t.Fatalf("%s required = %#v, want path and content", toolWriteFile, req)
+	}
+}
+
+func TestBrowserToolsetWorkspaceFileTools(t *testing.T) {
+	workspace := t.TempDir()
+	ts := &BrowserToolset{workspace: workspace}
+
+	result, isErr, err := ts.Dispatch(context.Background(), toolWriteFile, `{"path":"notes/demo.txt","content":"hello"}`)
+	if err != nil || isErr {
+		t.Fatalf("write result=%q isErr=%v err=%v", result, isErr, err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "notes", "demo.txt"))
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("written content = %q, want hello", data)
+	}
+
+	result, isErr, err = ts.Dispatch(context.Background(), toolReadFile, `{"path":"notes/demo.txt"}`)
+	if err != nil || isErr || result != "hello" {
+		t.Fatalf("read result=%q isErr=%v err=%v, want hello", result, isErr, err)
+	}
+
+	result, isErr, err = ts.Dispatch(context.Background(), toolListFiles, `{"path":"notes"}`)
+	if err != nil || isErr || !strings.Contains(result, "demo.txt") {
+		t.Fatalf("list result=%q isErr=%v err=%v, want demo.txt", result, isErr, err)
+	}
+}
+
+func TestBrowserToolsetWorkspaceFileToolsRejectEscapes(t *testing.T) {
+	ts := &BrowserToolset{workspace: t.TempDir()}
+
+	for _, tc := range []struct {
+		name string
+		args string
+	}{
+		{name: toolReadFile, args: `{"path":"../secret.txt"}`},
+		{name: toolWriteFile, args: `{"path":"/tmp/secret.txt","content":"nope"}`},
+	} {
+		result, isErr, err := ts.Dispatch(context.Background(), tc.name, tc.args)
+		if err != nil {
+			t.Fatalf("%s dispatch error: %v", tc.name, err)
+		}
+		if !isErr {
+			t.Fatalf("%s isErr = false, result=%q", tc.name, result)
+		}
+	}
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBrowserToolsetOpenTabWaitsForTrackerBeforeNavigate(t *testing.T) {

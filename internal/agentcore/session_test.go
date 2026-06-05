@@ -23,3 +23,16 @@ func TestBrowserSystemPromptDoesNotReferenceUnsupportedSnapshotFlag(t *testing.T
 		t.Fatalf("browserSystemPrompt references unsupported vulpine_snapshot -i flag:\n%s", browserSystemPrompt)
 	}
 }
+
+func TestBrowserSystemPromptIncludesFileWorkspaceTools(t *testing.T) {
+	for _, want := range []string{
+		"File Workspace Tools",
+		"vulpine_write_file",
+		"If the operator asks whether you can write files, answer yes",
+		"absolute paths and .. traversal are rejected",
+	} {
+		if !strings.Contains(browserSystemPrompt, want) {
+			t.Fatalf("browserSystemPrompt missing file workspace rule %q:\n%s", want, browserSystemPrompt)
+		}
+	}
+}

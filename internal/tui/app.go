@@ -885,7 +885,7 @@ func (a App) handleCtrlC() (tea.Model, tea.Cmd) {
 	if a.quitConfirmArmed {
 		return a, a.shutdown()
 	}
-	a.notice = "Press Ctrl+C again to quit"
+	a.notice = "Press Ctrl+Shift+C again to quit"
 	a.noticeTTL = 4
 	a.quitConfirmArmed = true
 	return a, nil
@@ -954,6 +954,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.handleCopySelection()
 	}
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" {
+		if strings.TrimSpace(a.conversation.SelectedText()) != "" {
+			return a.handleCopySelection()
+		}
 		return a.handleCtrlC()
 	}
 
@@ -1019,10 +1022,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(cmds...)
 		}
 
-		// Global controls are intentionally minimal: Ctrl+C confirms quit,
-		// Cmd/Meta+C copies selected chat text where the terminal reports it,
-		// Esc returns to the always-active chat composer, and "/" opens the
-		// command palette.
+		// Global controls are intentionally minimal: Ctrl+C copies selected chat
+		// text, otherwise confirms quit. Cmd/Meta+C also copies selected chat text
+		// where the terminal reports it. Esc returns to the always-active chat
+		// composer, and "/" opens the command palette.
 		switch msg.String() {
 		case "ctrl+c":
 			return a.handleCtrlC()
