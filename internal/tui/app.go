@@ -1810,11 +1810,16 @@ func (a App) updateRenameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleCtrlC()
 	case "enter":
 		newName := strings.TrimSpace(a.renameInput.Value())
-		if newName != "" && a.renameAgentID != "" {
-			if err := a.vault.UpdateAgentName(a.renameAgentID, newName); err != nil {
+		renameAgentID := a.renameAgentID
+		if newName != "" && renameAgentID != "" {
+			if err := a.vault.UpdateAgentName(renameAgentID, newName); err != nil {
 				a.notice = "Failed to rename agent: " + err.Error()
 				a.noticeTTL = 3
 			} else {
+				a.agentList.UpdateName(renameAgentID, newName)
+				if renameAgentID == a.selectedAgentID {
+					a.conversation.SetAgentName(newName)
+				}
 				a.notice = "Agent renamed to \"" + newName + "\""
 				a.noticeTTL = 3
 			}
@@ -2496,7 +2501,7 @@ func (a *App) extendConversationSelectionAtEdge(dir, col int) bool {
 }
 
 func (a *App) handleConversationSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
-	if a.commandPalette.Active() || a.inputMode == "new-agent-name" || a.inputMode == "new-agent-desc" {
+	if a.commandPalette.Active() || a.inputMode == "new-agent-name" || a.inputMode == "new-agent-desc" || a.inputMode == "rename" {
 		return false, nil
 	}
 	rx, ry, rw, rh := a.conversationContentRect()
@@ -2641,6 +2646,8 @@ func (a App) View() string {
 		switch a.inputMode {
 		case "new-agent-name", "new-agent-desc":
 			convView = a.newAgentInputView()
+		case "rename":
+			convView = a.renameAgentInputView()
 		default:
 			convView = a.conversationView(centerWidth, bodyHeight)
 		}
@@ -2714,6 +2721,8 @@ func (a App) renderCompactWorkbench() string {
 	switch {
 	case a.inputMode == "new-agent-name" || a.inputMode == "new-agent-desc":
 		content = a.newAgentInputView()
+	case a.inputMode == "rename":
+		content = a.renameAgentInputView()
 	case a.focus == FocusSettings && a.settings.IsActive():
 		a.settings.SetSize(contentWidth, contentHeight)
 		content = a.settings.View()
@@ -2761,6 +2770,12 @@ func (a App) newAgentInputView() string {
 	default:
 		return ""
 	}
+}
+
+func (a App) renameAgentInputView() string {
+	return shared.TitleStyle.Render("RENAME AGENT") + "\n\n" +
+		a.renameInput.View() + "\n\n" +
+		shared.MutedStyle.Render("[Enter] save  [Esc] cancel")
 }
 
 func fitTerminalBlock(output string, width, height int) string {

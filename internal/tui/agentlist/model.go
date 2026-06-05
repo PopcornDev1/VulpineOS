@@ -266,6 +266,16 @@ func (m *Model) UpdateStatus(id, status string) {
 	}
 }
 
+// UpdateName updates an agent's display name by ID.
+func (m *Model) UpdateName(id, name string) {
+	for i := range m.agents {
+		if m.agents[i].ID == id {
+			m.agents[i].Name = name
+			return
+		}
+	}
+}
+
 // MarkUnread increments the unread count for an agent.
 func (m *Model) MarkUnread(id string) {
 	for i := range m.agents {

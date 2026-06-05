@@ -149,6 +149,49 @@ func TestNewAppReconcilesNonTerminalAgentsToPaused(t *testing.T) {
 	}
 }
 
+func TestRenameAgentUpdatesVaultAndVisibleState(t *testing.T) {
+	db := openTestVault(t)
+	agent, err := db.CreateAgent("Old Name", "task", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	t.Cleanup(app.stopForwarders)
+	model, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = model.(App)
+
+	app.dispatchCommand("rename", "")
+	if app.inputMode != "rename" {
+		t.Fatalf("inputMode = %q, want rename", app.inputMode)
+	}
+	if view := app.View(); !strings.Contains(view, "RENAME AGENT") || !strings.Contains(view, "Old Name") {
+		t.Fatalf("rename input not visible after command:\n%s", view)
+	}
+	app.renameInput.SetValue("New Name")
+
+	model, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+
+	updated, err := db.GetAgent(agent.ID)
+	if err != nil {
+		t.Fatalf("get renamed agent: %v", err)
+	}
+	if updated.Name != "New Name" {
+		t.Fatalf("vault agent name = %q, want New Name", updated.Name)
+	}
+	item, ok := app.agentList.Agent(agent.ID)
+	if !ok {
+		t.Fatal("renamed agent missing from agent list")
+	}
+	if item.Name != "New Name" {
+		t.Fatalf("agent list name = %q, want New Name", item.Name)
+	}
+	if view := app.conversation.View(); !strings.Contains(view, "New Name") {
+		t.Fatalf("conversation metadata did not update after rename:\n%s", view)
+	}
+}
+
 func TestBrowserRouteLabelIgnoresStoppedFoxbridge(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, &config.Config{FoxbridgeCDPURL: "ws://127.0.0.1:9222"}, nil)
 	app.SetFoxbridgeRunning(func() bool { return false })
