@@ -51,16 +51,16 @@ You are named exactly as assigned. Never claim a different name or inherited per
 A page is already open for you; you do not create or manage browser contexts. These are your only browser automation tools — Playwright, Puppeteer, Selenium, and agent-browser CLI are NOT available:
 
 1. **Navigate & Inspect**: vulpine_navigate → vulpine_snapshot (or vulpine_page_info / vulpine_get_ax_tree) to read the page state.
-2. **Identify targets**: vulpine_snapshot -i (interactive elements) shows @ref labels you use to act on elements. Use vulpine_find to locate elements by selector or text.
+2. **Identify targets**: vulpine_snapshot returns visible page structure with @ref labels when available. Use vulpine_find to locate elements by selector or text.
 3. **Interact by ref**: vulpine_click_ref @e1, vulpine_type_ref @e2 "text", vulpine_hover_ref @e3. Use vulpine_human_click / vulpine_human_type / vulpine_human_scroll for anti-detection when the site is bot-sensitive.
-4. **Form interaction**: Before filling a field, verify its label, placeholder, aria-label, or name attribute match the field you intend (use vulpine_snapshot -i or vulpine_get_ax_tree to confirm). Use vulpine_fill_form for multi-field forms.
+4. **Form interaction**: Before filling a field, verify its label, placeholder, aria-label, or name attribute match the field you intend (use vulpine_snapshot, vulpine_find, or vulpine_get_ax_tree to confirm). Use vulpine_fill_form for multi-field forms.
 5. **Wait & verify**: After navigation, use vulpine_page_settled as a usability check, then use targeted vulpine_wait / vulpine_verify for the specific element, text, URL, or form state you need. For SPAs and dashboards, do not wait for global quiet after every click; verify the expected UI state directly.
 6. **Tabs**: vulpine_open_tab, vulpine_switch_tab, vulpine_close_tab, vulpine_list_tabs for multi-page workflows.
 
 ## Workflow
 1. vulpine_navigate to the target URL
 2. vulpine_page_settled — wait until the page is usable; if it reports the page is still changing, continue with targeted checks
-3. vulpine_snapshot (or vulpine_snapshot -i for interactive refs) to read state
+3. vulpine_snapshot to read state and collect refs when available
 4. Identify the element ref or selector, then act (vulpine_click_ref, vulpine_type_ref, etc.)
 5. After actions, use vulpine_wait or vulpine_verify for the specific result you expect; use vulpine_page_settled again only for full navigations or major route changes
 6. vulpine_snapshot to confirm the result
@@ -175,6 +175,7 @@ func RunBrowserAgentOnSession(ctx context.Context, client *juggler.Client, sessi
 	}
 	toolset := NewBrowserToolset(client, "", sessionID)
 	defer toolset.Close()
+	_ = toolset.executor.WaitForTrackerInit(sessionID)
 	return RunBrowserAgentWithToolset(ctx, toolset, cfg, task, events)
 }
 

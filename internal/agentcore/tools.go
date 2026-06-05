@@ -268,7 +268,7 @@ func (t *BrowserToolset) Dispatch(ctx context.Context, name string, rawArgs stri
 	// nudge it toward a different approach instead of re-running the dead action.
 	if t.loopDet != nil {
 		if warn := t.loopDet.Check(session, name, trimmed); warn != "" {
-			return warn, false, nil
+			return warn, true, nil
 		}
 	}
 
@@ -283,12 +283,14 @@ func (t *BrowserToolset) Dispatch(ctx context.Context, name string, rawArgs stri
 	if err != nil {
 		return "", false, err
 	}
+	text := contentText(res)
+	isErr = res.IsError || looksLikeToolFailure(text)
 	// Navigation moves to a new page; clear the loop history so legitimate
 	// repeated actions on the new page aren't falsely flagged.
 	if t.loopDet != nil && name == "vulpine_navigate" {
 		t.loopDet.Reset(session)
 	}
-	return contentText(res), res.IsError, nil
+	return text, isErr, nil
 }
 
 // openTab opens a new tab (page) in the agent's context, makes it active, and
@@ -307,6 +309,9 @@ func (t *BrowserToolset) openTab(ctx context.Context, rawArgs string) (string, b
 	sid, err := openPageInContext(ctx, t.client, t.contextID)
 	if err != nil {
 		return "", false, fmt.Errorf("open tab: %w", err)
+	}
+	if t.executor != nil {
+		_ = t.executor.WaitForTrackerInit(sid)
 	}
 	t.mu.Lock()
 	t.tabs = append(t.tabs, sid)
@@ -433,4 +438,12 @@ func contentText(res *mcp.ToolCallResult) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func looksLikeToolFailure(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "FAIL:") ||
+		strings.HasPrefix(trimmed, "No elements found") ||
+		strings.HasPrefix(trimmed, "SAME:") ||
+		strings.Contains(trimmed, "\nErrors:")
 }

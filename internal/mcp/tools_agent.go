@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -444,6 +445,7 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 	}
 
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
+	usableGrace := 2 * time.Second
 	var lastDOMFingerprint string
 	var lastResourceCount string
 	var networkIdleCount int
@@ -455,6 +457,8 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 		URL           string `json:"url"`
 	}
 	var sawUsable bool
+	var firstUsableAt time.Time
+	var usablePolls int
 
 	for time.Now().Before(deadline) {
 		js := `(() => {
@@ -492,6 +496,10 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 			continue
 		}
 		sawUsable = true
+		if firstUsableAt.IsZero() {
+			firstUsableAt = time.Now()
+		}
+		usablePolls++
 
 		// Condition A: network idle — resource count unchanged for 2 polls
 		rc := fmt.Sprintf("%d", state.ResourceCount)
@@ -515,6 +523,10 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 		if networkIdleCount >= 2 || domStableCount >= 2 {
 			return textResult(fmt.Sprintf("Page settled: readyState=%s, bodyLen=%d, url=%s",
 				state.ReadyState, state.BodyLen, state.URL)), nil
+		}
+		if usablePolls >= 4 && time.Since(firstUsableAt) >= usableGrace {
+			return textResult(fmt.Sprintf("Page usable: readyState=%s, bodyLen=%d, resourceCount=%d, url=%s (still changing; networkIdlePolls=%d domStablePolls=%d)",
+				lastState.ReadyState, lastState.BodyLen, lastState.ResourceCount, lastState.URL, networkIdleCount, domStableCount)), nil
 		}
 
 		time.Sleep(300 * time.Millisecond)
@@ -825,12 +837,15 @@ func handleGetFormErrors(client *juggler.Client, tracker *ContextTracker, args j
 
 // evalJS evaluates JavaScript and returns the string result.
 // Use evalJSWithTracker when the caller has a ContextTracker; this raw helper
-// intentionally leaves context selection to the browser.
+// intentionally asks the browser to use its latest execution context fallback.
 func evalJS(client *juggler.Client, sessionID, expression string) (string, error) {
 	return evalJSWithContextID(client, sessionID, expression, "")
 }
 
 func evalJSWithTracker(client *juggler.Client, tracker *ContextTracker, sessionID, expression string) (string, error) {
+	if tracker == nil {
+		return evalJSWithContextID(client, sessionID, expression, "")
+	}
 	if tracker != nil {
 		ctx := tracker.Get(sessionID)
 		if ctx != nil && ctx.ExecutionContextID != "" {
@@ -840,30 +855,34 @@ func evalJSWithTracker(client *juggler.Client, tracker *ContextTracker, sessionI
 			}
 			tracker.InvalidateExecutionContext(sessionID)
 		}
-		if ctx != nil && ctx.FrameID != "" {
-			if resolved, err := tracker.Resolve(sessionID); err == nil && resolved != nil && resolved.ExecutionContextID != "" {
-				result, evalErr := evalJSWithContextID(client, sessionID, expression, resolved.ExecutionContextID)
-				if evalErr == nil {
-					return result, nil
-				}
-				tracker.InvalidateExecutionContext(sessionID)
+		resolveCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		resolved, err := tracker.ResolveCtx(resolveCtx, sessionID)
+		cancel()
+		if err == nil && resolved != nil && resolved.ExecutionContextID != "" {
+			result, evalErr := evalJSWithContextID(client, sessionID, expression, resolved.ExecutionContextID)
+			if evalErr == nil {
+				return result, nil
 			}
+			tracker.InvalidateExecutionContext(sessionID)
 		}
 	}
 	return evalJSWithContextID(client, sessionID, expression, "")
 }
 
+const fallbackExecutionContextID = "__vulpineos_latest_execution_context__"
+
 func evalJSWithContextID(client *juggler.Client, sessionID, expression, executionContextID string) (string, error) {
 	if client == nil {
 		return "", fmt.Errorf("no browser connection")
 	}
+	if executionContextID == "" {
+		executionContextID = fallbackExecutionContextID
+	}
 
 	params := map[string]interface{}{
-		"expression":    expression,
-		"returnByValue": true,
-	}
-	if executionContextID != "" {
-		params["executionContextId"] = executionContextID
+		"executionContextId": executionContextID,
+		"expression":         expression,
+		"returnByValue":      true,
 	}
 	result, err := client.Call(sessionID, "Runtime.evaluate", params)
 	if err != nil {

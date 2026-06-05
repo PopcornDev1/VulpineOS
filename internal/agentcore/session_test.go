@@ -17,3 +17,9 @@ func TestBrowserSystemPromptIncludesChatFormattingPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestBrowserSystemPromptDoesNotReferenceUnsupportedSnapshotFlag(t *testing.T) {
+	if strings.Contains(browserSystemPrompt, "vulpine_snapshot -i") {
+		t.Fatalf("browserSystemPrompt references unsupported vulpine_snapshot -i flag:\n%s", browserSystemPrompt)
+	}
+}

@@ -53,7 +53,7 @@ type LoopConfig struct {
 	// Tools are the function schemas exposed to the model.
 	Tools []ToolDef
 	// MaxIterations bounds the model<->tool turns to prevent runaway loops.
-	// Defaults to 24 when <= 0.
+	// Defaults to 100 when <= 0.
 	MaxIterations int
 	// KeepFullToolResults is how many most-recent tool results to keep verbatim;
 	// older large results are compressed to a short stub to save context.

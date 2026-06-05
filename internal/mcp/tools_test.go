@@ -151,6 +151,30 @@ func TestHandleSnapshotProfilesAndRetry(t *testing.T) {
 	}
 }
 
+func TestHandleSnapshotFallsBackToAXOnOptimizedDOMProtocolError(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondError("Page.getOptimizedDOM", `Expected "<root>.executionContextId" to be |string|; found |undefined|`)
+	transport.RespondJSON("Accessibility.getFullAXTree", []map[string]any{
+		{"role": "document", "name": "Fallback"},
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	result, err := handleSnapshot(client, json.RawMessage(`{"sessionId":"session-snapshot-fallback"}`))
+	if err != nil {
+		t.Fatalf("snapshot returned error: %v", err)
+	}
+	if result == nil || len(result.Content) == 0 {
+		t.Fatalf("empty snapshot result: %#v", result)
+	}
+	if result.IsError {
+		t.Fatalf("snapshot should fall back to AX tree, got error: %s", result.Content[0].Text)
+	}
+	if got := result.Content[0].Text; !strings.Contains(got, "Fallback") {
+		t.Fatalf("snapshot fallback text = %q, want AX payload", got)
+	}
+}
+
 func TestToolSchemaRefTools(t *testing.T) {
 	toolList := tools()
 	toolMap := make(map[string]ToolDefinition)
@@ -186,6 +210,47 @@ func TestToolSchemaRefTools(t *testing.T) {
 	}
 	if !reqSet["sessionId"] || !reqSet["ref"] {
 		t.Errorf("vulpine_hover_ref required = %v, want sessionId and ref", hoverRef.InputSchema.Required)
+	}
+}
+
+func TestHandleClickRefFallbackUsesTrackedExecutionContext(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondError("Page.resolveRef", "method not found")
+	transport.RespondJSON("Accessibility.getFullAXTree", []map[string]any{
+		{"ref": "@e1", "role": "button", "name": "Submit", "tag": "button"},
+	})
+	transport.RespondFunc("Runtime.evaluate", func(msg *juggler.Message) (json.RawMessage, *juggler.Error) {
+		var params map[string]any
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			t.Fatalf("unmarshal Runtime.evaluate params: %v", err)
+		}
+		if params["executionContextId"] != "exec-ref" {
+			return nil, &juggler.Error{Message: `Expected "<root>.executionContextId" to be |string|; found |undefined|`}
+		}
+		return json.RawMessage(`{"result":{"value":"{\"x\":12,\"y\":34,\"found\":true}"}}`), nil
+	})
+	transport.RespondJSON("Page.dispatchMouseEvent", map[string]any{})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+	tracker.mu.Lock()
+	tracker.contexts["session-ref"] = &SessionContext{
+		ExecutionContextID: "exec-ref",
+		FrameID:            "frame-ref",
+	}
+	tracker.mu.Unlock()
+
+	result, err := handleToolCall(context.Background(), client, tracker, "vulpine_click_ref", json.RawMessage(`{"sessionId":"session-ref","ref":"@e1"}`))
+	if err != nil {
+		t.Fatalf("click_ref returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("click_ref should succeed with tracked context, got %#v", result)
+	}
+	if calls := transport.CallsByMethod("Page.dispatchMouseEvent"); len(calls) != 2 {
+		t.Fatalf("mouse event calls = %d, want mousedown+mouseup", len(calls))
 	}
 }
 
@@ -388,7 +453,7 @@ func TestHandleNavigateResolvesExecutionContextWhenDefaultEvaluateRequiresIt(t *
 			return nil, &juggler.Error{Message: `Expected "<root>.executionContextId" to be |string|; found |undefined|`}
 		}
 		if params["executionContextId"] != "exec-fresh" {
-			t.Fatalf("executionContextId = %v, want exec-fresh", params["executionContextId"])
+			return nil, &juggler.Error{Message: fmt.Sprintf("Failed to find execution context with id = %v", params["executionContextId"])}
 		}
 		data, err := json.Marshal(map[string]any{
 			"result": map[string]any{"value": `{"readyState":"complete","bodyLen":900,"resourceCount":3,"url":"https://example.com/context"}`},

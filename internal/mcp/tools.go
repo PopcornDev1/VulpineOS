@@ -477,11 +477,11 @@ func handleToolCallFull(ctx context.Context, client *juggler.Client, tracker *Co
 	case "vulpine_get_ax_tree":
 		return handleGetAXTree(client, args)
 	case "vulpine_click_ref":
-		return handleClickRef(client, args)
+		return handleClickRef(client, tracker, args)
 	case "vulpine_type_ref":
-		return handleTypeRef(client, args)
+		return handleTypeRef(client, tracker, args)
 	case "vulpine_hover_ref":
-		return handleHoverRef(client, args)
+		return handleHoverRef(client, tracker, args)
 
 	// Agent reliability tools
 	case "vulpine_wait":
@@ -584,7 +584,9 @@ func handleNavigate(client *juggler.Client, tracker *ContextTracker, args json.R
 		return errorResult(err), nil
 	}
 
-	tracker.InvalidateExecutionContext(p.SessionID)
+	if tracker != nil {
+		tracker.InvalidateExecutionContext(p.SessionID)
+	}
 
 	// Navigation invalidates every objectID captured by the previous
 	// page's annotated screenshot. Drop any label mappings for this
@@ -660,31 +662,31 @@ func currentNavigationPageState(client *juggler.Client, tracker *ContextTracker,
 			url: window.location.href
 		});
 	})()`
+	var (
+		result string
+		err    error
+	)
 	if tracker != nil {
 		if ctx := tracker.Get(sessionID); ctx != nil && ctx.ExecutionContextID != "" {
-			result, err := evalJSWithContextID(client, sessionID, js, ctx.ExecutionContextID)
+			result, err = evalJSWithContextID(client, sessionID, js, ctx.ExecutionContextID)
 			if err == nil {
 				return parseNavigationPageState(result)
 			}
 			tracker.InvalidateExecutionContext(sessionID)
 		}
+	} else {
+		result, err = evalJS(client, sessionID, js)
 	}
-	result, err := evalJS(client, sessionID, js)
-	if err != nil {
-		if tracker == nil {
-			return navigationPageState{}, err
-		}
-		ctx, resolveErr := tracker.Resolve(sessionID)
-		if resolveErr != nil {
-			return navigationPageState{}, err
-		}
-		if ctx == nil || ctx.ExecutionContextID == "" {
-			return navigationPageState{}, err
-		}
-		result, err = evalJSWithContextID(client, sessionID, js, ctx.ExecutionContextID)
+	if tracker != nil {
+		result, err = evalJS(client, sessionID, js)
 		if err != nil {
-			return navigationPageState{}, err
+			if ctx, resolveErr := tracker.Resolve(sessionID); resolveErr == nil && ctx != nil && ctx.ExecutionContextID != "" {
+				result, err = evalJSWithContextID(client, sessionID, js, ctx.ExecutionContextID)
+			}
 		}
+	}
+	if err != nil {
+		return navigationPageState{}, err
 	}
 	return parseNavigationPageState(result)
 }
@@ -777,16 +779,16 @@ func handleSnapshot(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 
 	result, err := client.Call(p.SessionID, "Page.getOptimizedDOM", params)
 	if err != nil {
-		// If the Juggler variant isn't available (standard Camoufox without
-		// VulpineOS additions), fall back to the AX tree.
-		if isMethodNotSupported(err) {
-			axResult, axErr := client.Call(p.SessionID, "Accessibility.getFullAXTree", nil)
-			if axErr != nil {
+		// If optimized DOM is unavailable or temporarily blocked by page/runtime
+		// churn, fall back to the AX tree rather than failing inspection.
+		axResult, axErr := client.Call(p.SessionID, "Accessibility.getFullAXTree", nil)
+		if axErr != nil {
+			if isMethodNotSupported(err) {
 				return errorResult(axErr), nil
 			}
-			return textResult(string(axResult)), nil
+			return errorResult(fmt.Errorf("optimized DOM failed: %v; AX fallback failed: %w", err, axErr)), nil
 		}
-		return errorResult(err), nil
+		return textResult(string(axResult)), nil
 	}
 
 	annotated, truncated, err := annotateSnapshotPayload(result, reportedProfile)
@@ -1045,7 +1047,7 @@ func handleGetAXTree(client *juggler.Client, args json.RawMessage) (*ToolCallRes
 // native Juggler Page.resolveRef first (VulpineOS-enhanced browsers). Falls
 // back to a JS-based approach using Runtime.evaluate when the browser doesn't
 // support the custom Juggler method (stock Camoufox).
-func resolveRef(client *juggler.Client, sessionID, ref string) (x, y float64, found bool, err error) {
+func resolveRef(client *juggler.Client, tracker *ContextTracker, sessionID, ref string) (x, y float64, found bool, err error) {
 	result, err := client.Call(sessionID, "Page.resolveRef", map[string]interface{}{
 		"ref": ref,
 	})
@@ -1067,13 +1069,13 @@ func resolveRef(client *juggler.Client, sessionID, ref string) (x, y float64, fo
 	}
 
 	// Fallback: re-fetch AX tree, find node by ref, resolve via JS.
-	return resolveRefByJS(client, sessionID, ref)
+	return resolveRefByJS(client, tracker, sessionID, ref)
 }
 
 // resolveRefByJS is the JS-based fallback for Page.resolveRef. It re-fetches
 // the AX tree, finds the node matching ref, extracts identifying properties,
 // and uses Runtime.evaluate to find the matching DOM element's coordinates.
-func resolveRefByJS(client *juggler.Client, sessionID, ref string) (x, y float64, found bool, err error) {
+func resolveRefByJS(client *juggler.Client, tracker *ContextTracker, sessionID, ref string) (x, y float64, found bool, err error) {
 	axRaw, axErr := client.Call(sessionID, "Accessibility.getFullAXTree", nil)
 	if axErr != nil {
 		return 0, 0, false, fmt.Errorf("resolveRef fallback: getFullAXTree: %w", axErr)
@@ -1190,7 +1192,7 @@ func resolveRefByJS(client *juggler.Client, sessionID, ref string) (x, y float64
 		return JSON.stringify({x: 0, y: 0, found: false});
 	})()`, role, name, value, tag)
 
-	jsResult, jsErr := evalJS(client, sessionID, js)
+	jsResult, jsErr := evalJSWithTracker(client, tracker, sessionID, js)
 	if jsErr != nil {
 		return 0, 0, false, fmt.Errorf("resolveRef fallback JS: %w", jsErr)
 	}
@@ -1222,7 +1224,7 @@ func roleToTag(role string) string {
 	return role
 }
 
-func handleClickRef(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
+func handleClickRef(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
 	var p struct {
 		SessionID string `json:"sessionId"`
 		Ref       string `json:"ref"`
@@ -1231,7 +1233,7 @@ func handleClickRef(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 		return errorResult(err), nil
 	}
 
-	x, y, found, err := resolveRef(client, p.SessionID, p.Ref)
+	x, y, found, err := resolveRef(client, tracker, p.SessionID, p.Ref)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -1260,7 +1262,7 @@ func handleClickRef(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 	return textResult(fmt.Sprintf("Clicked %s at (%v, %v)", p.Ref, x, y)), nil
 }
 
-func handleTypeRef(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
+func handleTypeRef(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
 	var p struct {
 		SessionID string `json:"sessionId"`
 		Ref       string `json:"ref"`
@@ -1270,7 +1272,7 @@ func handleTypeRef(client *juggler.Client, args json.RawMessage) (*ToolCallResul
 		return errorResult(err), nil
 	}
 
-	x, y, found, err := resolveRef(client, p.SessionID, p.Ref)
+	x, y, found, err := resolveRef(client, tracker, p.SessionID, p.Ref)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -1304,7 +1306,7 @@ func handleTypeRef(client *juggler.Client, args json.RawMessage) (*ToolCallResul
 	return textResult(fmt.Sprintf("Typed %d characters into %s", len(p.Text), p.Ref)), nil
 }
 
-func handleHoverRef(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
+func handleHoverRef(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
 	var p struct {
 		SessionID string `json:"sessionId"`
 		Ref       string `json:"ref"`
@@ -1313,7 +1315,7 @@ func handleHoverRef(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 		return errorResult(err), nil
 	}
 
-	x, y, found, err := resolveRef(client, p.SessionID, p.Ref)
+	x, y, found, err := resolveRef(client, tracker, p.SessionID, p.Ref)
 	if err != nil {
 		return errorResult(err), nil
 	}
