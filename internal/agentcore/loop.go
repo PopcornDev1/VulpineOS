@@ -59,6 +59,10 @@ type LoopConfig struct {
 	// older large results are compressed to a short stub to save context.
 	// Defaults to 3 when <= 0.
 	KeepFullToolResults int
+	// InboxReader returns pending steering messages for this agent. Called
+	// before each model turn; returned messages are injected as system messages.
+	// May be nil.
+	InboxReader func() []string
 }
 
 // Loop runs the model<->tool conversation for one agent.
@@ -110,6 +114,12 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 		if err := ctx.Err(); err != nil {
 			l.events.OnStatus("error")
 			return "", err
+		}
+
+		if l.cfg.InboxReader != nil {
+			for _, msg := range l.cfg.InboxReader() {
+				messages = append(messages, ChatMessage{Role: "system", Content: "[Steering from lead agent]: " + msg})
+			}
 		}
 
 		comp, err := l.streamWithFallback(ctx, messages)

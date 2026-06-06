@@ -130,6 +130,62 @@ func (db *DB) DeleteRoleSeed(id string) error {
 	return nil
 }
 
+// defaultRoleSeeds returns the list of role seeds that are automatically
+// inserted when the vault is first opened.
+func defaultRoleSeeds() []struct {
+	Name    string
+	Content string
+	Tags    []string
+} {
+	return []struct {
+		Name    string
+		Content string
+		Tags    []string
+	}{
+		{
+			Name:    "code-reviewer",
+			Content: "You are a thorough code reviewer. Analyze code for correctness, performance, security, maintainability, and idiomatic style. Think step by step. Provide clear, actionable feedback with specific suggestions. Be constructive and rigorous, never dismissive.",
+			Tags:    []string{"code", "review", "quality"},
+		},
+		{
+			Name:    "researcher",
+			Content: "You are a research specialist. Gather information methodically, verify sources, and synthesize findings into concise summaries. When using the browser, navigate to relevant pages first, extract key information, and cross-reference multiple sources before drawing conclusions.",
+			Tags:    []string{"research", "analysis", "browser"},
+		},
+		{
+			Name:    "writer",
+			Content: "You are a skilled writer. Produce clear, well-structured content tailored to the target audience and purpose. Follow the specified tone, format, and style guidelines. Revise based on feedback. Prioritize clarity and concision.",
+			Tags:    []string{"writing", "content"},
+		},
+		{
+			Name:    "debugger",
+			Content: "You are a debugger. Given an error description, code, or logs, systematically identify the root cause. Formulate and test hypotheses one at a time. Use browser tools to search documentation or inspect running systems when needed. Report findings with evidence and a fix recommendation.",
+			Tags:    []string{"debug", "troubleshooting", "browser"},
+		},
+		{
+			Name:    "data-extractor",
+			Content: "You are a data extraction specialist. Navigate web pages, locate structured data (tables, lists, API responses), and extract it in a clean, machine-readable format. Handle pagination, dynamic content, and authentication flows carefully. Return data as JSON when appropriate.",
+			Tags:    []string{"data", "extraction", "scraping", "browser"},
+		},
+	}
+}
+
+// seedRoleSeeds inserts the default role seeds if they don't already exist.
+// Uses INSERT OR IGNORE so it is idempotent across vault re-opens.
+func (db *DB) seedRoleSeeds() error {
+	now := time.Now().Unix()
+	for _, s := range defaultRoleSeeds() {
+		_, err := db.conn.Exec(
+			`INSERT OR IGNORE INTO role_seeds (id, name, content, tags, created, used) VALUES (?, ?, ?, ?, ?, 0)`,
+			uuid.New().String(), s.Name, s.Content, marshalStringSlice(s.Tags), now,
+		)
+		if err != nil {
+			return fmt.Errorf("seed role seed %q: %w", s.Name, err)
+		}
+	}
+	return nil
+}
+
 // marshalStringSlice marshals a []string to a JSON string without importing
 // encoding/json, keeping the vault package's dependency footprint minimal.
 func marshalStringSlice(s []string) string {

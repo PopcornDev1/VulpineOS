@@ -40,8 +40,8 @@ func TestRoleSeedCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list role seeds: %v", err)
 	}
-	if len(list) != 1 {
-		t.Fatalf("expected 1 role seed, got %d", len(list))
+	if len(list) != 6 {
+		t.Fatalf("expected 6 role seeds (5 default + 1 created), got %d", len(list))
 	}
 
 	// Increment usage
@@ -82,7 +82,7 @@ func TestRoleSeedCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list role seeds after delete: %v", err)
 	}
-	if len(list) != 0 {
-		t.Errorf("expected 0 after delete, got %d", len(list))
+	if len(list) != 5 {
+		t.Errorf("expected 5 (default seeds remain after delete), got %d", len(list))
 	}
 }

@@ -218,3 +218,80 @@ func TestLoopStopsAtMaxIterations(t *testing.T) {
 		t.Errorf("model called %d times, want 3 (MaxIterations)", model.calls)
 	}
 }
+
+func TestLoopInjectsInboxMessages(t *testing.T) {
+	var inboxCalls int
+	model := &scriptedCompleter{turns: []Completion{
+		toolCallTurn("c1", "vulpine_navigate", `{}`),
+		{Message: ChatMessage{Role: "assistant", Content: "done"}, FinishReason: "stop"},
+	}}
+	disp := &fakeDispatcher{}
+	ev := &recordEvents{}
+	loop := NewLoop(model, disp, ev, LoopConfig{
+		Models:       []string{"m1"},
+		SystemPrompt: "be brief",
+		InboxReader: func() []string {
+			inboxCalls++
+			if inboxCalls == 2 {
+				return []string{"focus on speed"}
+			}
+			return nil
+		},
+	})
+
+	final, err := loop.Run(context.Background(), "test", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if final != "done" {
+		t.Errorf("final = %q, want done", final)
+	}
+	if inboxCalls < 2 {
+		t.Errorf("inbox reader called %d times, want at least 2", inboxCalls)
+	}
+	// Second model turn must include the steering message
+	second := model.lastMsgs[1]
+	foundSteer := false
+	for _, m := range second {
+		if m.Role == "system" && strings.Contains(m.Content, "focus on speed") {
+			foundSteer = true
+			break
+		}
+	}
+	if !foundSteer {
+		roles := make([]string, len(second))
+		for i, m := range second {
+			roles[i] = m.Role + ":" + m.Content
+		}
+		t.Fatalf("second-turn messages = %v, want system with 'focus on speed'", roles)
+	}
+}
+
+func TestLoopInboxReaderReturnsMultipleMessages(t *testing.T) {
+	model := &scriptedCompleter{turns: []Completion{
+		{Message: ChatMessage{Role: "assistant", Content: "done"}, FinishReason: "stop"},
+	}}
+	disp := &fakeDispatcher{}
+	loop := NewLoop(model, disp, nil, LoopConfig{
+		Models:       []string{"m1"},
+		SystemPrompt: "be brief",
+		InboxReader: func() []string {
+			return []string{"msg1", "msg2"}
+		},
+	})
+
+	_, err := loop.Run(context.Background(), "test", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	msgs := model.lastMsgs[0]
+	count := 0
+	for _, m := range msgs {
+		if m.Role == "system" && strings.Contains(m.Content, "Steering from lead agent") {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Errorf("found %d steering messages, want 2\nmessages: %#v", count, msgs)
+	}
+}

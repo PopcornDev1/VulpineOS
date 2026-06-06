@@ -435,6 +435,69 @@ func openPageInContextWithToolset(ctx context.Context, client *juggler.Client, c
 	return sessionID, nil
 }
 
+// newSubAgentContext creates an isolated browser context with a single page
+// for a sub-agent. Returns the contextID, sessionID, and toolset. Caller must
+// call cleanupSubAgentContext when done.
+func newSubAgentContext(ctx context.Context, client *juggler.Client) (contextID, sessionID string, toolset *BrowserToolset, err error) {
+	ctxResult, callErr := client.Call("", "Browser.createBrowserContext", map[string]interface{}{
+		"removeOnDetach": true,
+	})
+	if callErr != nil {
+		return "", "", nil, fmt.Errorf("Browser.createBrowserContext: %w", callErr)
+	}
+	var parsed struct {
+		BrowserContextID string `json:"browserContextId"`
+	}
+	if uerr := json.Unmarshal(ctxResult, &parsed); uerr != nil {
+		cleanupContext(client, parsed.BrowserContextID)
+		return "", "", nil, fmt.Errorf("parse createBrowserContext response: %w", uerr)
+	}
+	contextID = parsed.BrowserContextID
+
+	sessionCh := make(chan string, 4)
+	cancel := client.SubscribeWithCancel("Browser.attachedToTarget", func(_ string, params json.RawMessage) {
+		var ev struct {
+			SessionID  string `json:"sessionId"`
+			TargetInfo struct {
+				BrowserContextID string `json:"browserContextId"`
+			} `json:"targetInfo"`
+		}
+		_ = json.Unmarshal(params, &ev)
+		if ev.SessionID != "" && ev.TargetInfo.BrowserContextID == contextID {
+			select {
+			case sessionCh <- ev.SessionID:
+			default:
+			}
+		}
+	})
+	defer cancel()
+
+	if _, callErr = client.Call("", "Browser.newPage", map[string]interface{}{"browserContextId": contextID}); callErr != nil {
+		cleanupContext(client, contextID)
+		return "", "", nil, fmt.Errorf("Browser.newPage: %w", callErr)
+	}
+	select {
+	case sessionID = <-sessionCh:
+	case <-ctx.Done():
+		cleanupContext(client, contextID)
+		return "", "", nil, ctx.Err()
+	case <-time.After(15 * time.Second):
+		cleanupContext(client, contextID)
+		return "", "", nil, fmt.Errorf("timed out waiting for page session")
+	}
+
+	toolset = NewBrowserToolset(client, contextID, sessionID)
+	return contextID, sessionID, toolset, nil
+}
+
+// cleanupSubAgentContext closes a sub-agent's browser context and toolset.
+func cleanupSubAgentContext(client *juggler.Client, contextID string, toolset *BrowserToolset) {
+	if toolset != nil {
+		toolset.Close()
+	}
+	cleanupContext(client, contextID)
+}
+
 func cleanupContext(client *juggler.Client, contextID string) {
 	if client == nil || contextID == "" {
 		return

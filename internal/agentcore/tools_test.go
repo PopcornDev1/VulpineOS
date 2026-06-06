@@ -3,6 +3,7 @@ package agentcore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -293,5 +294,284 @@ func TestBrowserToolsetCloseExtraTabsKeepsPrimaryTab(t *testing.T) {
 		if params.RunBeforeUnload {
 			t.Fatal("CloseExtraTabs should skip beforeunload prompts")
 		}
+	}
+}
+
+func TestAgentToolsExposeDelegationTools(t *testing.T) {
+	tools := BrowserTools()
+	byName := map[string]ToolDef{}
+	for _, td := range tools {
+		byName[td.Function.Name] = td
+	}
+	for _, name := range []string{toolDelegateAgent, toolSteerAgent, toolAgentStatus, toolReleaseAgent, toolGetAgentResult} {
+		if _, ok := byName[name]; !ok {
+			t.Fatalf("%s missing from exposed tools", name)
+		}
+	}
+}
+
+func TestDelegationToolsErrorWhenNoManager(t *testing.T) {
+	ts := &BrowserToolset{}
+
+	result, isErr, err := ts.Dispatch(context.Background(), toolDelegateAgent, `{"objective":"test"}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !isErr {
+		t.Fatal("expected isErr=true when no delegate manager")
+	}
+	if !strings.Contains(result, "delegation manager not available") {
+		t.Errorf("result = %q, want delegation manager not available", result)
+	}
+}
+
+type mockDelegationManager struct {
+	DelegateFunc      func(Mission) (string, error)
+	SteerAgentFunc    func(string, string) error
+	AgentStatusFunc   func(string) (string, error)
+	AgentResultFunc   func(string) (string, error)
+	ReleaseAgentFunc  func(string) error
+}
+
+func (m *mockDelegationManager) Delegate(mission Mission) (string, error) {
+	if m.DelegateFunc != nil {
+		return m.DelegateFunc(mission)
+	}
+	return "sub-1", nil
+}
+
+func (m *mockDelegationManager) SteerAgent(agentID, message string) error {
+	if m.SteerAgentFunc != nil {
+		return m.SteerAgentFunc(agentID, message)
+	}
+	return nil
+}
+
+func (m *mockDelegationManager) AgentStatus(agentID string) (string, error) {
+	if m.AgentStatusFunc != nil {
+		return m.AgentStatusFunc(agentID)
+	}
+	return "running", nil
+}
+
+func (m *mockDelegationManager) AgentResult(agentID string) (string, error) {
+	if m.AgentResultFunc != nil {
+		return m.AgentResultFunc(agentID)
+	}
+	return "result output", nil
+}
+
+func (m *mockDelegationManager) ReleaseAgent(agentID string) error {
+	if m.ReleaseAgentFunc != nil {
+		return m.ReleaseAgentFunc(agentID)
+	}
+	return nil
+}
+
+func TestDelegateAgentTool(t *testing.T) {
+	ts := &BrowserToolset{}
+	ts.SetDelegateManager(&mockDelegationManager{
+		DelegateFunc: func(m Mission) (string, error) {
+			if m.Objective != "test objective" {
+				t.Errorf("objective = %q, want 'test objective'", m.Objective)
+			}
+			if m.RoleSeed != "reviewer" {
+				t.Errorf("role_seed = %q, want 'reviewer'", m.RoleSeed)
+			}
+			return "sub-agent-42", nil
+		},
+	})
+
+	result, isErr, err := ts.Dispatch(context.Background(), toolDelegateAgent,
+		`{"objective":"test objective","role_seed":"reviewer","max_turns":5}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if isErr {
+		t.Fatalf("unexpected error: %s", result)
+	}
+	if !strings.Contains(result, "sub-agent-42") {
+		t.Errorf("result = %q, want sub-agent-42", result)
+	}
+}
+
+func TestSteerAgentTool(t *testing.T) {
+	ts := &BrowserToolset{}
+	var capturedID, capturedMsg string
+	ts.SetDelegateManager(&mockDelegationManager{
+		SteerAgentFunc: func(agentID, message string) error {
+			capturedID = agentID
+			capturedMsg = message
+			return nil
+		},
+	})
+
+	result, isErr, err := ts.Dispatch(context.Background(), toolSteerAgent,
+		`{"agent_id":"sub-1","message":"focus on performance"}`)
+	if err != nil || isErr {
+		t.Fatalf("dispatch: result=%q isErr=%v err=%v", result, isErr, err)
+	}
+	if capturedID != "sub-1" {
+		t.Errorf("agent_id = %q, want sub-1", capturedID)
+	}
+	if capturedMsg != "focus on performance" {
+		t.Errorf("message = %q, want 'focus on performance'", capturedMsg)
+	}
+	if !strings.Contains(result, "Steering message sent") {
+		t.Errorf("result = %q, want 'Steering message sent'", result)
+	}
+}
+
+func TestAgentStatusTool(t *testing.T) {
+	ts := &BrowserToolset{}
+	ts.SetDelegateManager(&mockDelegationManager{
+		AgentStatusFunc: func(id string) (string, error) {
+			if id != "sub-1" {
+				t.Errorf("agent_id = %q, want sub-1", id)
+			}
+			return "running", nil
+		},
+	})
+
+	result, isErr, err := ts.Dispatch(context.Background(), toolAgentStatus,
+		`{"agent_id":"sub-1"}`)
+	if err != nil || isErr {
+		t.Fatalf("dispatch: result=%q isErr=%v err=%v", result, isErr, err)
+	}
+	if result != "running" {
+		t.Errorf("result = %q, want 'running'", result)
+	}
+}
+
+func TestReleaseAgentTool(t *testing.T) {
+	ts := &BrowserToolset{}
+	var releasedID string
+	ts.SetDelegateManager(&mockDelegationManager{
+		ReleaseAgentFunc: func(id string) error {
+			releasedID = id
+			return nil
+		},
+	})
+
+	result, isErr, err := ts.Dispatch(context.Background(), toolReleaseAgent,
+		`{"agent_id":"sub-1"}`)
+	if err != nil || isErr {
+		t.Fatalf("dispatch: result=%q isErr=%v err=%v", result, isErr, err)
+	}
+	if releasedID != "sub-1" {
+		t.Errorf("released agent = %q, want sub-1", releasedID)
+	}
+	if !strings.Contains(result, "Sub-agent released") {
+		t.Errorf("result = %q, want 'Sub-agent released'", result)
+	}
+}
+
+func TestAgentResultTool(t *testing.T) {
+	ts := &BrowserToolset{}
+	ts.SetDelegateManager(&mockDelegationManager{
+		AgentResultFunc: func(id string) (string, error) {
+			if id != "sub-1" {
+				t.Errorf("agent_id = %q, want sub-1", id)
+			}
+			return "completed analysis: all tests pass", nil
+		},
+	})
+
+	result, isErr, err := ts.Dispatch(context.Background(), toolGetAgentResult,
+		`{"agent_id":"sub-1"}`)
+	if err != nil || isErr {
+		t.Fatalf("dispatch: result=%q isErr=%v err=%v", result, isErr, err)
+	}
+	if result != "completed analysis: all tests pass" {
+		t.Errorf("result = %q, want 'completed analysis: all tests pass'", result)
+	}
+
+	// Error path: agent not found
+	ts.SetDelegateManager(&mockDelegationManager{
+		AgentResultFunc: func(id string) (string, error) {
+			return "", fmt.Errorf("agent %s not found", id)
+		},
+	})
+	result, isErr, err = ts.Dispatch(context.Background(), toolGetAgentResult,
+		`{"agent_id":"nonexistent"}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !isErr {
+		t.Fatal("expected isErr=true for nonexistent agent")
+	}
+	if !strings.Contains(result, "not found") {
+		t.Errorf("result = %q, want 'not found'", result)
+	}
+
+	// Error path: empty result
+	ts.SetDelegateManager(&mockDelegationManager{
+		AgentResultFunc: func(id string) (string, error) {
+			return "", nil
+		},
+	})
+	result, isErr, err = ts.Dispatch(context.Background(), toolGetAgentResult,
+		`{"agent_id":"sub-empty"}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if isErr {
+		t.Fatalf("unexpected error: %s", result)
+	}
+	if result != "(agent produced no output)" {
+		t.Errorf("result = %q, want '(agent produced no output)'", result)
+	}
+}
+
+func TestDelegationToolMissingRequiredArgs(t *testing.T) {
+	ts := &BrowserToolset{}
+	ts.SetDelegateManager(&mockDelegationManager{})
+
+	// Steer with no agent_id
+	result, isErr, err := ts.Dispatch(context.Background(), toolSteerAgent, `{"message":"hi"}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !isErr {
+		t.Fatal("expected isErr=true for missing agent_id")
+	}
+	if !strings.Contains(result, "agent_id is required") {
+		t.Errorf("result = %q, want 'agent_id is required'", result)
+	}
+
+	// Status with no agent_id
+	result, isErr, err = ts.Dispatch(context.Background(), toolAgentStatus, `{}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !isErr {
+		t.Fatal("expected isErr=true for missing agent_id")
+	}
+
+	// Release with no agent_id
+	result, isErr, err = ts.Dispatch(context.Background(), toolReleaseAgent, `{}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !isErr {
+		t.Fatal("expected isErr=true for missing agent_id")
+	}
+
+	// Get result with no agent_id
+	result, isErr, err = ts.Dispatch(context.Background(), toolGetAgentResult, `{}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !isErr {
+		t.Fatal("expected isErr=true for missing agent_id")
+	}
+
+	// Delegate with no objective (still dispatches, Mission has safe defaults)
+	result, isErr, err = ts.Dispatch(context.Background(), toolDelegateAgent, `{}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if isErr {
+		t.Fatalf("unexpected error: %s", result)
 	}
 }

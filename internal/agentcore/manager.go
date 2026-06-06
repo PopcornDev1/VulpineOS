@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -52,6 +53,9 @@ type Manager struct {
 	conversationSource chan agentmsg.ConversationMsg
 	statusSubs         map[chan agentmsg.AgentStatus]struct{}
 	conversationSubs   map[chan agentmsg.ConversationMsg]struct{}
+	// results holds completed sub-agent outputs so they survive finish()
+	// deletion and remain readable by the lead agent across turns.
+	results map[string]string
 }
 
 type nativeAgent struct {
@@ -65,6 +69,7 @@ type nativeAgent struct {
 	objective string
 	tokens    int // cumulative tokens consumed this run
 	inbox     []string // steering messages from lead agent
+	result    string   // final output text, set when sub-agent completes
 }
 
 // NewManager creates a native runtime bound to a juggler client and model
@@ -185,6 +190,12 @@ func (m *Manager) ResumeWithSessionIsolated(agentID, sessionName, configPath str
 // reusePage keeps a persistent per-agent tab (and MCP tracker) so successive
 // turns reuse the same page instead of opening a new tab each time.
 func (m *Manager) spawn(agentID, contextID, task string, reusePage bool, cleanup func()) (string, error) {
+	// Prepend sub-agent status context for cross-turn reconnection so the lead
+	// agent can see its prior sub-agents when starting a new turn.
+	if s := m.buildSubAgentContext(agentID); s != "" {
+		task = s + "\n\n" + task
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	ag := &nativeAgent{id: agentID, contextID: contextID, cancel: cancel, cleanup: cleanup, status: "running", objective: task}
 
@@ -278,6 +289,7 @@ func (m *Manager) acquireToolset(ctx context.Context, agentID, contextID string)
 		return existing, nil
 	}
 	ts := NewBrowserToolset(m.client, contextID, "")
+	ts.SetDelegateManager(m)
 	if _, err := openPageInContextWithToolset(ctx, m.client, contextID, ts); err != nil {
 		ts.Close()
 		return nil, fmt.Errorf("open page in context: %w", err)
@@ -305,20 +317,35 @@ func (m *Manager) closeToolset(agentID string) {
 	}
 }
 
-// Kill cancels a running agent's loop and releases its reused tab. Idempotent:
-// safe to call when the agent is idle between turns.
+// Kill cancels a running agent's loop and releases its reused tab. When the
+// target is a lead agent, its sub-agents are also cancelled (cascade kill).
+// Idempotent: safe to call when the agent is idle between turns.
 func (m *Manager) Kill(agentID string) error {
 	m.mu.Lock()
+	// Collect sub-agents to cascade kill.
+	var subs []*nativeAgent
+	for _, a := range m.agents {
+		if a.parentID == agentID {
+			a.terminal = "interrupted"
+			subs = append(subs, a)
+		}
+	}
 	ag, ok := m.agents[agentID]
-	if ok {
-		ag.terminal = "interrupted"
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("agent %s not found", agentID)
 	}
+	ag.terminal = "interrupted"
 	m.mu.Unlock()
-	if ok {
-		ag.cancel()
-		m.emitStatus(agentID, ag.contextID, "interrupted", ag.objective)
-		m.finish(agentID, ag)
+
+	// Cancel sub-agents first (their goroutines clean up resources via defer).
+	for _, sa := range subs {
+		sa.cancel()
 	}
+
+	ag.cancel()
+	m.emitStatus(agentID, ag.contextID, "interrupted", ag.objective)
+	m.finish(agentID, ag)
 	m.closeToolset(agentID)
 	return nil
 }
@@ -429,6 +456,14 @@ func (m *Manager) finish(agentID string, ag *nativeAgent) {
 	var cleanup func()
 	m.mu.Lock()
 	if cur, ok := m.agents[agentID]; ok && cur == ag {
+		// Save completed sub-agent results so they survive deletion and
+		// remain readable by the lead agent across turns.
+		if ag.status == "completed" && ag.result != "" {
+			if m.results == nil {
+				m.results = make(map[string]string)
+			}
+			m.results[agentID] = ag.result
+		}
 		delete(m.agents, agentID)
 	}
 	if ag.cleanup != nil {
@@ -555,12 +590,12 @@ func (m *Manager) DelegateForParentMission(mission Mission, parentID string) (st
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ag := &nativeAgent{
-		id:       id,
-		parentID: parentID,
-		cancel:   cancel,
-		status:   "running",
+		id:        id,
+		parentID:  parentID,
+		cancel:    cancel,
+		status:    "running",
 		objective: task,
-		inbox:    make([]string, 0),
+		inbox:     make([]string, 0),
 	}
 
 	m.mu.Lock()
@@ -585,26 +620,76 @@ func (m *Manager) DelegateForParentMission(mission Mission, parentID string) (st
 	cfg := m.cfg
 	m.cfgMu.RUnlock()
 
+	// Create an isolated browser context for the sub-agent.
+	var subCtxID string
+	var subToolset *BrowserToolset
+	if m.client != nil {
+		var subErr error
+		sctx, scancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer scancel()
+		subCtxID, _, subToolset, subErr = newSubAgentContext(sctx, m.client)
+		if subErr != nil {
+			m.mu.Lock()
+			delete(m.agents, id)
+			m.mu.Unlock()
+			cancel()
+			return "", fmt.Errorf("create sub-agent browser context: %w", subErr)
+		}
+		m.mu.Lock()
+		m.toolsets[id] = subToolset
+		m.mu.Unlock()
+	}
+
 	go func() {
 		defer m.wg.Done()
+
+		// Ensure the sub-agent's isolated browser context and toolset are
+		// cleaned up no matter how this goroutine exits (normal completion,
+		// error, or kill/interrupt).
+		defer func() {
+			if subCtxID != "" {
+				m.mu.Lock()
+				delete(m.toolsets, id)
+				m.mu.Unlock()
+				cleanupSubAgentContext(m.client, subCtxID, subToolset)
+			}
+		}()
+
 		var err error
 
 		prompt := ComposeSubAgentPrompt(mission)
-		loop := NewLoop(newCompleter(cfg), nil, ev, LoopConfig{
+		loop := NewLoop(newCompleter(cfg), subToolset, ev, LoopConfig{
 			Models:        cfg.modelChain(),
 			SystemPrompt:  prompt,
-			Tools:         nil,
+			Tools:         subAgentTools(),
 			MaxIterations: mission.MaxTurns,
+			InboxReader: func() []string {
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				if cur, ok := m.agents[id]; ok && cur == ag {
+					msgs := cur.inbox
+					cur.inbox = nil
+					return msgs
+				}
+				return nil
+			},
 		})
-		_, err = loop.Run(ctx, task, nil)
+		var subResult string
+		subResult, err = loop.Run(ctx, task, nil)
 
 		final := "completed"
 		if err != nil {
 			final = "error"
 			m.emitConversation(id, "system", "sub-agent error: "+err.Error())
 			m.logRuntimeEvent("error", "sub_agent_failed", err.Error(), map[string]string{"agent_id": id})
+		} else {
+			m.mu.Lock()
+			if cur, ok := m.agents[id]; ok && cur == ag {
+				ag.result = subResult
+			}
+			m.mu.Unlock()
 		}
-		m.emitStatus(id, "", final, task)
+		m.emitStatus(id, subCtxID, final, task)
 		m.finish(id, ag)
 	}()
 
@@ -635,9 +720,50 @@ func (m *Manager) AgentStatus(agentID string) (string, error) {
 	return ag.status, nil
 }
 
+// AgentResult returns the final output of a completed sub-agent. It checks live
+// agents first, then falls back to the results cache (which outlives finished
+// agents after finish() removes them from the map).
+func (m *Manager) AgentResult(agentID string) (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if ag, ok := m.agents[agentID]; ok {
+		if ag.status != "completed" {
+			return "", fmt.Errorf("agent %s has status %q, not completed", agentID, ag.status)
+		}
+		return ag.result, nil
+	}
+	if m.results != nil {
+		if result, ok := m.results[agentID]; ok {
+			return result, nil
+		}
+	}
+	return "", fmt.Errorf("agent %s not found", agentID)
+}
+
 // ReleaseAgent terminates a sub-agent and cleans up its resources.
 func (m *Manager) ReleaseAgent(agentID string) error {
 	return m.Kill(agentID)
+}
+
+// buildSubAgentContext returns a formatted string describing the sub-agents of
+// the given lead agent that are still tracked in the Manager, or "" when none.
+// Used for cross-turn reconnection — the next turn of the lead agent receives
+// this context so it can steer/collect/release its existing sub-agents.
+func (m *Manager) buildSubAgentContext(agentID string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var lines []string
+	for _, ag := range m.agents {
+		if ag.parentID == agentID {
+			status := ag.status
+			obj := truncateString(ag.objective, 80)
+			lines = append(lines, fmt.Sprintf("  - %s: %s — %s", ag.id, status, obj))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "Your sub-agents from previous turns:\n" + strings.Join(lines, "\n") + "\n\nTake stock of their state and decide whether to collect results, steer, release, or delegate new work."
 }
 
 // truncateString truncates a string to max runes for logging.

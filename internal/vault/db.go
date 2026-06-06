@@ -172,7 +172,11 @@ func OpenPath(path string) (*DB, error) {
 		return nil, err
 	}
 
-	return &DB{conn: conn}, nil
+	db := &DB{conn: conn}
+	if err := db.seedRoleSeeds(); err != nil {
+		return nil, err
+	}
+	return db, nil
 }
 
 func migrateVault(conn *sql.DB) error {

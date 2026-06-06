@@ -97,8 +97,26 @@ func BrowserTools() []ToolDef {
 	}
 	out = append(out, tabTools()...)
 	out = append(out, fileTools()...)
+	out = append(out, delegationTools()...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Function.Name < out[j].Function.Name })
 	return out
+}
+
+// subAgentTools returns the tool set for sub-agents: browser tools, tabs, and
+// file workspace tools, but NOT delegation tools (sub-agents cannot delegate
+// further). This prevents the model from seeing irrelevant tool definitions
+// that would waste context and produce confusing "not available" errors.
+func subAgentTools() []ToolDef {
+	all := BrowserTools()
+	filtered := make([]ToolDef, 0, len(all))
+	for _, td := range all {
+		switch td.Function.Name {
+		case toolDelegateAgent, toolSteerAgent, toolAgentStatus, toolReleaseAgent, toolGetAgentResult:
+			continue
+		}
+		filtered = append(filtered, td)
+	}
+	return filtered
 }
 
 // tabTools are the agent-facing tab-management tools (one context, many tabs).
@@ -145,7 +163,23 @@ const (
 	toolListFiles = "vulpine_list_files"
 	toolReadFile  = "vulpine_read_file"
 	toolWriteFile = "vulpine_write_file"
+
+	toolDelegateAgent  = "vulpine_delegate_agent"
+	toolSteerAgent     = "vulpine_steer_agent"
+	toolAgentStatus    = "vulpine_agent_status"
+	toolReleaseAgent   = "vulpine_release_agent"
+	toolGetAgentResult = "vulpine_get_agent_result"
 )
+
+// DelegationManager is the interface for delegating work to sub-agents.
+// The lead agent uses these methods to manage sub-agent lifecycle.
+type DelegationManager interface {
+	Delegate(mission Mission) (string, error)
+	SteerAgent(agentID, message string) error
+	AgentStatus(agentID string) (string, error)
+	AgentResult(agentID string) (string, error)
+	ReleaseAgent(agentID string) error
+}
 
 func fileTools() []ToolDef {
 	strProp := func(desc string) map[string]interface{} {
@@ -203,11 +237,12 @@ func isFileTool(name string) bool {
 // tabs, switch between them, and close them, but all stay in the one context
 // that belongs to the agent. Browser tool calls run against the active tab.
 type BrowserToolset struct {
-	executor  *mcp.ToolExecutor
-	client    *juggler.Client
-	contextID string // the agent's context; "" disables tab management (single page)
-	loopDet   *mcp.LoopDetector
-	workspace string
+	executor    *mcp.ToolExecutor
+	client      *juggler.Client
+	contextID   string // the agent's context; "" disables tab management (single page)
+	loopDet     *mcp.LoopDetector
+	workspace   string
+	delegateMgr DelegationManager // non-nil for lead agents with delegation capability
 
 	mu     sync.Mutex
 	tabs   []string // open page session ids (tabs) in this context
@@ -282,6 +317,12 @@ func (t *BrowserToolset) CloseExtraTabs() error {
 	return nil
 }
 
+// SetDelegateManager sets the delegation manager for this toolset.
+// Called by Manager when preparing a lead agent's toolset.
+func (t *BrowserToolset) SetDelegateManager(mgr DelegationManager) {
+	t.delegateMgr = mgr
+}
+
 // IsBrowserTool reports whether name is a browser tool this toolset handles.
 func IsBrowserTool(name string) bool {
 	return browserToolAllowList[name]
@@ -308,6 +349,11 @@ func (t *BrowserToolset) Dispatch(ctx context.Context, name string, rawArgs stri
 		return t.closeTab(ctx, rawArgs)
 	case toolListTabs:
 		return t.listTabs(ctx)
+	}
+
+	switch name {
+	case toolDelegateAgent, toolSteerAgent, toolAgentStatus, toolReleaseAgent, toolGetAgentResult:
+		return t.dispatchDelegationTool(ctx, name, rawArgs)
 	}
 
 	if !browserToolAllowList[name] {
@@ -381,6 +427,164 @@ func (t *BrowserToolset) dispatchFileTool(name, rawArgs string) (string, bool, e
 		return t.writeWorkspaceFile(args)
 	default:
 		return "", false, fmt.Errorf("unknown file tool: %s", name)
+	}
+}
+
+func (t *BrowserToolset) dispatchDelegationTool(ctx context.Context, name, rawArgs string) (string, bool, error) {
+	if t.delegateMgr == nil {
+		return "delegation manager not available (only lead agents can delegate)", true, nil
+	}
+	trimmed := strings.TrimSpace(rawArgs)
+	switch name {
+	case toolDelegateAgent:
+		var args struct {
+			RoleSeed    string   `json:"role_seed"`
+			Objective   string   `json:"objective"`
+			Context     string   `json:"context"`
+			Constraints []string `json:"constraints"`
+			OutputSpec  string   `json:"output_spec"`
+			MaxTurns    int      `json:"max_turns"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return "", false, fmt.Errorf("parse arguments for %s: %w", name, err)
+		}
+		mission := Mission{
+			RoleSeed:    args.RoleSeed,
+			Objective:   args.Objective,
+			Context:     args.Context,
+			Constraints: args.Constraints,
+			OutputSpec:  args.OutputSpec,
+			MaxTurns:    args.MaxTurns,
+		}
+		agentID, err := t.delegateMgr.Delegate(mission)
+		if err != nil {
+			return err.Error(), true, nil
+		}
+		return fmt.Sprintf("Delegated to sub-agent %s", agentID), false, nil
+
+	case toolSteerAgent:
+		var args struct {
+			AgentID string `json:"agent_id"`
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return "", false, fmt.Errorf("parse arguments for %s: %w", name, err)
+		}
+		if args.AgentID == "" {
+			return "agent_id is required", true, nil
+		}
+		if err := t.delegateMgr.SteerAgent(args.AgentID, args.Message); err != nil {
+			return err.Error(), true, nil
+		}
+		return "Steering message sent", false, nil
+
+	case toolAgentStatus:
+		var args struct {
+			AgentID string `json:"agent_id"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return "", false, fmt.Errorf("parse arguments for %s: %w", name, err)
+		}
+		if args.AgentID == "" {
+			return "agent_id is required", true, nil
+		}
+		status, err := t.delegateMgr.AgentStatus(args.AgentID)
+		if err != nil {
+			return err.Error(), true, nil
+		}
+		return status, false, nil
+
+	case toolReleaseAgent:
+		var args struct {
+			AgentID string `json:"agent_id"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return "", false, fmt.Errorf("parse arguments for %s: %w", name, err)
+		}
+		if args.AgentID == "" {
+			return "agent_id is required", true, nil
+		}
+		if err := t.delegateMgr.ReleaseAgent(args.AgentID); err != nil {
+			return err.Error(), true, nil
+		}
+		return "Sub-agent released", false, nil
+
+	case toolGetAgentResult:
+		var args struct {
+			AgentID string `json:"agent_id"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return "", false, fmt.Errorf("parse arguments for %s: %w", name, err)
+		}
+		if args.AgentID == "" {
+			return "agent_id is required", true, nil
+		}
+		result, err := t.delegateMgr.AgentResult(args.AgentID)
+		if err != nil {
+			return err.Error(), true, nil
+		}
+		if result == "" {
+			return "(agent produced no output)", false, nil
+		}
+		return result, false, nil
+
+	default:
+		return "", false, fmt.Errorf("unknown delegation tool: %s", name)
+	}
+}
+
+func delegationTools() []ToolDef {
+	intProp := func(desc string) map[string]interface{} {
+		return map[string]interface{}{"type": "integer", "description": desc}
+	}
+	strProp := func(desc string) map[string]interface{} {
+		return map[string]interface{}{"type": "string", "description": desc}
+	}
+	arrStrProp := func(desc string) map[string]interface{} {
+		return map[string]interface{}{"type": "array", "description": desc, "items": map[string]interface{}{"type": "string"}}
+	}
+	return []ToolDef{
+		{Type: "function", Function: FunctionDef{
+			Name:        toolDelegateAgent,
+			Description: "Delegate a sub-task to a sub-agent with its own system prompt, objective, and isolated browser context. The sub-agent runs independently with full browser and file workspace tools. You can check its status, steer it mid-task, and retrieve its final output. Returns the sub-agent ID.",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+				"role_seed":   strProp("Role identity for the sub-agent, e.g. 'You are a code reviewer.'"),
+				"objective":   strProp("Concise objective describing what to accomplish"),
+				"context":     strProp("Optional background information the sub-agent needs"),
+				"constraints": arrStrProp("Optional list of rules and boundaries for the sub-agent"),
+				"output_spec": strProp("Optional expected output format"),
+				"max_turns":   intProp("Optional maximum iterations for this mission (default 25)"),
+			}, "required": []string{"objective"}},
+		}},
+		{Type: "function", Function: FunctionDef{
+			Name:        toolSteerAgent,
+			Description: "Send a mid-task steering message to a running sub-agent. The sub-agent receives the message as guidance on its next turn.",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+				"agent_id": strProp("The sub-agent ID to steer"),
+				"message":  strProp("Guidance message for the sub-agent"),
+			}, "required": []string{"agent_id", "message"}},
+		}},
+		{Type: "function", Function: FunctionDef{
+			Name:        toolAgentStatus,
+			Description: "Check the current status of a sub-agent. Returns the agent's status (running, completed, error) or an error if the agent is not found.",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+				"agent_id": strProp("The sub-agent ID to check"),
+			}, "required": []string{"agent_id"}},
+		}},
+		{Type: "function", Function: FunctionDef{
+			Name:        toolReleaseAgent,
+			Description: "Release (kill) a sub-agent. The sub-agent is interrupted and its resources cleaned up. Use this when the sub-agent is no longer needed or its mission is superseded.",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+				"agent_id": strProp("The sub-agent ID to release"),
+			}, "required": []string{"agent_id"}},
+		}},
+		{Type: "function", Function: FunctionDef{
+			Name:        toolGetAgentResult,
+			Description: "Retrieve the final output of a completed sub-agent. Returns the agent's final response text, or an error if the agent is still running or not found. Only completed agents have a result available.",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+				"agent_id": strProp("The sub-agent ID to get the result from"),
+			}, "required": []string{"agent_id"}},
+		}},
 	}
 }
 
