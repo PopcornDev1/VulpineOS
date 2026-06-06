@@ -1528,7 +1528,19 @@ func (m Model) view(palette string) string {
 		b.WriteString(inputMutedStyle.Render("  " + notice))
 	}
 
-	return b.String()
+	// Pad to exact height so Bubble Tea never leaves ghost characters from a
+	// previous frame in the leftover rows. This prevents rendering glitches in
+	// the input area when scrolling through large walls of text.
+	result := b.String()
+	lines := strings.Split(result, "\n")
+	if len(lines) < m.height {
+		pad := make([]string, 0, m.height-len(lines))
+		for i := 0; i < m.height-len(lines); i++ {
+			pad = append(pad, "")
+		}
+		result = result + "\n" + strings.Join(pad, "\n")
+	}
+	return result
 }
 
 // renderShimmer creates a purple shimmer effect across text.
