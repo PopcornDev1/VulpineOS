@@ -120,6 +120,15 @@ CREATE TABLE IF NOT EXISTS proxies (
 	label    TEXT DEFAULT '',
 	added_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS role_seeds (
+	id        TEXT PRIMARY KEY,
+	name      TEXT UNIQUE NOT NULL,
+	content   TEXT NOT NULL,
+	tags      TEXT DEFAULT '[]',
+	created   INTEGER NOT NULL,
+	used      INTEGER DEFAULT 0
+);
 `
 
 // DB wraps the SQLite vault database.
