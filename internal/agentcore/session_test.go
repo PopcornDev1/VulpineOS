@@ -24,6 +24,36 @@ func TestBrowserSystemPromptDoesNotReferenceUnsupportedSnapshotFlag(t *testing.T
 	}
 }
 
+func TestAgentPromptsContainExpectedDirectives(t *testing.T) {
+	for _, want := range []string{
+		"lead agent",
+		"plan strategically",
+		"delegate specialized work",
+		"clarification reflex",
+		"Plan-then-execute",
+	} {
+		if !strings.Contains(LeadAgentPrompt, want) {
+			t.Errorf("LeadAgentPrompt missing: %q", want)
+		}
+	}
+
+	for _, want := range []string{
+		"VulpineOS",
+		"Camoufox",
+		"vulpine_navigate",
+		"vulpine_snapshot",
+	} {
+		if !strings.Contains(BaseSubAgentPrompt, want) {
+			t.Errorf("BaseSubAgentPrompt missing: %q", want)
+		}
+	}
+	for _, unwanted := range []string{"lead agent", "delegate"} {
+		if strings.Contains(BaseSubAgentPrompt, unwanted) {
+			t.Errorf("BaseSubAgentPrompt should not contain %q", unwanted)
+		}
+	}
+}
+
 func TestBrowserSystemPromptIncludesFileWorkspaceTools(t *testing.T) {
 	for _, want := range []string{
 		"File Workspace Tools",
