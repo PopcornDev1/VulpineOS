@@ -106,7 +106,7 @@ func TestDefaultHeightShowsRecentRuntimeEvent(t *testing.T) {
 
 func TestConstrainedHeightPrioritizesTelemetryAndOmitsRiskAndSentinel(t *testing.T) {
 	model := New()
-	model.SetHeight(10)
+	model.SetHeight(11)
 
 	updated, _ := model.Update(shared.KernelStatusMsg{
 		Running: true,

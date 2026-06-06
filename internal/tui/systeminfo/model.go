@@ -26,6 +26,7 @@ type Model struct {
 	runtimeEvents  []sharedRuntimeEvent
 	width          int
 	height         int
+	sessionTokens  int64
 }
 
 type sharedRuntimeEvent struct {
@@ -138,6 +139,11 @@ func (m *Model) SetBrowserCounts(contexts, pages int) {
 	m.activePages = pages
 }
 
+// SetSessionTokens sets the cumulative token count across all agents.
+func (m *Model) SetSessionTokens(n int64) {
+	m.sessionTokens = n
+}
+
 // View renders the system info panel.
 func (m Model) View() string {
 	var b strings.Builder
@@ -163,6 +169,8 @@ func (m Model) View() string {
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("MEM %s\n", meterBar(m.memoryMB, 1024, fmt.Sprintf("%.0f", m.memoryMB))))
 	b.WriteString(fmt.Sprintf("LAG %s", meterBar(m.eventLoopLag, 100, fmt.Sprintf("%.0fms", m.eventLoopLag))))
+	b.WriteString("\n")
+	b.WriteString(shared.MutedStyle.Render(fmt.Sprintf("TKN %s", formatTokens(m.sessionTokens))))
 
 	if len(m.runtimeEvents) > 0 {
 		b.WriteString("\n\n")
@@ -217,6 +225,17 @@ func formatRuntimeEvent(event sharedRuntimeEvent) string {
 		component = component[:4]
 	}
 	return fmt.Sprintf("%-4s %s %s", component, event.event, event.at.Format("15:04"))
+}
+
+// formatTokens formats a token count compactly (e.g., "1,234", "12.3k").
+func formatTokens(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 1000000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%.1fM", float64(n)/1000000)
 }
 
 // formatDuration formats a duration compactly (e.g., "12m", "1h3m").

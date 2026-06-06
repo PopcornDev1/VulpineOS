@@ -221,6 +221,7 @@ type App struct {
 	selectionAutoScrollCol  int
 	pendingChatFocusAgentID string
 	liveAgentContexts       map[string]string
+	agentTokens             map[string]int
 	clipboardWrite          func(string) error
 
 	// Text inputs
@@ -291,6 +292,7 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		settings:          settings.New(),
 		commandPalette:    commandpalette.New(),
 		liveAgentContexts: make(map[string]string),
+		agentTokens:       make(map[string]int),
 		clipboardWrite:    clipboard.WriteAll,
 		eventCh:           eventCh,
 		eventIn:           eventIn,
@@ -332,6 +334,13 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		if err != nil {
 			log.Printf("tui: failed to load agents from vault: %v", err)
 		} else {
+			// Seed per-agent token totals from vault
+			var total int64
+			for _, agent := range agents {
+				app.agentTokens[agent.ID] = agent.TotalTokens
+				total += int64(agent.TotalTokens)
+			}
+			app.systemInfo.SetSessionTokens(total)
 			// Reconcile status: agents that were live when the previous process exited
 			// are now "paused" since no process is running on startup
 			for i := range agents {
@@ -1159,6 +1168,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.vault.UpdateAgentTokens(msg.AgentID, msg.Tokens)
 			}
 		}
+		// Accumulate per-agent tokens for session total
+		if msg.Tokens > 0 {
+			a.agentTokens[msg.AgentID] = msg.Tokens
+			var total int64
+			for _, t := range a.agentTokens {
+				total += int64(t)
+			}
+			a.systemInfo.SetSessionTokens(total)
+		}
 		a.updateLiveAgentContext(msg)
 		pendingTerminalStatus := a.pendingChatFocusAgentID == msg.AgentID && !isLiveAgentStatus(msg.Status)
 		if pendingTerminalStatus {
@@ -1237,6 +1255,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case remoteAgentsLoadedMsg:
 		a.agentList.SetAgents(msg.Agents)
+		// Seed per-agent token totals from loaded agents
+		a.agentTokens = make(map[string]int, len(msg.Agents))
+		total := int64(0)
+		for _, agent := range msg.Agents {
+			a.agentTokens[agent.ID] = agent.TotalTokens
+			total += int64(agent.TotalTokens)
+		}
+		a.systemInfo.SetSessionTokens(total)
 		if len(msg.Agents) == 0 {
 			a.selectedAgentID = ""
 			a.conversation.SetAgentID("")
@@ -1385,6 +1411,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case shared.AgentDeletedMsg:
 		a.agentList.RemoveAgent(msg.AgentID)
+		// Remove tokens for deleted agent
+		delete(a.agentTokens, msg.AgentID)
+		var total int64
+		for _, t := range a.agentTokens {
+			total += int64(t)
+		}
+		a.systemInfo.SetSessionTokens(total)
 		// If deleted agent was selected, clear selection
 		if a.selectedAgentID == msg.AgentID {
 			a.selectedAgentID = ""
