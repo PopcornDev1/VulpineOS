@@ -158,7 +158,8 @@ def fetch_release(tag=None):
         sys.stderr.write(f"GitHub release lookup failed: {exc}\n")
         return None
 
-release = fetch_release()
+release_tag = os.environ.get("VULPINEOS_RELEASE_TAG") or None
+release = fetch_release(release_tag)
 if release is None:
     sys.exit(1)
 
