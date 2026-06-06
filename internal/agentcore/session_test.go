@@ -31,6 +31,13 @@ func TestAgentPromptsContainExpectedDirectives(t *testing.T) {
 		"delegate specialized work",
 		"clarification reflex",
 		"Plan-then-execute",
+		"Sub-Agent System",
+		"autonomous LLM instances",
+		"vulpine_delegate_agent",
+		"vulpine_steer_agent",
+		"vulpine_agent_status",
+		"vulpine_get_agent_result",
+		"vulpine_release_agent",
 	} {
 		if !strings.Contains(LeadAgentPrompt, want) {
 			t.Errorf("LeadAgentPrompt missing: %q", want)
