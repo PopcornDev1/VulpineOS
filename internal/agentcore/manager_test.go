@@ -125,3 +125,63 @@ func hasRuntimeEvent(events []vault.RuntimeEvent, event string) bool {
 	}
 	return false
 }
+
+func TestDelegateSubAgent(t *testing.T) {
+	m := NewManager(nil, Config{})
+	defer m.Dispose()
+
+	mission := Mission{
+		RoleSeed:    "You are a test specialist.",
+		Objective:   "Do something simple",
+		Constraints: []string{"Be quick"},
+		OutputSpec:  "Return 'done'",
+		MaxTurns:    3,
+	}
+
+	agentID, err := m.Delegate(mission)
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	if agentID == "" {
+		t.Fatal("expected non-empty agent ID")
+	}
+
+	// List should show the sub-agent
+	list := m.List()
+	found := false
+	for _, a := range list {
+		if a.AgentID == agentID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("delegated agent %q not found in List()", agentID)
+	}
+}
+
+func TestDelegateWithParentID(t *testing.T) {
+	m := NewManager(nil, Config{})
+	defer m.Dispose()
+
+	mission := Mission{
+		Objective: "test",
+		MaxTurns:  3,
+	}
+
+	agentID, err := m.DelegateForParentMission(mission, "parent-agent")
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+
+	// Status should include parent id
+	m.mu.RLock()
+	ag, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		t.Fatal("agent not found in map")
+	}
+	if ag.parentID != "parent-agent" {
+		t.Errorf("expected parentID 'parent-agent', got %q", ag.parentID)
+	}
+}

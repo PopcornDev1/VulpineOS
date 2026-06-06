@@ -56,6 +56,7 @@ type Manager struct {
 
 type nativeAgent struct {
 	id        string
+	parentID  string   // empty for lead agents, set for sub-agents
 	contextID string
 	cancel    context.CancelFunc
 	cleanup   func()
@@ -63,6 +64,7 @@ type nativeAgent struct {
 	terminal  string
 	objective string
 	tokens    int // cumulative tokens consumed this run
+	inbox     []string // steering messages from lead agent
 }
 
 // NewManager creates a native runtime bound to a juggler client and model
@@ -352,7 +354,7 @@ func (m *Manager) List() []agentmsg.AgentStatus {
 	defer m.mu.RUnlock()
 	out := make([]agentmsg.AgentStatus, 0, len(m.agents))
 	for _, ag := range m.agents {
-		out = append(out, agentmsg.AgentStatus{AgentID: ag.id, ContextID: ag.contextID, Status: ag.status, Objective: ag.objective})
+		out = append(out, agentmsg.AgentStatus{AgentID: ag.id, ParentID: ag.parentID, ContextID: ag.contextID, Status: ag.status, Objective: ag.objective})
 	}
 	return out
 }
@@ -442,13 +444,15 @@ func (m *Manager) finish(agentID string, ag *nativeAgent) {
 func (m *Manager) emitStatus(agentID, contextID, status, objective string) {
 	m.mu.Lock()
 	tokens := 0
+	parentID := ""
 	if ag, ok := m.agents[agentID]; ok {
 		ag.status = status
 		ag.objective = objective
 		tokens = ag.tokens
+		parentID = ag.parentID
 	}
 	m.mu.Unlock()
-	m.safeSendStatus(agentmsg.AgentStatus{AgentID: agentID, ContextID: contextID, Status: status, Objective: objective, Tokens: tokens})
+	m.safeSendStatus(agentmsg.AgentStatus{AgentID: agentID, ParentID: parentID, ContextID: contextID, Status: status, Objective: objective, Tokens: tokens})
 }
 
 func (m *Manager) emitConversation(agentID, role, content string) {
@@ -536,6 +540,118 @@ func (m *Manager) logRuntimeEvent(level, event, message string, metadata map[str
 		return
 	}
 	_, _ = audit.Log("agentcore", level, event, message, metadata)
+}
+
+// Delegate spawns a sub-agent with a composed prompt from the given mission.
+// Returns the new agent's ID. The sub-agent runs asynchronously.
+func (m *Manager) Delegate(mission Mission) (string, error) {
+	return m.DelegateForParentMission(mission, "")
+}
+
+// DelegateForParentMission spawns a sub-agent with a known parent lead agent ID.
+func (m *Manager) DelegateForParentMission(mission Mission, parentID string) (string, error) {
+	id := uuid.New().String()[:8]
+	task := composeSubAgentTask(mission)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ag := &nativeAgent{
+		id:       id,
+		parentID: parentID,
+		cancel:   cancel,
+		status:   "running",
+		objective: task,
+		inbox:    make([]string, 0),
+	}
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		cancel()
+		return "", fmt.Errorf("manager closed")
+	}
+	m.agents[id] = ag
+	m.wg.Add(1)
+	m.mu.Unlock()
+
+	ev := &managerEvents{m: m, agentID: id}
+	m.emitStatus(id, "", "running", task)
+	m.logRuntimeEvent("info", "sub_agent_started", "sub-agent started", map[string]string{
+		"agent_id":  id,
+		"parent_id": parentID,
+		"objective": truncateString(task, 80),
+	})
+
+	m.cfgMu.RLock()
+	cfg := m.cfg
+	m.cfgMu.RUnlock()
+
+	go func() {
+		defer m.wg.Done()
+		var err error
+
+		prompt := ComposeSubAgentPrompt(mission)
+		loop := NewLoop(newCompleter(cfg), nil, ev, LoopConfig{
+			Models:        cfg.modelChain(),
+			SystemPrompt:  prompt,
+			Tools:         nil,
+			MaxIterations: mission.MaxTurns,
+		})
+		_, err = loop.Run(ctx, task, nil)
+
+		final := "completed"
+		if err != nil {
+			final = "error"
+			m.emitConversation(id, "system", "sub-agent error: "+err.Error())
+			m.logRuntimeEvent("error", "sub_agent_failed", err.Error(), map[string]string{"agent_id": id})
+		}
+		m.emitStatus(id, "", final, task)
+		m.finish(id, ag)
+	}()
+
+	return id, nil
+}
+
+// SteerAgent sends a mid-task guidance message to a running sub-agent.
+func (m *Manager) SteerAgent(agentID, message string) error {
+	m.mu.Lock()
+	ag, ok := m.agents[agentID]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("agent %s not found", agentID)
+	}
+	ag.inbox = append(ag.inbox, message)
+	m.mu.Unlock()
+	return nil
+}
+
+// AgentStatus returns the current status of an agent.
+func (m *Manager) AgentStatus(agentID string) (string, error) {
+	m.mu.RLock()
+	ag, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("agent %s not found", agentID)
+	}
+	return ag.status, nil
+}
+
+// ReleaseAgent terminates a sub-agent and cleans up its resources.
+func (m *Manager) ReleaseAgent(agentID string) error {
+	return m.Kill(agentID)
+}
+
+// truncateString truncates a string to max runes for logging.
+func truncateString(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "..."
+}
+
+// composeSubAgentTask builds the user task string for a sub-agent.
+func composeSubAgentTask(m Mission) string {
+	return m.Objective
 }
 
 func readTask(sopFile string, extraArgs []string) string {
