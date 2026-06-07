@@ -37,6 +37,7 @@ func TestAgentPromptsContainExpectedDirectives(t *testing.T) {
 		"vulpine_steer_agent",
 		"vulpine_agent_status",
 		"vulpine_get_agent_result",
+		"vulpine_get_agent_snapshot",
 		"vulpine_release_agent",
 	} {
 		if !strings.Contains(LeadAgentPrompt, want) {

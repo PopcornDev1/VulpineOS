@@ -532,13 +532,18 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 					if !ok {
 						return
 					}
-					emitEvent(shared.AgentStatusMsg{
-						AgentID:   status.AgentID,
-						ContextID: status.ContextID,
-						Status:    status.Status,
-						Objective: status.Objective,
-						Tokens:    status.Tokens,
-					})
+				emitEvent(shared.AgentStatusMsg{
+					AgentID:      status.AgentID,
+					ParentID:     status.ParentID,
+					ContextID:    status.ContextID,
+					Status:       status.Status,
+					Objective:    status.Objective,
+					Tokens:       status.Tokens,
+					Phase:        status.Phase,
+					Turn:         status.Turn,
+					MaxTurns:     status.MaxTurns,
+					LastActivity: status.LastActivity,
+				})
 				}
 			}
 		}()
@@ -1160,8 +1165,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.waitForEvent())
 
 	case shared.AgentStatusMsg:
+		// Auto-create agent entry for unknown agents (sub-agents, remote agents
+		// not yet synced). The agent list stores vault.Agent records; when we get
+		// a status for an unseen ID we create a minimal in-memory entry so the
+		// user sees it in the side panel.
+		if _, known := a.agentList.Agent(msg.AgentID); !known {
+			a.agentList.AddAgent(vault.Agent{
+				ID:     msg.AgentID,
+				Name:   msg.AgentID[:min(len(msg.AgentID), 8)],
+				Task:   msg.Objective,
+				Status: msg.Status,
+			})
+		}
 		a.agentList, _ = a.agentList.Update(msg)
-		// Update vault status
+		// Update vault status (no-op when agent doesn't exist in vault — SQL
+		// UPDATE with no matching row is harmless).
 		if a.vault != nil {
 			a.vault.UpdateAgentStatus(msg.AgentID, msg.Status)
 			if msg.Tokens > 0 {

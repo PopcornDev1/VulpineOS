@@ -331,6 +331,7 @@ type mockDelegationManager struct {
 	AgentStatusFunc   func(string) (string, error)
 	AgentResultFunc   func(string) (string, error)
 	ReleaseAgentFunc  func(string) error
+	AgentSnapshotFunc func(string) (string, error)
 }
 
 func (m *mockDelegationManager) Delegate(mission Mission) (string, error) {
@@ -366,6 +367,13 @@ func (m *mockDelegationManager) ReleaseAgent(agentID string) error {
 		return m.ReleaseAgentFunc(agentID)
 	}
 	return nil
+}
+
+func (m *mockDelegationManager) AgentSnapshot(agentID string) (string, error) {
+	if m.AgentSnapshotFunc != nil {
+		return m.AgentSnapshotFunc(agentID)
+	}
+	return `{"status":"running","phase":"processing"}`, nil
 }
 
 func TestDelegateAgentTool(t *testing.T) {

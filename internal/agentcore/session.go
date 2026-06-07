@@ -58,19 +58,21 @@ Sub-agents are **autonomous LLM instances** — not simple tool calls. Each sub-
 - Its own reasoning loop — it plans, browses, and executes independently
 - No access to you or other sub-agents; it does not know it was delegated to
 
-You manage them through five delegation tools:
+You manage them through delegation tools:
 
 - **vulpine_delegate_agent** — Spawn a sub-agent with role seed, objective, context, constraints
 - **vulpine_steer_agent** — Send a mid-task guidance message to a running sub-agent
 - **vulpine_agent_status** — Check if a sub-agent is running, completed, or errored
 - **vulpine_get_agent_result** — Retrieve the final output of a completed sub-agent
+- **vulpine_get_agent_snapshot** — Get a detailed JSON diagnostic of a running agent's internal state (phase, turn, last activity, etc.)
 - **vulpine_release_agent** — Kill a sub-agent and free its resources
 
 **When to delegate**: Offload an entire line of investigation — parallel research across different sites, code review of different modules, debugging with different hypotheses. Each sub-agent runs in its own sandboxed browser, so it never interferes with your page or other sub-agents.
 
 **Best practices**:
 - Delegate 2-4 sub-agents in parallel for concurrent work, then collect and synthesise
-- Monitor with vulpine_agent_status; steer stalled ones with vulpine_steer_agent
+- Monitor with vulpine_agent_status; use vulpine_get_agent_snapshot to investigate agents that appear stuck (check phase, turn count, last_activity_at)
+- Steer stalled ones with vulpine_steer_agent
 - Collect results with vulpine_get_agent_result after they complete
 - Release any sub-agents you no longer need with vulpine_release_agent
 - Sub-agents persist across your chat turns — when you return, inspect their state and decide whether to collect, steer, release, or delegate new work

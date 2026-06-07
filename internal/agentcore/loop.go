@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Completer runs one streaming model turn. *ModelClient implements it; tests
@@ -30,6 +31,8 @@ type Events interface {
 	OnStatus(status string)                       // "running" | "completed" | "error"
 	OnUsage(turn Usage)                           // token usage for one completed model turn
 	OnWarning(text string)                        // operator-facing warning (e.g. false-success)
+	OnPhase(phase string)                         // processing, waiting_on_tool, idle, finalizing
+	OnTurn(turn int)                              // current iteration count
 }
 
 // NopEvents is an Events that ignores everything (useful as a default/base).
@@ -42,6 +45,8 @@ func (NopEvents) OnToolResult(string, string, bool) {}
 func (NopEvents) OnStatus(string)                   {}
 func (NopEvents) OnUsage(Usage)                     {}
 func (NopEvents) OnWarning(string)                  {}
+func (NopEvents) OnPhase(string)                    {}
+func (NopEvents) OnTurn(int)                        {}
 
 // LoopConfig configures a single agent run.
 type LoopConfig struct {
@@ -59,6 +64,10 @@ type LoopConfig struct {
 	// older large results are compressed to a short stub to save context.
 	// Defaults to 3 when <= 0.
 	KeepFullToolResults int
+	// ModelTimeout is the max duration to wait for a single model API call.
+	// When exceeded, the loop returns a timeout error. 0 means no timeout
+	// (wait indefinitely, unless the caller's context cancels).
+	ModelTimeout time.Duration
 	// InboxReader returns pending steering messages for this agent. Called
 	// before each model turn; returned messages are injected as system messages.
 	// May be nil.
@@ -104,6 +113,7 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 	messages = append(messages, ChatMessage{Role: "user", Content: task})
 
 	l.events.OnStatus("running")
+	l.events.OnPhase("processing")
 
 	// Track whether the most recent tool call failed, so we can warn the operator
 	// if the model then replies as if the task succeeded (false-success).
@@ -115,6 +125,9 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 			l.events.OnStatus("error")
 			return "", err
 		}
+
+		l.events.OnTurn(iter + 1)
+		l.events.OnPhase("processing")
 
 		if l.cfg.InboxReader != nil {
 			for _, msg := range l.cfg.InboxReader() {
@@ -132,6 +145,7 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 		}
 
 		if !comp.HasToolCalls() {
+			l.events.OnPhase("finalizing")
 			final := comp.Message.Content
 			if lastToolFailed {
 				l.events.OnWarning(fmt.Sprintf("assistant replied after %s failed, with no successful retry recorded", lastFailedTool))
@@ -153,6 +167,7 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 				l.events.OnStatus("error")
 				return "", err
 			}
+			l.events.OnPhase("waiting_on_tool")
 			l.events.OnToolCall(tc.Function.Name, tc.Function.Arguments)
 
 			var result string
@@ -164,6 +179,7 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 			} else {
 				result, isErr = r, e
 			}
+			l.events.OnPhase("processing")
 
 			l.events.OnToolResult(tc.Function.Name, result, isErr)
 			if isErr {
@@ -183,6 +199,8 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 		l.compressOldToolResults(messages)
 	}
 
+	l.events.OnPhase("finalizing")
+
 	l.events.OnStatus("error")
 	return "", fmt.Errorf("agent did not finish within %d iterations", l.cfg.MaxIterations)
 }
@@ -192,7 +210,13 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 func (l *Loop) streamWithFallback(ctx context.Context, messages []ChatMessage) (Completion, error) {
 	var lastErr error
 	for i, model := range l.cfg.Models {
-		comp, err := l.model.Stream(ctx, model, messages, l.cfg.Tools, l.events.OnTextDelta)
+		callCtx := ctx
+		cancel := func() {}
+		if l.cfg.ModelTimeout > 0 {
+			callCtx, cancel = context.WithTimeout(ctx, l.cfg.ModelTimeout)
+		}
+		comp, err := l.model.Stream(callCtx, model, messages, l.cfg.Tools, l.events.OnTextDelta)
+		cancel()
 		if err == nil {
 			return comp, nil
 		}

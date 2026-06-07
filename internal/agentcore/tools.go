@@ -111,7 +111,7 @@ func subAgentTools() []ToolDef {
 	filtered := make([]ToolDef, 0, len(all))
 	for _, td := range all {
 		switch td.Function.Name {
-		case toolDelegateAgent, toolSteerAgent, toolAgentStatus, toolReleaseAgent, toolGetAgentResult:
+		case toolDelegateAgent, toolSteerAgent, toolAgentStatus, toolReleaseAgent, toolGetAgentResult, toolGetAgentSnapshot:
 			continue
 		}
 		filtered = append(filtered, td)
@@ -164,11 +164,12 @@ const (
 	toolReadFile  = "vulpine_read_file"
 	toolWriteFile = "vulpine_write_file"
 
-	toolDelegateAgent  = "vulpine_delegate_agent"
-	toolSteerAgent     = "vulpine_steer_agent"
-	toolAgentStatus    = "vulpine_agent_status"
-	toolReleaseAgent   = "vulpine_release_agent"
-	toolGetAgentResult = "vulpine_get_agent_result"
+	toolDelegateAgent   = "vulpine_delegate_agent"
+	toolSteerAgent      = "vulpine_steer_agent"
+	toolAgentStatus     = "vulpine_agent_status"
+	toolReleaseAgent    = "vulpine_release_agent"
+	toolGetAgentResult  = "vulpine_get_agent_result"
+	toolGetAgentSnapshot = "vulpine_get_agent_snapshot"
 )
 
 // DelegationManager is the interface for delegating work to sub-agents.
@@ -179,6 +180,7 @@ type DelegationManager interface {
 	AgentStatus(agentID string) (string, error)
 	AgentResult(agentID string) (string, error)
 	ReleaseAgent(agentID string) error
+	AgentSnapshot(agentID string) (string, error) // rich JSON status for diagnostics
 }
 
 func fileTools() []ToolDef {
@@ -352,7 +354,7 @@ func (t *BrowserToolset) Dispatch(ctx context.Context, name string, rawArgs stri
 	}
 
 	switch name {
-	case toolDelegateAgent, toolSteerAgent, toolAgentStatus, toolReleaseAgent, toolGetAgentResult:
+	case toolDelegateAgent, toolSteerAgent, toolAgentStatus, toolReleaseAgent, toolGetAgentResult, toolGetAgentSnapshot:
 		return t.dispatchDelegationTool(ctx, name, rawArgs)
 	}
 
@@ -528,6 +530,22 @@ func (t *BrowserToolset) dispatchDelegationTool(ctx context.Context, name, rawAr
 		}
 		return result, false, nil
 
+	case toolGetAgentSnapshot:
+		var args struct {
+			AgentID string `json:"agent_id"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &args); err != nil {
+			return "", false, fmt.Errorf("parse arguments for %s: %w", name, err)
+		}
+		if args.AgentID == "" {
+			return "agent_id is required", true, nil
+		}
+		snapshot, err := t.delegateMgr.AgentSnapshot(args.AgentID)
+		if err != nil {
+			return err.Error(), true, nil
+		}
+		return snapshot, false, nil
+
 	default:
 		return "", false, fmt.Errorf("unknown delegation tool: %s", name)
 	}
@@ -583,6 +601,13 @@ func delegationTools() []ToolDef {
 			Description: "Retrieve the final output of a completed sub-agent. Returns the agent's final response text, or an error if the agent is still running or not found. Only completed agents have a result available.",
 			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
 				"agent_id": strProp("The sub-agent ID to get the result from"),
+			}, "required": []string{"agent_id"}},
+		}},
+		{Type: "function", Function: FunctionDef{
+			Name:        toolGetAgentSnapshot,
+			Description: "Get a detailed JSON snapshot of a sub-agent's current state for diagnostics. Includes status, phase (processing/waiting_on_tool/idle/finalizing), turn count, max turns, last activity timestamp, and whether a final result is available. Use this to distinguish actively progressing agents from stuck/idle ones.",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+				"agent_id": strProp("The sub-agent ID to inspect"),
 			}, "required": []string{"agent_id"}},
 		}},
 	}

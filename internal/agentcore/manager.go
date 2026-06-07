@@ -59,17 +59,21 @@ type Manager struct {
 }
 
 type nativeAgent struct {
-	id        string
-	parentID  string   // empty for lead agents, set for sub-agents
-	contextID string
-	cancel    context.CancelFunc
-	cleanup   func()
-	status    string
-	terminal  string
-	objective string
-	tokens    int // cumulative tokens consumed this run
-	inbox     []string // steering messages from lead agent
-	result    string   // final output text, set when sub-agent completes
+	id           string
+	parentID     string   // empty for lead agents, set for sub-agents
+	contextID    string
+	cancel       context.CancelFunc
+	cleanup      func()
+	status       string
+	terminal     string
+	objective    string
+	tokens       int // cumulative tokens consumed this run
+	inbox        []string // steering messages from lead agent
+	result       string   // final output text, set when sub-agent completes
+	phase        string   // processing, waiting_on_tool, idle, finalizing
+	turn         int      // current iteration in the agent loop
+	maxTurns     int      // max iterations before forced stop
+	lastActivity int64    // unix timestamp of last recorded activity
 }
 
 // NewManager creates a native runtime bound to a juggler client and model
@@ -480,14 +484,33 @@ func (m *Manager) emitStatus(agentID, contextID, status, objective string) {
 	m.mu.Lock()
 	tokens := 0
 	parentID := ""
+	var phase string
+	turn := 0
+	maxTurns := 0
+	lastActivity := int64(0)
 	if ag, ok := m.agents[agentID]; ok {
 		ag.status = status
 		ag.objective = objective
 		tokens = ag.tokens
 		parentID = ag.parentID
+		phase = ag.phase
+		turn = ag.turn
+		maxTurns = ag.maxTurns
+		lastActivity = ag.lastActivity
 	}
 	m.mu.Unlock()
-	m.safeSendStatus(agentmsg.AgentStatus{AgentID: agentID, ParentID: parentID, ContextID: contextID, Status: status, Objective: objective, Tokens: tokens})
+	m.safeSendStatus(agentmsg.AgentStatus{
+		AgentID:      agentID,
+		ParentID:     parentID,
+		ContextID:    contextID,
+		Status:       status,
+		Objective:    objective,
+		Tokens:       tokens,
+		Phase:        phase,
+		Turn:         turn,
+		MaxTurns:     maxTurns,
+		LastActivity: lastActivity,
+	})
 }
 
 func (m *Manager) emitConversation(agentID, role, content string) {
@@ -589,13 +612,19 @@ func (m *Manager) DelegateForParentMission(mission Mission, parentID string) (st
 	task := composeSubAgentTask(mission)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	maxTurns := mission.MaxTurns
+	if maxTurns <= 0 {
+		maxTurns = 25
+	}
 	ag := &nativeAgent{
-		id:        id,
-		parentID:  parentID,
-		cancel:    cancel,
-		status:    "running",
-		objective: task,
-		inbox:     make([]string, 0),
+		id:           id,
+		parentID:     parentID,
+		cancel:       cancel,
+		status:       "running",
+		objective:    task,
+		inbox:        make([]string, 0),
+		maxTurns:     maxTurns,
+		lastActivity: time.Now().Unix(),
 	}
 
 	m.mu.Lock()
@@ -663,6 +692,7 @@ func (m *Manager) DelegateForParentMission(mission Mission, parentID string) (st
 			SystemPrompt:  prompt,
 			Tools:         subAgentTools(),
 			MaxIterations: mission.MaxTurns,
+			ModelTimeout:  120 * time.Second, // prevent model API hang from blocking the sub-agent indefinitely
 			InboxReader: func() []string {
 				m.mu.Lock()
 				defer m.mu.Unlock()
@@ -738,6 +768,42 @@ func (m *Manager) AgentResult(agentID string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("agent %s not found", agentID)
+}
+
+// AgentSnapshot returns a detailed JSON snapshot of an agent's current state
+// for diagnostic and debugging use by lead agents. Unlike AgentStatus (a single
+// word), the snapshot includes phase, turn, last activity, and run metadata so
+// the lead agent can distinguish active agents from stuck/idle ones.
+func (m *Manager) AgentSnapshot(agentID string) (string, error) {
+	m.mu.RLock()
+	ag, ok := m.agents[agentID]
+	if !ok {
+		// Check results cache for completed agents that were cleaned up.
+		wasCached := false
+		if m.results != nil {
+			_, wasCached = m.results[agentID]
+		}
+		m.mu.RUnlock()
+		if wasCached {
+			return fmt.Sprintf(`{"agent_id":%q,"status":"completed","result_available":true}`, agentID), nil
+		}
+		return "", fmt.Errorf("agent %s not found", agentID)
+	}
+	parentID := ag.parentID
+	status := ag.status
+	phase := ag.phase
+	objective := ag.objective
+	turn := ag.turn
+	maxTurns := ag.maxTurns
+	lastActivity := ag.lastActivity
+	tokens := ag.tokens
+	hasResult := ag.result != ""
+	m.mu.RUnlock()
+
+	return fmt.Sprintf(
+		`{"agent_id":%q,"parent_id":%q,"status":%q,"phase":%q,"objective":%q,"turn":%d,"max_turns":%d,"last_activity_at":%d,"tokens":%d,"result_available":%t}`,
+		agentID, parentID, status, phase, objective, turn, maxTurns, lastActivity, tokens, hasResult,
+	), nil
 }
 
 // ReleaseAgent terminates a sub-agent and cleans up its resources.
@@ -839,9 +905,25 @@ func (e *managerEvents) OnToolResult(name, result string, isErr bool) {
 	})
 }
 func (e *managerEvents) OnStatus(status string) {}
-func (e *managerEvents) OnUsage(turn Usage)     { e.m.addTokens(e.agentID, turn) }
+func (e *managerEvents) OnUsage(turn Usage) { e.m.addTokens(e.agentID, turn) }
 func (e *managerEvents) OnWarning(text string) {
 	e.m.emitConversation(e.agentID, "system", "Warning: "+text)
+}
+func (e *managerEvents) OnPhase(phase string) {
+	e.m.mu.Lock()
+	if ag, ok := e.m.agents[e.agentID]; ok {
+		ag.phase = phase
+		ag.lastActivity = time.Now().Unix()
+	}
+	e.m.mu.Unlock()
+}
+func (e *managerEvents) OnTurn(turn int) {
+	e.m.mu.Lock()
+	if ag, ok := e.m.agents[e.agentID]; ok {
+		ag.turn = turn
+		ag.lastActivity = time.Now().Unix()
+	}
+	e.m.mu.Unlock()
 }
 
 // toolCallSummary renders a concise "name {key args}" label for the trace.

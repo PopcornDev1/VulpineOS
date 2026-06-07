@@ -65,6 +65,8 @@ func (r *recordEvents) OnToolResult(n, res string, e bool) { r.toolRes = append(
 func (r *recordEvents) OnStatus(s string)                  { r.statuses = append(r.statuses, s) }
 func (r *recordEvents) OnUsage(Usage)                      {}
 func (r *recordEvents) OnWarning(w string)                 { r.warnings = append(r.warnings, w) }
+func (r *recordEvents) OnPhase(string)                     {}
+func (r *recordEvents) OnTurn(int)                         {}
 
 func toolCallTurn(id, name, args string) Completion {
 	return Completion{

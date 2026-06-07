@@ -57,11 +57,16 @@ type TargetDetachedMsg struct {
 
 // AgentStatusMsg carries agent runtime status.
 type AgentStatusMsg struct {
-	AgentID   string
-	ContextID string
-	Status    string
-	Objective string
-	Tokens    int
+	AgentID      string
+	ParentID     string
+	ContextID    string
+	Status       string
+	Objective    string
+	Tokens       int
+	Phase        string
+	Turn         int
+	MaxTurns     int
+	LastActivity int64
 }
 
 // AlertMsg carries an injection attempt alert.
