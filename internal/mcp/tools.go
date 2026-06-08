@@ -76,13 +76,14 @@ func baseTools() []ToolDefinition {
 		},
 		{
 			Name:        "vulpine_click",
-			Description: "Click at specific coordinates on the page",
+			Description: "Click at specific coordinates on the page. When verify is true, checks that an element actually exists at the target coordinates before clicking.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
 					"sessionId": {Type: "string", Description: "Target page session ID"},
 					"x":         {Type: "number", Description: "X coordinate"},
 					"y":         {Type: "number", Description: "Y coordinate"},
+					"verify":    {Type: "boolean", Description: "If true, check elementFromPoint before clicking to ensure something is actually at these coordinates."},
 				},
 				Required: []string{"sessionId", "x", "y"},
 			},
@@ -123,6 +124,18 @@ func baseTools() []ToolDefinition {
 			},
 		},
 		{
+			Name:        "vulpine_scroll_into_view",
+			Description: "Scroll an element by its snapshot-scoped ref into the center of the viewport. Essential for pages with nested scroll containers (e.g., LinkedIn feed, virtualized lists). Use vulpine_snapshot first to get refs.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"sessionId": {Type: "string", Description: "Target page session ID"},
+					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7:0\", \"@7:1\")"},
+				},
+				Required: []string{"sessionId", "ref"},
+			},
+		},
+		{
 			Name:        "vulpine_new_context",
 			Description: "Create a new isolated browser context with a fresh page. Returns the sessionId and contextId for subsequent operations.",
 			InputSchema: InputSchema{
@@ -154,12 +167,13 @@ func baseTools() []ToolDefinition {
 		},
 		{
 			Name:        "vulpine_click_ref",
-			Description: "Click an element by its snapshot-scoped ref from the optimized DOM snapshot (e.g. @7:0, @7:1). Use vulpine_snapshot first to get refs.",
+			Description: "Click an element by its snapshot-scoped ref from the optimized DOM snapshot (e.g. @7:0, @7:1). Use vulpine_snapshot first to get refs. When verify is true, checks that the element is actually at the target coordinates before clicking.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
 					"sessionId": {Type: "string", Description: "Target page session ID"},
 					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7:0\", \"@7:1\")"},
+					"verify":    {Type: "boolean", Description: "If true, verify the element is actually at the resolved coordinates using elementFromPoint before clicking. Recommended for dynamic pages."},
 				},
 				Required: []string{"sessionId", "ref"},
 			},
@@ -180,6 +194,18 @@ func baseTools() []ToolDefinition {
 		{
 			Name:        "vulpine_hover_ref",
 			Description: "Hover over an element by its ref from the optimized DOM snapshot.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"sessionId": {Type: "string", Description: "Target page session ID"},
+					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7:0\", \"@7:1\")"},
+				},
+				Required: []string{"sessionId", "ref"},
+			},
+		},
+		{
+			Name:        "vulpine_element_status",
+			Description: "Check the current viewport visibility of an element by its snapshot-scoped ref. Returns inViewport, isFullyVisible, isTopmostAtCenter, intersectionRatio, and the element's current viewport coordinates. Use this to decide whether to scroll_into_view before clicking.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
@@ -470,6 +496,8 @@ func handleToolCallFull(ctx context.Context, client *juggler.Client, tracker *Co
 		return handleScreenshot(client, args)
 	case "vulpine_scroll":
 		return handleScroll(client, tracker, args)
+	case "vulpine_scroll_into_view":
+		return handleScrollIntoView(client, tracker, args)
 	case "vulpine_new_context":
 		return handleNewContext(client, args)
 	case "vulpine_close_context":
@@ -482,6 +510,8 @@ func handleToolCallFull(ctx context.Context, client *juggler.Client, tracker *Co
 		return handleTypeRef(client, tracker, args)
 	case "vulpine_hover_ref":
 		return handleHoverRef(client, tracker, args)
+	case "vulpine_element_status":
+		return handleElementStatus(client, tracker, args)
 
 	// Agent reliability tools
 	case "vulpine_wait":
@@ -826,9 +856,20 @@ func handleClick(client *juggler.Client, args json.RawMessage) (*ToolCallResult,
 		SessionID string  `json:"sessionId"`
 		X         float64 `json:"x"`
 		Y         float64 `json:"y"`
+		Verify    bool    `json:"verify"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return errorResult(err), nil
+	}
+
+	if p.Verify {
+		ok, err := verifyElementAtPoint(client, nil, p.SessionID, p.X, p.Y)
+		if err != nil {
+			return errorResult(fmt.Errorf("click verify: %w", err)), nil
+		}
+		if !ok {
+			return errorResult(fmt.Errorf("nothing clickable at (%v, %v). The page may have scrolled or changed. Try vulpine_scroll_into_view first.", p.X, p.Y)), nil
+		}
 	}
 
 	// mousedown
@@ -921,6 +962,160 @@ func handleScroll(client *juggler.Client, tracker *ContextTracker, args json.Raw
 	}
 
 	return textResult(fmt.Sprintf("Scrolled by %v pixels to y=%s", p.DeltaY, result)), nil
+}
+
+func handleScrollIntoView(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
+	var p struct {
+		SessionID string `json:"sessionId"`
+		Ref       string `json:"ref"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return errorResult(err), nil
+	}
+
+	axRaw, err := client.Call(p.SessionID, "Accessibility.getFullAXTree", nil)
+	if err != nil {
+		return errorResult(fmt.Errorf("scrollIntoView: getFullAXTree: %w", err)), nil
+	}
+
+	var nodes []map[string]interface{}
+	if uerr := json.Unmarshal(axRaw, &nodes); uerr != nil {
+		return errorResult(fmt.Errorf("scrollIntoView: decode AX tree: %w", uerr)), nil
+	}
+
+	var targetNode map[string]interface{}
+	for _, node := range nodes {
+		r, _ := node["ref"].(string)
+		if r == "" {
+			if rf, ok := node["ref"].(float64); ok {
+				r = fmt.Sprintf("%.0f", rf)
+			}
+		}
+		if r == p.Ref {
+			targetNode = node
+			break
+		}
+	}
+	if targetNode == nil {
+		return errorResult(fmt.Errorf("element ref %s not found in AX tree (stale snapshot?)", p.Ref)), nil
+	}
+
+	role, _ := targetNode["role"].(string)
+	name, _ := targetNode["name"].(string)
+	value, _ := targetNode["value"].(string)
+	tag, _ := targetNode["tag"].(string)
+	if tag == "" {
+		tag = roleToTag(role)
+	}
+
+	js := fmt.Sprintf(`(() => {
+		function getAccessibleName(el) {
+			return (el.getAttribute('aria-label') || el.textContent || '').trim();
+		}
+		function getAccessibleRole(el) {
+			const r = el.getAttribute('role');
+			if (r) return r;
+			const t = el.tagName.toLowerCase();
+			const m = {
+				'a': 'link', 'button': 'button', 'input': (function(i){
+					const tt = (i.type || 'text').toLowerCase();
+					if (tt === 'checkbox') return 'checkbox';
+					if (tt === 'radio') return 'radio';
+					if (tt === 'submit' || tt === 'button') return 'button';
+					return 'textbox';
+				})(el), 'select': 'combobox', 'textarea': 'textbox',
+				'h1':'heading','h2':'heading','h3':'heading','h4':'heading','h5':'heading','h6':'heading',
+				'img':'img','nav':'navigation','main':'main','header':'banner','footer':'contentinfo',
+				'table':'table','form':'form'
+			};
+			return m[t] || t;
+		}
+		const targetRole = %q;
+		const targetName = %q;
+		const targetValue = %q;
+		const targetTag = %q;
+
+		function matches(el) {
+			const role = getAccessibleRole(el);
+			if (targetRole && role !== targetRole && el.tagName.toLowerCase() !== targetRole) return false;
+			if (targetName) {
+				const elName = getAccessibleName(el).toLowerCase();
+				const tn = targetName.toLowerCase();
+				if (!elName.includes(tn) && !tn.includes(elName)) return false;
+			}
+			const rect = el.getBoundingClientRect();
+			return rect.width > 0 && rect.height > 0;
+		}
+
+		const selectors = 'a, button, input, select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="checkbox"],[role="radio"],[role="switch"],[role="option"],[tabindex],label,h1,h2,h3,h4,h5,h6,p,span,div,img,nav,main,header,footer,table,form,li,td,th';
+		let el = null;
+		for (const e of document.querySelectorAll(selectors)) {
+			if (matches(e)) { el = e; break; }
+		}
+		if (!el) {
+			for (const e of document.querySelectorAll('*')) {
+				if (matches(e)) { el = e; break; }
+			}
+		}
+		if (!el) return JSON.stringify({found: false, x: 0, y: 0});
+
+		const beforeRect = el.getBoundingClientRect();
+		const scrollContainer = (function(e) {
+			while (e && e !== document.body && e !== document.documentElement) {
+				const s = window.getComputedStyle(e);
+				if (s.overflow === 'auto' || s.overflow === 'scroll' || s.overflowY === 'auto' || s.overflowY === 'scroll') {
+					if (e.scrollHeight > e.clientHeight) return e;
+				}
+				e = e.parentElement;
+			}
+			return document.documentElement;
+		})(el);
+
+		const containerBefore = { scrollTop: scrollContainer.scrollTop, scrollLeft: scrollContainer.scrollLeft };
+		el.scrollIntoView({block: 'center', behavior: 'instant'});
+		const containerAfter = { scrollTop: scrollContainer.scrollTop, scrollLeft: scrollContainer.scrollLeft };
+		const afterRect = el.getBoundingClientRect();
+
+		return JSON.stringify({
+			found: true,
+			x: Math.round(afterRect.x + afterRect.width / 2),
+			y: Math.round(afterRect.y + afterRect.height / 2),
+			containerTag: scrollContainer.tagName.toLowerCase(),
+			containerId: (scrollContainer.id || ''),
+			scrollDeltaY: Math.round(containerAfter.scrollTop - containerBefore.scrollTop),
+			scrollDeltaX: Math.round(containerAfter.scrollLeft - containerBefore.scrollLeft),
+		});
+	})()`, role, name, value, tag)
+
+	result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
+	if err != nil {
+		return errorResult(fmt.Errorf("scrollIntoView JS: %w", err)), nil
+	}
+
+	var res struct {
+		Found        bool   `json:"found"`
+		X            int    `json:"x"`
+		Y            int    `json:"y"`
+		ContainerTag string `json:"containerTag"`
+		ContainerID  string `json:"containerId"`
+		ScrollDeltaY int    `json:"scrollDeltaY"`
+		ScrollDeltaX int    `json:"scrollDeltaX"`
+	}
+	if uerr := json.Unmarshal([]byte(result), &res); uerr != nil {
+		return errorResult(fmt.Errorf("scrollIntoView decode result: %w", uerr)), nil
+	}
+
+	if !res.Found {
+		return errorResult(fmt.Errorf("element ref %s not found on page (stale snapshot?)", p.Ref)), nil
+	}
+
+	containerInfo := res.ContainerTag
+	if res.ContainerID != "" {
+		containerInfo += "#" + res.ContainerID
+	}
+
+	return textResult(fmt.Sprintf("Scrolled ref %s into view at (%d, %d) via <%s> (scroll ΔY=%d, ΔX=%d)",
+		p.Ref, res.X, res.Y, containerInfo, res.ScrollDeltaY, res.ScrollDeltaX)), nil
 }
 
 func handleNewContext(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
@@ -1224,10 +1419,28 @@ func roleToTag(role string) string {
 	return role
 }
 
+// verifyElementAtPoint checks that a clickable element exists at the given
+// viewport coordinates by running elementFromPoint. Returns true if a visible
+// element is found at the point.
+func verifyElementAtPoint(client *juggler.Client, tracker *ContextTracker, sessionID string, x, y float64) (bool, error) {
+	js := fmt.Sprintf(`(() => {
+		const el = document.elementFromPoint(%f, %f);
+		if (!el) return false;
+		const rect = el.getBoundingClientRect();
+		return rect.width > 0 && rect.height > 0;
+	})()`, x, y)
+	result, err := evalJSWithTracker(client, tracker, sessionID, js)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(result) == "true", nil
+}
+
 func handleClickRef(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
 	var p struct {
 		SessionID string `json:"sessionId"`
 		Ref       string `json:"ref"`
+		Verify    bool   `json:"verify"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return errorResult(err), nil
@@ -1239,6 +1452,16 @@ func handleClickRef(client *juggler.Client, tracker *ContextTracker, args json.R
 	}
 	if !found {
 		return errorResult(fmt.Errorf("element ref %s not found (stale snapshot?)", p.Ref)), nil
+	}
+
+	if p.Verify {
+		ok, err := verifyElementAtPoint(client, tracker, p.SessionID, x, y)
+		if err != nil {
+			return errorResult(fmt.Errorf("click verify: %w", err)), nil
+		}
+		if !ok {
+			return errorResult(fmt.Errorf("element ref %s resolved to (%v, %v) but nothing clickable is at that position. The page may have scrolled or changed since the snapshot. Try vulpine_scroll_into_view with ref %s first, then retry this click.", p.Ref, x, y, p.Ref)), nil
+		}
 	}
 
 	// mousedown
@@ -1333,4 +1556,156 @@ func handleHoverRef(client *juggler.Client, tracker *ContextTracker, args json.R
 	}
 
 	return textResult(fmt.Sprintf("Hovered %s at (%v, %v)", p.Ref, x, y)), nil
+}
+
+func handleElementStatus(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
+	var p struct {
+		SessionID string `json:"sessionId"`
+		Ref       string `json:"ref"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return errorResult(err), nil
+	}
+
+	axRaw, err := client.Call(p.SessionID, "Accessibility.getFullAXTree", nil)
+	if err != nil {
+		return errorResult(fmt.Errorf("elementStatus: getFullAXTree: %w", err)), nil
+	}
+
+	var nodes []map[string]interface{}
+	if uerr := json.Unmarshal(axRaw, &nodes); uerr != nil {
+		return errorResult(fmt.Errorf("elementStatus: decode AX tree: %w", uerr)), nil
+	}
+
+	var targetNode map[string]interface{}
+	for _, node := range nodes {
+		r, _ := node["ref"].(string)
+		if r == "" {
+			if rf, ok := node["ref"].(float64); ok {
+				r = fmt.Sprintf("%.0f", rf)
+			}
+		}
+		if r == p.Ref {
+			targetNode = node
+			break
+		}
+	}
+	if targetNode == nil {
+		return errorResult(fmt.Errorf("element ref %s not found in AX tree (stale snapshot?)", p.Ref)), nil
+	}
+
+	role, _ := targetNode["role"].(string)
+	name, _ := targetNode["name"].(string)
+	value, _ := targetNode["value"].(string)
+	tag, _ := targetNode["tag"].(string)
+	if tag == "" {
+		tag = roleToTag(role)
+	}
+
+	js := fmt.Sprintf(`(() => {
+		function getAccessibleName(el) {
+			return (el.getAttribute('aria-label') || el.textContent || '').trim();
+		}
+		function getAccessibleRole(el) {
+			const r = el.getAttribute('role');
+			if (r) return r;
+			const t = el.tagName.toLowerCase();
+			const m = {
+				'a': 'link', 'button': 'button', 'input': (function(i){
+					const tt = (i.type || 'text').toLowerCase();
+					if (tt === 'checkbox') return 'checkbox';
+					if (tt === 'radio') return 'radio';
+					if (tt === 'submit' || tt === 'button') return 'button';
+					return 'textbox';
+				})(el), 'select': 'combobox', 'textarea': 'textbox',
+				'h1':'heading','h2':'heading','h3':'heading','h4':'heading','h5':'heading','h6':'heading',
+				'img':'img','nav':'navigation','main':'main','header':'banner','footer':'contentinfo',
+				'table':'table','form':'form'
+			};
+			return m[t] || t;
+		}
+		const targetRole = %q;
+		const targetName = %q;
+		const targetValue = %q;
+		const targetTag = %q;
+
+		function matches(el) {
+			const role = getAccessibleRole(el);
+			if (targetRole && role !== targetRole && el.tagName.toLowerCase() !== targetRole) return false;
+			if (targetName) {
+				const elName = getAccessibleName(el).toLowerCase();
+				const tn = targetName.toLowerCase();
+				if (!elName.includes(tn) && !tn.includes(elName)) return false;
+			}
+			const rect = el.getBoundingClientRect();
+			return rect.width > 0 && rect.height > 0;
+		}
+
+		const selectors = 'a, button, input, select,textarea,[role="button"],[role="link"],[role="tab"],[role="menuitem"],[role="checkbox"],[role="radio"],[role="switch"],[role="option"],[tabindex],label,h1,h2,h3,h4,h5,h6,p,span,div,img,nav,main,header,footer,table,form,li,td,th';
+		let el = null;
+		for (const e of document.querySelectorAll(selectors)) {
+			if (matches(e)) { el = e; break; }
+		}
+		if (!el) {
+			for (const e of document.querySelectorAll('*')) {
+				if (matches(e)) { el = e; break; }
+			}
+		}
+		if (!el) return JSON.stringify({found: false});
+
+		const rect = el.getBoundingClientRect();
+		const vw = window.innerWidth;
+		const vh = window.innerHeight;
+
+		const visibleRect = {
+			left: Math.max(0, rect.left),
+			top: Math.max(0, rect.top),
+			right: Math.min(vw, rect.right),
+			bottom: Math.min(vh, rect.bottom),
+		};
+		const visibleArea = Math.max(0, visibleRect.right - visibleRect.left) * Math.max(0, visibleRect.bottom - visibleRect.top);
+		const totalArea = rect.width * rect.height;
+		const intersectionRatio = totalArea > 0 ? visibleArea / totalArea : 0;
+
+		const inViewport = rect.left < vw && rect.top < vh && rect.right > 0 && rect.bottom > 0;
+		const isFullyVisible = rect.left >= 0 && rect.top >= 0 && rect.right <= vw && rect.bottom <= vh;
+
+		const cx = Math.round(rect.left + rect.width / 2);
+		const cy = Math.round(rect.top + rect.height / 2);
+		const topEl = document.elementFromPoint(cx, cy);
+		const isTopmost = topEl !== null && (topEl === el || el.contains(topEl) || topEl.contains(el));
+
+		let scrollAncestor = null;
+		(function(e) {
+			let cur = el.parentElement;
+			while (cur && cur !== document.body && cur !== document.documentElement) {
+				const s = window.getComputedStyle(cur);
+				if ((s.overflow === 'auto' || s.overflow === 'scroll' || s.overflowY === 'auto' || s.overflowY === 'scroll') && cur.scrollHeight > cur.clientHeight) {
+					scrollAncestor = { tag: cur.tagName.toLowerCase(), id: cur.id || '', className: (cur.className || '').substring(0, 80) };
+					return;
+				}
+				cur = cur.parentElement;
+			}
+		})();
+
+		return JSON.stringify({
+			found: true,
+			inViewport: inViewport,
+			isFullyVisible: isFullyVisible,
+			isTopmostAtCenter: isTopmost,
+			intersectionRatio: Math.round(intersectionRatio * 100) / 100,
+			viewportX: cx,
+			viewportY: cy,
+			width: Math.round(rect.width),
+			height: Math.round(rect.height),
+			scrollableAncestor: scrollAncestor,
+		});
+	})()`, role, name, value, tag)
+
+	result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
+	if err != nil {
+		return errorResult(fmt.Errorf("elementStatus JS: %w", err)), nil
+	}
+
+	return textResult(result), nil
 }

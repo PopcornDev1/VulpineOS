@@ -7,8 +7,8 @@ import (
 
 func TestToolDefinitions(t *testing.T) {
 	toolList := tools()
-	if len(toolList) != 36 {
-		t.Errorf("expected 36 tools, got %d", len(toolList))
+	if len(toolList) != 38 {
+		t.Errorf("expected 38 tools, got %d", len(toolList))
 	}
 
 	expectedNames := map[string]bool{
@@ -18,6 +18,8 @@ func TestToolDefinitions(t *testing.T) {
 		"vulpine_type":                     false,
 		"vulpine_screenshot":               false,
 		"vulpine_scroll":                   false,
+		"vulpine_scroll_into_view":         false,
+		"vulpine_element_status":           false,
 		"vulpine_new_context":              false,
 		"vulpine_close_context":            false,
 		"vulpine_get_ax_tree":              false,
@@ -81,13 +83,15 @@ func TestToolDefinitionsRequiredFields(t *testing.T) {
 
 	// Tools that require sessionId
 	sessionTools := map[string]bool{
-		"vulpine_navigate":    true,
-		"vulpine_snapshot":    true,
-		"vulpine_click":       true,
-		"vulpine_type":        true,
-		"vulpine_screenshot":  true,
-		"vulpine_scroll":      true,
-		"vulpine_get_ax_tree": true,
+		"vulpine_navigate":       true,
+		"vulpine_snapshot":       true,
+		"vulpine_click":          true,
+		"vulpine_type":           true,
+		"vulpine_screenshot":     true,
+		"vulpine_scroll":         true,
+		"vulpine_scroll_into_view": true,
+		"vulpine_element_status": true,
+		"vulpine_get_ax_tree":    true,
 	}
 
 	for _, tool := range toolList {
@@ -205,8 +209,8 @@ func TestToolsListResponse(t *testing.T) {
 	if !ok {
 		t.Fatalf("result is not ToolsListResult, got %T", resp.Result)
 	}
-	if len(result.Tools) != 36 {
-		t.Errorf("expected 36 tools, got %d", len(result.Tools))
+	if len(result.Tools) != 38 {
+		t.Errorf("expected 38 tools, got %d", len(result.Tools))
 	}
 }
 

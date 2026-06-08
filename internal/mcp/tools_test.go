@@ -62,6 +62,15 @@ func TestToolSchemaProperties(t *testing.T) {
 		t.Errorf("vulpine_scroll deltaY type = %q, want 'number'", scroll.InputSchema.Properties["deltaY"].Type)
 	}
 
+	// vulpine_scroll_into_view should have ref property
+	scrollIntoView := toolMap["vulpine_scroll_into_view"]
+	if _, ok := scrollIntoView.InputSchema.Properties["ref"]; !ok {
+		t.Error("vulpine_scroll_into_view missing 'ref' property")
+	}
+	if scrollIntoView.InputSchema.Properties["ref"].Type != "string" {
+		t.Errorf("vulpine_scroll_into_view ref type = %q, want 'string'", scrollIntoView.InputSchema.Properties["ref"].Type)
+	}
+
 	// vulpine_type should have text property
 	typ := toolMap["vulpine_type"]
 	if _, ok := typ.InputSchema.Properties["text"]; !ok {
@@ -716,8 +725,10 @@ func TestHandleToolCallBadJSON(t *testing.T) {
 	toolNames := []string{
 		"vulpine_navigate", "vulpine_snapshot", "vulpine_click",
 		"vulpine_type", "vulpine_screenshot", "vulpine_scroll",
+		"vulpine_scroll_into_view",
 		"vulpine_close_context", "vulpine_get_ax_tree",
 		"vulpine_click_ref", "vulpine_type_ref", "vulpine_hover_ref",
+		"vulpine_element_status",
 	}
 	for _, name := range toolNames {
 		t.Run(name, func(t *testing.T) {
