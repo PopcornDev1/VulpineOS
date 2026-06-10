@@ -4,70 +4,99 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-: "${IMAGE_TAG:?Set IMAGE_TAG, for example: IMAGE_TAG=2026-06-10-1}"
+: "${IMAGE_TAG:?Set IMAGE_TAG to the VulpineOS release tag, for example: IMAGE_TAG=v0.1.8-dev.4}"
 
 GHCR_OWNER="${GHCR_OWNER:-vulpineos}"
 DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
 PUBLISH_LATEST="${PUBLISH_LATEST:-1}"
-BUILD_BROWSER="${BUILD_BROWSER:-1}"
-BUILD_JOBS="${BUILD_JOBS:-2}"
-SOURCE_DIR="${SOURCE_DIR:-camoufox-146.0.1-beta.25}"
+PREPARE_BROWSER="${PREPARE_BROWSER:-1}"
+VULPINEOS_REPO="${VULPINEOS_REPO:-VulpineOS/VulpineOS}"
+VULPINEOS_BROWSER_ASSET_PATTERN="${VULPINEOS_BROWSER_ASSET_PATTERN:-camoufox-*-lin.x86_64.zip}"
 
-run_with_log() {
-  local name="$1"
-  local log_file="$2"
-  shift 2
+download_browser_asset() {
+  local dest="$1"
 
-  rm -f "$log_file"
-  echo "Starting $name. Full log: $log_file"
-  "$@" >"$log_file" 2>&1 &
-  local pid=$!
-
-  while kill -0 "$pid" >/dev/null 2>&1; do
-    echo "$name still running. Full log: $log_file"
-    sleep 60
-  done
-
-  local status=0
-  wait "$pid" || status=$?
-
-  if [[ "$status" -ne 0 ]]; then
-    echo "$name failed with exit code $status. Last 200 log lines:"
-    tail -n 200 "$log_file" || true
-    return "$status"
+  if [[ -n "${VULPINEOS_BROWSER_URL:-}" ]]; then
+    echo "Downloading browser artifact from VULPINEOS_BROWSER_URL"
+    curl --fail --location --retry 3 --output "$dest" "$VULPINEOS_BROWSER_URL"
+    return 0
   fi
 
-  echo "$name completed. Full log: $log_file"
+  local url
+  url="$(python3 - "$VULPINEOS_REPO" "${VULPINEOS_RELEASE_TAG:-}" "$VULPINEOS_BROWSER_ASSET_PATTERN" <<'PY'
+import fnmatch
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+repo, release_tag, pattern = sys.argv[1:]
+release_path = "latest" if not release_tag else f"tags/{release_tag}"
+url = f"https://api.github.com/repos/{repo}/releases/{release_path}"
+headers = {"Accept": "application/vnd.github+json", "User-Agent": "vulpineos-worker-image-publisher"}
+token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+if token:
+    headers["Authorization"] = "Bearer " + token
+
+try:
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as response:
+        release = json.load(response)
+except urllib.error.HTTPError as exc:
+    sys.stderr.write(f"GitHub release lookup failed for {repo} {release_tag or 'latest'}: HTTP {exc.code}\n")
+    sys.exit(1)
+
+for asset in release.get("assets") or []:
+    name = asset.get("name", "")
+    if fnmatch.fnmatch(name, pattern):
+        print(asset["browser_download_url"])
+        sys.exit(0)
+
+tag = release.get("tag_name", release_tag or "latest")
+sys.stderr.write(f"Release {tag} is missing required asset matching {pattern}\n")
+sys.exit(1)
+PY
+)"
+
+  echo "Downloading browser artifact: $url"
+  curl --fail --location --retry 3 --output "$dest" "$url"
 }
 
-if [[ "$BUILD_BROWSER" == "1" || "$BUILD_BROWSER" == "true" ]]; then
-  rm -f camoufox-*-lin.x86_64.zip
-  BUILD_TARGET=linux,x86_64 make dir
-  (
-    cd "$SOURCE_DIR"
-    ./mach configure
-    run_with_log "Camoufox browser build" "/tmp/vulpineos-browser-build.log" ./mach build -j "$BUILD_JOBS"
-  )
-  run_with_log "Camoufox Linux package" "/tmp/vulpineos-browser-package.log" make package-linux arch=x86_64
-fi
-
-if [[ ! -x dist/camoufox-linux/camoufox ]]; then
-  shopt -s nullglob
-  packages=(camoufox-*-lin.x86_64.zip)
-  shopt -u nullglob
-
-  if (( ${#packages[@]} == 0 )); then
-    echo "Missing packaged Linux Camoufox zip and dist/camoufox-linux/camoufox" >&2
-    echo "Run with BUILD_BROWSER=1 or provide dist/camoufox-linux/camoufox first." >&2
-    exit 1
-  fi
+prepare_browser_dist() {
+  local archive="$1"
+  local extract_dir
+  extract_dir="$(mktemp -d)"
 
   rm -rf dist/camoufox-linux
   mkdir -p dist/camoufox-linux
-  7z x "${packages[0]}" -odist/camoufox-linux
+
+  unzip -q "$archive" -d "$extract_dir"
+  cp -a "$extract_dir"/. dist/camoufox-linux/
+  rm -rf "$extract_dir"
+
+  if [[ -f dist/camoufox-linux/camoufox ]]; then
+    chmod 0755 dist/camoufox-linux/camoufox >/dev/null 2>&1 || true
+  fi
+
+  if [[ ! -x dist/camoufox-linux/camoufox ]]; then
+    echo "Missing executable Linux browser artifact at dist/camoufox-linux/camoufox" >&2
+    echo "The release asset must be a Linux x86_64 VulpineOS/Camoufox package." >&2
+    exit 1
+  fi
+
+  echo "Prepared dist/camoufox-linux from release artifact."
+}
+
+if [[ "$PREPARE_BROWSER" == "1" || "$PREPARE_BROWSER" == "true" ]]; then
+  browser_archive="${BROWSER_ARCHIVE:-/tmp/vulpineos-camoufox-linux-x86_64.zip}"
+  download_browser_asset "$browser_archive"
+  prepare_browser_dist "$browser_archive"
 fi
 
-test -x dist/camoufox-linux/camoufox
+if [[ ! -x dist/camoufox-linux/camoufox ]]; then
+  echo "Missing dist/camoufox-linux/camoufox. Set PREPARE_BROWSER=1 or provide the extracted browser artifact first." >&2
+  exit 1
+fi
 
 image="ghcr.io/${GHCR_OWNER}/vulpineos-worker"
 tags=(-t "$image:$IMAGE_TAG")
