@@ -6,9 +6,12 @@
 FROM golang:1.26-bookworm AS go-builder
 WORKDIR /build
 COPY go.mod go.sum ./
+COPY local/foxbridge/go.mod local/foxbridge/go.sum ./local/foxbridge/
+COPY local/networklab/go.mod ./local/networklab/
 RUN go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
+COPY local/ local/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /vulpineos ./cmd/vulpineos/
 
 # Stage 2: Runtime

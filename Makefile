@@ -82,7 +82,7 @@ revert:
 	cd $(cf_source_dir) && git reset --hard unpatched
 
 dir:
-	@if [ ! -d $(cf_source_dir) ]; then \
+	@if [ ! -f $(cf_source_dir)/configure.py ]; then \
 		make setup; \
 	fi
 	python3 scripts/patch.py $(version) $(release)
