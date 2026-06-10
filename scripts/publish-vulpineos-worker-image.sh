@@ -13,15 +13,42 @@ BUILD_BROWSER="${BUILD_BROWSER:-1}"
 BUILD_JOBS="${BUILD_JOBS:-2}"
 SOURCE_DIR="${SOURCE_DIR:-camoufox-146.0.1-beta.25}"
 
+run_with_log() {
+  local name="$1"
+  local log_file="$2"
+  shift 2
+
+  rm -f "$log_file"
+  echo "Starting $name. Full log: $log_file"
+  "$@" >"$log_file" 2>&1 &
+  local pid=$!
+
+  while kill -0 "$pid" >/dev/null 2>&1; do
+    echo "$name still running. Full log: $log_file"
+    sleep 60
+  done
+
+  local status=0
+  wait "$pid" || status=$?
+
+  if [[ "$status" -ne 0 ]]; then
+    echo "$name failed with exit code $status. Last 200 log lines:"
+    tail -n 200 "$log_file" || true
+    return "$status"
+  fi
+
+  echo "$name completed. Full log: $log_file"
+}
+
 if [[ "$BUILD_BROWSER" == "1" || "$BUILD_BROWSER" == "true" ]]; then
   rm -f camoufox-*-lin.x86_64.zip
   BUILD_TARGET=linux,x86_64 make dir
   (
     cd "$SOURCE_DIR"
     ./mach configure
-    ./mach build -j "$BUILD_JOBS"
+    run_with_log "Camoufox browser build" "/tmp/vulpineos-browser-build.log" ./mach build -j "$BUILD_JOBS"
   )
-  make package-linux arch=x86_64
+  run_with_log "Camoufox Linux package" "/tmp/vulpineos-browser-package.log" make package-linux arch=x86_64
 fi
 
 if [[ ! -x dist/camoufox-linux/camoufox ]]; then
