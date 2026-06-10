@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"vulpineos/internal/agentcore"
 	"vulpineos/internal/agentprompt"
 	"vulpineos/internal/config"
 	"vulpineos/internal/juggler"
@@ -136,6 +137,7 @@ func (api *ControlAPI) configSet(params json.RawMessage) (json.RawMessage, error
 		APIKey        string `json:"apiKey"`
 		KeepAPIKey    bool   `json:"keepApiKey"`
 		SetupComplete *bool  `json:"setupComplete"`
+		Persist       *bool  `json:"persist"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil, err
@@ -156,10 +158,28 @@ func (api *ControlAPI) configSet(params json.RawMessage) (json.RawMessage, error
 	if p.SetupComplete != nil && !*p.SetupComplete {
 		api.Config.SetupComplete = false
 	}
-	if err := api.Config.Save(); err != nil {
-		return nil, err
+	if p.Persist == nil || *p.Persist {
+		if err := api.Config.Save(); err != nil {
+			return nil, err
+		}
 	}
+	api.reconfigureAgentRuntime()
 	return json.Marshal(summarizeConfig(api.Config))
+}
+
+func (api *ControlAPI) reconfigureAgentRuntime() {
+	if api == nil || api.Orchestrator == nil || api.Orchestrator.Agents == nil || api.Config == nil {
+		return
+	}
+	mgr, ok := api.Orchestrator.Agents.(interface{ Reconfigure(agentcore.Config) })
+	if !ok {
+		return
+	}
+	mgr.Reconfigure(agentcore.Config{
+		Provider: api.Config.Provider,
+		Model:    api.Config.Model,
+		APIKey:   api.Config.APIKey,
+	})
 }
 
 func (api *ControlAPI) proxiesAdd(params json.RawMessage) (json.RawMessage, error) {
