@@ -719,6 +719,9 @@ func (m *Manager) DelegateForParentMission(mission Mission, parentID string) (st
 			}
 			m.mu.Unlock()
 		}
+		m.mu.Lock()
+		ag.status = final
+		m.mu.Unlock()
 		m.emitStatus(id, subCtxID, final, task)
 		m.finish(id, ag)
 	}()
