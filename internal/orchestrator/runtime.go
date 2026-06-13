@@ -26,6 +26,10 @@ type AgentRuntime interface {
 	Dispose()
 	Count() int
 	List() []agentmsg.AgentStatus
+	// CompletedResult returns the final result of a completed agent. The result
+	// is returned once and then discarded (one-shot retrieval). Returns false
+	// when the agent is unknown or still running.
+	CompletedResult(agentID string) (agentmsg.AgentResult, bool)
 }
 
 // Compile-time check that the native manager satisfies the runtime contract.

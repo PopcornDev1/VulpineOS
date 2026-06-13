@@ -119,6 +119,7 @@ resolve_release_assets() {
     local goarch="$2"
     local browser_os="$3"
     local browser_arch="$4"
+    local tag="${5:-}"
 
     if [ -n "${VULPINEOS_CLI_URL:-}" ] && [ -n "${VULPINEOS_BROWSER_URL:-}" ]; then
         printf 'VULPINEOS_RELEASE_TAG=%q\n' "${VULPINEOS_RELEASE_TAG:-manual}"
@@ -128,7 +129,7 @@ resolve_release_assets() {
         return 0
     fi
 
-    python3 - "${VULPINEOS_REPO}" "${VULPINEOS_BROWSER_RELEASE:-}" "${goos}" "${goarch}" "${browser_os}" "${browser_arch}" <<'PY'
+    python3 - "${VULPINEOS_REPO}" "${VULPINEOS_BROWSER_RELEASE:-}" "${goos}" "${goarch}" "${browser_os}" "${browser_arch}" "${tag}" <<'PY'
 import json
 import os
 import shlex
@@ -136,8 +137,8 @@ import sys
 import urllib.error
 import urllib.request
 
-repo, browser_fallback, goos, goarch, browser_os, browser_arch = sys.argv[1:]
-api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+repo, browser_fallback, goos, goarch, browser_os, browser_arch, tag = sys.argv[1:]
+tag = tag.strip() or None
 headers = {"Accept": "application/vnd.github+json", "User-Agent": "vulpineos-installer"}
 if os.environ.get("GITHUB_TOKEN"):
     headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
@@ -158,7 +159,7 @@ def fetch_release(tag=None):
         sys.stderr.write(f"GitHub release lookup failed: {exc}\n")
         return None
 
-release = fetch_release()
+release = fetch_release(tag)
 if release is None:
     sys.exit(1)
 
@@ -315,7 +316,15 @@ build_cli_from_source() {
     # Partial clone: transfer only commit metadata — file blobs are fetched
     # on demand. The repo contains ~930 MiB of Camoufox font bundles
     # (bundle/fonts/) that are not needed for compiling the Go CLI binary.
-    if git clone --depth 1 --filter=blob:none "${repo_url}" "${src_dir}" 2>/dev/null; then
+    local ref=""
+    if [ -n "${VULPINEOS_RELEASE_TAG:-}" ]; then
+        ref="${VULPINEOS_RELEASE_TAG}"
+        log "Checking out release ${ref}..."
+        # Cannot use --depth 1 with a specific tag; use full clone then checkout.
+        git clone --single-branch "${repo_url}" "${src_dir}" || fatal "Failed to clone ${VULPINEOS_REPO}."
+        (cd "${src_dir}" && git checkout "refs/tags/${ref}") || fatal "Tag ${ref} not found in ${VULPINEOS_REPO}."
+        rm -rf "${src_dir}/bundle"
+    elif git clone --depth 1 --filter=blob:none "${repo_url}" "${src_dir}" 2>/dev/null; then
         # Remove font bundle placeholders; their blobs were never downloaded.
         rm -rf "${src_dir}/bundle"
     else
@@ -336,11 +345,60 @@ build_cli_from_source() {
     return 0
 }
 
+usage() {
+    cat <<'USAGE'
+Usage: install.sh [OPTIONS]
+
+Install VulpineOS CLI and Camoufox browser.
+
+Options:
+  --release <tag>  Install a specific release tag (e.g. v0.1.8-dev.6).
+                   When set, the CLI is built from source at that tag.
+                   When absent, the latest GitHub release is used.
+  --help           Show this help message and exit.
+
+Environment variables:
+  VULPINEOS_RELEASE_TAG    Same as --release (takes precedence when both set).
+  VULPINEOS_BROWSER_RELEASE  Fallback release for Camoufox browser assets.
+  VULPINEOS_CLI_URL        Direct download URL for CLI binary (skips release lookup).
+  VULPINEOS_BROWSER_URL    Direct download URL for browser bundle (skips release lookup).
+USAGE
+}
+
 main() {
     log "Installing VulpineOS..."
     have python3 || fatal "python3 is required to resolve release assets and update local config."
     have unzip || fatal "unzip is required to extract the Camoufox browser bundle."
     have curl || have wget || fatal "curl or wget is required to download release assets."
+
+    # Parse CLI flags
+    local release_tag_arg=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --release)
+                shift
+                if [ $# -eq 0 ]; then
+                    fatal "--release requires a tag argument (e.g. v0.1.8-dev.6)"
+                fi
+                release_tag_arg="$1"
+                shift
+                ;;
+            --help)
+                usage
+                exit 0
+                ;;
+            *)
+                fatal "unknown option: $1. Use --help for usage."
+                ;;
+        esac
+    done
+
+    # Release tag resolution: CLI arg > env var > latest
+    if [ -n "${VULPINEOS_RELEASE_TAG:-}" ]; then
+        :  # env var takes highest precedence
+    elif [ -n "${release_tag_arg}" ]; then
+        VULPINEOS_RELEASE_TAG="${release_tag_arg}"
+    fi
 
     # Fallback release for Camoufox browser assets (CLI may come from a newer
     # release that only has the Go binary). Override via VULPINEOS_BROWSER_RELEASE.
@@ -356,7 +414,7 @@ main() {
     mkdir -p "${VULPINEOS_HOME}" "${bin_dir}"
 
     # Resolve release assets (needed for Camoufox browser, optionally for CLI fallback)
-    asset_env="$(resolve_release_assets "${goos}" "${goarch}" "${browser_os}" "${browser_arch}")"
+    asset_env="$(resolve_release_assets "${goos}" "${goarch}" "${browser_os}" "${browser_arch}" "${VULPINEOS_RELEASE_TAG:-}")"
     eval "${asset_env}"
 
     log "Installing VulpineOS release ${VULPINEOS_RELEASE_TAG}..."

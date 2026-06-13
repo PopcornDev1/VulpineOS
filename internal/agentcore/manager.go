@@ -16,10 +16,12 @@ import (
 )
 
 // agentStore is the minimal vault surface the native runtime needs to make chat
-// stateful across turns: resolving the agent's pooled browser context so each
-// turn reuses the same identity-applied context instead of a throwaway one.
+// stateful across turns: resolving the agent's pooled browser context and
+// persisting completed agent results so they survive TUI disconnection and
+// can be queried by supervisor agents.
 type agentStore interface {
 	GetAgent(id string) (*vault.Agent, error)
+	AppendMessage(agentID, role, content string, tokens int) error
 }
 
 // Manager is the native, in-process agent runtime. It implements the same
@@ -51,6 +53,8 @@ type Manager struct {
 	conversationSource chan agentmsg.ConversationMsg
 	statusSubs         map[chan agentmsg.AgentStatus]struct{}
 	conversationSubs   map[chan agentmsg.ConversationMsg]struct{}
+
+	completedResults map[string]*completedAgent
 }
 
 type nativeAgent struct {
@@ -61,6 +65,17 @@ type nativeAgent struct {
 	status    string
 	objective string
 	tokens    int // cumulative tokens consumed this run
+}
+
+// completedAgent holds the final outcome of an agent that has finished running.
+// It is stored in the Manager so the supervisor or TUI can query results after
+// the agent is no longer in the active agents map.
+type completedAgent struct {
+	agentID   string
+	status    string
+	result    string
+	tokens    int
+	objective string
 }
 
 // NewManager creates a native runtime bound to a juggler client and model
@@ -75,6 +90,7 @@ func NewManager(client *juggler.Client, cfg Config) *Manager {
 		conversationSource: make(chan agentmsg.ConversationMsg, 64),
 		statusSubs:         make(map[chan agentmsg.AgentStatus]struct{}),
 		conversationSubs:   make(map[chan agentmsg.ConversationMsg]struct{}),
+		completedResults:   make(map[string]*completedAgent),
 	}
 	go m.fanOutStatus()
 	go m.fanOutConversation()
@@ -194,7 +210,10 @@ func (m *Manager) spawn(agentID, contextID, task string, reusePage bool, cleanup
 	m.emitStatus(agentID, contextID, "running", task)
 
 	go func() {
-		var err error
+		var (
+			result string
+			err    error
+		)
 		switch {
 		case contextID != "" && reusePage:
 			// Reuse the agent's single tab + tracker across turns; the agent
@@ -202,20 +221,36 @@ func (m *Manager) spawn(agentID, contextID, task string, reusePage bool, cleanup
 			var toolset *BrowserToolset
 			toolset, err = m.acquireToolset(ctx, agentID, contextID)
 			if err == nil {
-				_, err = RunBrowserAgentWithToolset(ctx, toolset, m.cfg, task, ev)
+				result, err = RunBrowserAgentWithToolset(ctx, toolset, m.cfg, task, ev)
 			}
 		case contextID != "":
-			_, err = RunBrowserAgentInContext(ctx, m.client, contextID, m.cfg, task, ev)
+			result, err = RunBrowserAgentInContext(ctx, m.client, contextID, m.cfg, task, ev)
 		default:
-			_, err = RunBrowserAgent(ctx, m.client, m.cfg, task, ev)
+			result, err = RunBrowserAgent(ctx, m.client, m.cfg, task, ev)
 		}
 		final := "completed"
 		if err != nil {
 			final = "error"
 			m.emitConversation(agentID, "system", "agent error: "+err.Error())
 			m.logRuntimeEvent("error", "native_agent_failed", err.Error(), map[string]string{"agent_id": agentID})
+			result = ""
 		}
 		m.emitStatus(agentID, contextID, final, task)
+
+		// Store the completed result in memory so supervisor agents can query it
+		// after the sub-agent is removed from the active agents map.
+		if result != "" && final == "completed" {
+			m.finishWithResult(agentID, result)
+		}
+
+		// Directly persist the result to the vault so it survives even when no
+		// TUI subscriber is connected to the event channel. This is the critical
+		// path for supervisor agents that spawn sub-agents and need to read their
+		// final output after the sub-agent has been cleaned up.
+		if result != "" {
+			m.persistResult(agentID, result)
+		}
+
 		m.finish(agentID, ag)
 	}()
 
@@ -358,11 +393,77 @@ func (m *Manager) finish(agentID string, ag *nativeAgent) {
 	if cur, ok := m.agents[agentID]; ok && cur == ag {
 		delete(m.agents, agentID)
 	}
+	// Keep the completed result available for querying by supervisor agents.
+	// If finishWithResult was called first (with the final message), the entry
+	// is already set; if not (e.g. Kill/PauseAgent), we still record the agent
+	// as having finished so CompletedResult returns the terminal status.
+	if _, exists := m.completedResults[agentID]; !exists {
+		m.completedResults[agentID] = &completedAgent{
+			agentID:   agentID,
+			status:    ag.status,
+			objective: ag.objective,
+			tokens:    ag.tokens,
+		}
+	}
 	m.mu.Unlock()
 	if ag.cleanup != nil {
 		ag.cleanup()
 		ag.cleanup = nil
 	}
+}
+
+// finishWithResult records the agent's final result and marks it completed.
+// This is called from spawn() after the agent loop completes successfully.
+func (m *Manager) finishWithResult(agentID, result string) {
+	m.mu.Lock()
+	ag := m.agents[agentID]
+	if ag != nil {
+		m.completedResults[agentID] = &completedAgent{
+			agentID: agentID,
+			status:  "completed",
+			result:  result,
+			tokens:  ag.tokens,
+		}
+	}
+	m.mu.Unlock()
+}
+
+// persistResult saves the agent's final assistant message directly to the vault.
+// This ensures the result survives event-channel drops and is available for
+// supervisor agents to query even after the sub-agent is cleaned up.
+func (m *Manager) persistResult(agentID, result string) {
+	m.mu.RLock()
+	store := m.store
+	ag, inProgress := m.agents[agentID]
+	m.mu.RUnlock()
+
+	tokens := 0
+	if inProgress {
+		tokens = ag.tokens
+	}
+
+	if store != nil {
+		_ = store.AppendMessage(agentID, "assistant", result, tokens)
+	}
+}
+
+// CompletedResult returns the stored result for a completed agent, or false if
+// the agent is unknown or still running. Completed results survive until the
+// next call to CompletedResult for the same agent (one-shot retrieval).
+func (m *Manager) CompletedResult(agentID string) (agentmsg.AgentResult, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cr, ok := m.completedResults[agentID]
+	if !ok {
+		return agentmsg.AgentResult{}, false
+	}
+	delete(m.completedResults, agentID)
+	return agentmsg.AgentResult{
+		AgentID: cr.agentID,
+		Status:  cr.status,
+		Result:  cr.result,
+		Tokens:  cr.tokens,
+	}, true
 }
 
 func (m *Manager) emitStatus(agentID, contextID, status, objective string) {

@@ -2428,6 +2428,9 @@ func (f *shutdownFakeRuntime) KillAll()                     {}
 func (f *shutdownFakeRuntime) Dispose()                     {}
 func (f *shutdownFakeRuntime) Count() int                   { return len(f.statuses) }
 func (f *shutdownFakeRuntime) List() []agentmsg.AgentStatus { return f.statuses }
+func (f *shutdownFakeRuntime) CompletedResult(string) (agentmsg.AgentResult, bool) {
+	return agentmsg.AgentResult{}, false
+}
 
 func TestGracefulShutdownPausesActiveAgents(t *testing.T) {
 	db := openTestVault(t)

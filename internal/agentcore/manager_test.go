@@ -7,11 +7,25 @@ import (
 )
 
 type fakeStore struct {
-	agent *vault.Agent
-	err   error
+	agent        *vault.Agent
+	err          error
+	messages     []vault.AgentMessage
+	appendErr    error
 }
 
 func (f *fakeStore) GetAgent(id string) (*vault.Agent, error) { return f.agent, f.err }
+func (f *fakeStore) AppendMessage(agentID, role, content string, tokens int) error {
+	if f.appendErr != nil {
+		return f.appendErr
+	}
+	f.messages = append(f.messages, vault.AgentMessage{
+		AgentID: agentID,
+		Role:    role,
+		Content: content,
+		Tokens:  tokens,
+	})
+	return nil
+}
 
 func TestResolveContextID(t *testing.T) {
 	m := NewManager(nil, Config{})
