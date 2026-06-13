@@ -161,6 +161,9 @@ def fetch_release(tag=None):
 
 release = fetch_release(tag)
 if release is None:
+    sys.stderr.write("No release found for specified tag; falling back to latest release for browser assets.\n")
+    release = fetch_release()
+if release is None:
     sys.exit(1)
 
 assets = release.get("assets") or []
