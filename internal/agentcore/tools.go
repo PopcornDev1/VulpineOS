@@ -241,12 +241,13 @@ func isFileTool(name string) bool {
 // tabs, switch between them, and close them, but all stay in the one context
 // that belongs to the agent. Browser tool calls run against the active tab.
 type BrowserToolset struct {
-	executor    *mcp.ToolExecutor
-	client      *juggler.Client
-	contextID   string // the agent's context; "" disables tab management (single page)
-	loopDet     *mcp.LoopDetector
-	workspace   string
-	delegateMgr DelegationManager // non-nil for lead agents with delegation capability
+	executor         *mcp.ToolExecutor
+	client           *juggler.Client
+	contextID        string // the agent's context; "" disables tab management (single page)
+	loopDet          *mcp.LoopDetector
+	workspace        string
+	delegateMgr      DelegationManager // non-nil for lead agents with delegation capability
+	delegateParentID string
 
 	mu     sync.Mutex
 	tabs   []string // open page session ids (tabs) in this context
@@ -325,6 +326,12 @@ func (t *BrowserToolset) CloseExtraTabs() error {
 // Called by Manager when preparing a lead agent's toolset.
 func (t *BrowserToolset) SetDelegateManager(mgr DelegationManager) {
 	t.delegateMgr = mgr
+	t.delegateParentID = ""
+}
+
+func (t *BrowserToolset) SetDelegateManagerForParent(mgr DelegationManager, parentID string) {
+	t.delegateMgr = mgr
+	t.delegateParentID = parentID
 }
 
 // IsBrowserTool reports whether name is a browser tool this toolset handles.
@@ -460,7 +467,21 @@ func (t *BrowserToolset) dispatchDelegationTool(ctx context.Context, name, rawAr
 			OutputSpec:  args.OutputSpec,
 			MaxTurns:    args.MaxTurns,
 		}
-		agentID, err := t.delegateMgr.Delegate(mission)
+		var (
+			agentID string
+			err     error
+		)
+		if t.delegateParentID != "" {
+			if parentMgr, ok := t.delegateMgr.(interface {
+				DelegateForParentMission(Mission, string) (string, error)
+			}); ok {
+				agentID, err = parentMgr.DelegateForParentMission(mission, t.delegateParentID)
+			} else {
+				agentID, err = t.delegateMgr.Delegate(mission)
+			}
+		} else {
+			agentID, err = t.delegateMgr.Delegate(mission)
+		}
 		if err != nil {
 			return err.Error(), true, nil
 		}

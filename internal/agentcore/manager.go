@@ -60,14 +60,14 @@ type Manager struct {
 
 type nativeAgent struct {
 	id           string
-	parentID     string   // empty for lead agents, set for sub-agents
+	parentID     string // empty for lead agents, set for sub-agents
 	contextID    string
 	cancel       context.CancelFunc
 	cleanup      func()
 	status       string
 	terminal     string
 	objective    string
-	tokens       int // cumulative tokens consumed this run
+	tokens       int      // cumulative tokens consumed this run
 	inbox        []string // steering messages from lead agent
 	result       string   // final output text, set when sub-agent completes
 	phase        string   // processing, waiting_on_tool, idle, finalizing
@@ -293,7 +293,7 @@ func (m *Manager) acquireToolset(ctx context.Context, agentID, contextID string)
 		return existing, nil
 	}
 	ts := NewBrowserToolset(m.client, contextID, "")
-	ts.SetDelegateManager(m)
+	ts.SetDelegateManagerForParent(m, agentID)
 	if _, err := openPageInContextWithToolset(ctx, m.client, contextID, ts); err != nil {
 		ts.Close()
 		return nil, fmt.Errorf("open page in context: %w", err)
@@ -606,16 +606,20 @@ func (m *Manager) Delegate(mission Mission) (string, error) {
 	return m.DelegateForParentMission(mission, "")
 }
 
+func missionMaxTurns(mission Mission) int {
+	if mission.MaxTurns > 0 {
+		return mission.MaxTurns
+	}
+	return 25
+}
+
 // DelegateForParentMission spawns a sub-agent with a known parent lead agent ID.
 func (m *Manager) DelegateForParentMission(mission Mission, parentID string) (string, error) {
 	id := uuid.New().String()[:8]
 	task := composeSubAgentTask(mission)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	maxTurns := mission.MaxTurns
-	if maxTurns <= 0 {
-		maxTurns = 25
-	}
+	maxTurns := missionMaxTurns(mission)
 	ag := &nativeAgent{
 		id:           id,
 		parentID:     parentID,
@@ -691,7 +695,7 @@ func (m *Manager) DelegateForParentMission(mission Mission, parentID string) (st
 			Models:        cfg.modelChain(),
 			SystemPrompt:  prompt,
 			Tools:         subAgentTools(),
-			MaxIterations: mission.MaxTurns,
+			MaxIterations: maxTurns,
 			ModelTimeout:  120 * time.Second, // prevent model API hang from blocking the sub-agent indefinitely
 			InboxReader: func() []string {
 				m.mu.Lock()
@@ -908,7 +912,7 @@ func (e *managerEvents) OnToolResult(name, result string, isErr bool) {
 	})
 }
 func (e *managerEvents) OnStatus(status string) {}
-func (e *managerEvents) OnUsage(turn Usage) { e.m.addTokens(e.agentID, turn) }
+func (e *managerEvents) OnUsage(turn Usage)     { e.m.addTokens(e.agentID, turn) }
 func (e *managerEvents) OnWarning(text string) {
 	e.m.emitConversation(e.agentID, "system", "Warning: "+text)
 }

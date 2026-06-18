@@ -188,6 +188,35 @@ func TestDelegateWithParentID(t *testing.T) {
 	}
 }
 
+func TestDelegateDefaultMaxTurnsStored(t *testing.T) {
+	m := NewManager(nil, Config{})
+	defer m.Dispose()
+
+	agentID, err := m.Delegate(Mission{Objective: "test default max turns"})
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+
+	m.mu.RLock()
+	ag, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		t.Fatal("agent not found in map")
+	}
+	if ag.maxTurns != 25 {
+		t.Fatalf("default maxTurns = %d, want 25", ag.maxTurns)
+	}
+}
+
+func TestMissionMaxTurnsDefaultsToTwentyFive(t *testing.T) {
+	if got := missionMaxTurns(Mission{}); got != 25 {
+		t.Fatalf("missionMaxTurns default = %d, want 25", got)
+	}
+	if got := missionMaxTurns(Mission{MaxTurns: 7}); got != 7 {
+		t.Fatalf("missionMaxTurns explicit = %d, want 7", got)
+	}
+}
+
 func TestReleaseAgent(t *testing.T) {
 	m := NewManager(nil, Config{})
 	defer m.Dispose()
@@ -464,5 +493,42 @@ func TestDelegateAgentThroughToolset(t *testing.T) {
 		`{"agent_id":"`+agentID+`"}`)
 	if err != nil || isErr {
 		t.Fatalf("release: result=%q isErr=%v err=%v", result, isErr, err)
+	}
+}
+
+func TestDelegateAgentThroughToolsetUsesParentID(t *testing.T) {
+	m := NewManager(nil, Config{})
+	defer m.Dispose()
+
+	ts := &BrowserToolset{}
+	ts.SetDelegateManagerForParent(m, "lead-agent")
+
+	result, isErr, err := ts.Dispatch(context.Background(), toolDelegateAgent,
+		`{"objective":"write tests","role_seed":"You are a tester.","max_turns":3}`)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if isErr {
+		t.Fatalf("unexpected error: %s", result)
+	}
+
+	agentID := strings.TrimPrefix(result, "Delegated to sub-agent ")
+	if agentID == result {
+		t.Fatalf("unexpected result format: %q", result)
+	}
+
+	list := m.List()
+	found := false
+	for _, a := range list {
+		if a.AgentID == agentID {
+			found = true
+			if a.ParentID != "lead-agent" {
+				t.Errorf("parent ID = %q, want lead-agent", a.ParentID)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("agent %q not found in List()", agentID)
 	}
 }
