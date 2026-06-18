@@ -22,28 +22,30 @@ import (
 // pure-image tools (most models aren't multimodal), and extension-gated tools
 // (credential/audio/mobile) that are no-ops without the private build.
 var browserToolAllowList = map[string]bool{
-	"vulpine_navigate":        true,
-	"vulpine_snapshot":        true,
-	"vulpine_click":           true,
-	"vulpine_type":            true,
-	"vulpine_scroll":          true,
-	"vulpine_get_ax_tree":     true,
-	"vulpine_click_ref":       true,
-	"vulpine_type_ref":        true,
-	"vulpine_hover_ref":       true,
-	"vulpine_wait":            true,
-	"vulpine_find":            true,
-	"vulpine_verify":          true,
-	"vulpine_page_settled":    true,
-	"vulpine_select_option":   true,
-	"vulpine_fill_form":       true,
-	"vulpine_page_info":       true,
-	"vulpine_press_key":       true,
-	"vulpine_clear_input":     true,
-	"vulpine_get_form_errors": true,
-	"vulpine_human_click":     true,
-	"vulpine_human_type":      true,
-	"vulpine_human_scroll":    true,
+	"vulpine_navigate":         true,
+	"vulpine_snapshot":         true,
+	"vulpine_click":            true,
+	"vulpine_type":             true,
+	"vulpine_scroll":           true,
+	"vulpine_get_ax_tree":      true,
+	"vulpine_click_ref":        true,
+	"vulpine_type_ref":         true,
+	"vulpine_hover_ref":        true,
+	"vulpine_scroll_into_view": true,
+	"vulpine_wait":             true,
+	"vulpine_find":             true,
+	"vulpine_verify":           true,
+	"vulpine_page_settled":     true,
+	"vulpine_select_option":    true,
+	"vulpine_fill_form":        true,
+	"vulpine_page_info":        true,
+	"vulpine_press_key":        true,
+	"vulpine_clear_input":      true,
+	"vulpine_get_form_errors":  true,
+	"vulpine_element_status":   true,
+	"vulpine_human_click":      true,
+	"vulpine_human_type":       true,
+	"vulpine_human_scroll":     true,
 }
 
 // sessionIDArg is the per-page session argument the MCP tools take. The loop
@@ -164,11 +166,11 @@ const (
 	toolReadFile  = "vulpine_read_file"
 	toolWriteFile = "vulpine_write_file"
 
-	toolDelegateAgent   = "vulpine_delegate_agent"
-	toolSteerAgent      = "vulpine_steer_agent"
-	toolAgentStatus     = "vulpine_agent_status"
-	toolReleaseAgent    = "vulpine_release_agent"
-	toolGetAgentResult  = "vulpine_get_agent_result"
+	toolDelegateAgent    = "vulpine_delegate_agent"
+	toolSteerAgent       = "vulpine_steer_agent"
+	toolAgentStatus      = "vulpine_agent_status"
+	toolReleaseAgent     = "vulpine_release_agent"
+	toolGetAgentResult   = "vulpine_get_agent_result"
 	toolGetAgentSnapshot = "vulpine_get_agent_snapshot"
 )
 

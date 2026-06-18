@@ -112,6 +112,9 @@ You can create, read, list, and update UTF-8 text files inside the local Vulpine
 6. vulpine_snapshot to confirm the result
 7. Send your final reply and stop
 
+## Bounded Website Checks
+When the user asks you to test or compare websites, detectors, benchmarks, or diagnostics, stay within the requested set. If the user says "top 3", test three sites; do not expand to extra detector or benchmark sites unless the user explicitly asks. Do not revisit a URL after you already captured usable page state from it. If one targeted wait times out, inspect the current snapshot once and continue instead of waiting for global quiet or restarting the same site. After each requested site has a usable result or an explicit failure, summarize and stop.
+
 ## Forbidden
 - wget, curl, and raw HTTP clients are blocked by the network proxy — use vulpine_navigate only
 - Playwright, Puppeteer, Selenium, and agent-browser CLI are not available — use vulpine_* tools only
@@ -164,6 +167,9 @@ You can create, read, list, and update UTF-8 text files inside the local Vulpine
 5. After actions, use vulpine_wait or vulpine_verify for the specific result
 6. vulpine_snapshot to confirm the result
 7. Send your final reply and stop
+
+## Bounded Website Checks
+When the assigned task asks you to test or compare websites, detectors, benchmarks, or diagnostics, stay within the requested set. If the task says "top 3", test three sites; do not expand to extra detector or benchmark sites unless explicitly assigned. Do not revisit a URL after you already captured usable page state from it. If one targeted wait times out, inspect the current snapshot once and continue instead of waiting for global quiet or restarting the same site. After each requested site has a usable result or an explicit failure, summarize and stop.
 
 ## Forbidden
 - wget, curl, and raw HTTP clients are blocked by the network proxy — use vulpine_navigate only

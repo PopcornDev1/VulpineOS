@@ -626,7 +626,17 @@ func handleNavigate(client *juggler.Client, tracker *ContextTracker, args json.R
 	resetSnapshotProfile(p.SessionID)
 
 	if err := waitForNavigationUsable(client, tracker, p.SessionID, p.URL); err != nil {
-		return errorResult(err), nil
+		firstErr := err
+		_, retryErr := client.Call(p.SessionID, "Page.navigate", callParams)
+		if retryErr != nil {
+			return errorResult(fmt.Errorf("%w; retry navigation failed: %v", firstErr, retryErr)), nil
+		}
+		if tracker != nil {
+			tracker.InvalidateExecutionContext(p.SessionID)
+		}
+		if retryWaitErr := waitForNavigationUsable(client, tracker, p.SessionID, p.URL); retryWaitErr != nil {
+			return errorResult(fmt.Errorf("%w; retry did not load usable content: %v", firstErr, retryWaitErr)), nil
+		}
 	}
 
 	return textResult(fmt.Sprintf("Navigated to %s", p.URL)), nil
@@ -736,7 +746,7 @@ func navigationPageStateUsable(state navigationPageState) bool {
 	if state.ReadyState != "complete" && state.ReadyState != "interactive" {
 		return false
 	}
-	return state.BodyLen > 0 || state.ResourceCount > 0
+	return state.BodyLen > 0
 }
 
 func isFrameIDRequiredError(err error) bool {
@@ -964,6 +974,58 @@ func handleScroll(client *juggler.Client, tracker *ContextTracker, args json.Raw
 	return textResult(fmt.Sprintf("Scrolled by %v pixels to y=%s", p.DeltaY, result)), nil
 }
 
+func decodeAXTreeNodes(raw json.RawMessage) ([]map[string]interface{}, error) {
+	var payload interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+
+	nodes := []map[string]interface{}{}
+	var walk func(interface{})
+	walk = func(v interface{}) {
+		switch n := v.(type) {
+		case []interface{}:
+			for _, child := range n {
+				walk(child)
+			}
+		case map[string]interface{}:
+			nodes = append(nodes, n)
+			if children, ok := n["children"]; ok {
+				walk(children)
+			}
+		}
+	}
+
+	if wrapper, ok := payload.(map[string]interface{}); ok {
+		if tree, ok := wrapper["tree"]; ok {
+			walk(tree)
+			return nodes, nil
+		}
+		if tree, ok := wrapper["nodes"]; ok {
+			walk(tree)
+			return nodes, nil
+		}
+	}
+
+	walk(payload)
+	return nodes, nil
+}
+
+func findAXNodeByRef(nodes []map[string]interface{}, ref string) map[string]interface{} {
+	for _, node := range nodes {
+		r, _ := node["ref"].(string)
+		if r == "" {
+			if rf, ok := node["ref"].(float64); ok {
+				r = fmt.Sprintf("%.0f", rf)
+			}
+		}
+		if r == ref {
+			return node
+		}
+	}
+	return nil
+}
+
 func handleScrollIntoView(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
 	var p struct {
 		SessionID string `json:"sessionId"`
@@ -978,24 +1040,12 @@ func handleScrollIntoView(client *juggler.Client, tracker *ContextTracker, args 
 		return errorResult(fmt.Errorf("scrollIntoView: getFullAXTree: %w", err)), nil
 	}
 
-	var nodes []map[string]interface{}
-	if uerr := json.Unmarshal(axRaw, &nodes); uerr != nil {
+	nodes, uerr := decodeAXTreeNodes(axRaw)
+	if uerr != nil {
 		return errorResult(fmt.Errorf("scrollIntoView: decode AX tree: %w", uerr)), nil
 	}
 
-	var targetNode map[string]interface{}
-	for _, node := range nodes {
-		r, _ := node["ref"].(string)
-		if r == "" {
-			if rf, ok := node["ref"].(float64); ok {
-				r = fmt.Sprintf("%.0f", rf)
-			}
-		}
-		if r == p.Ref {
-			targetNode = node
-			break
-		}
-	}
+	targetNode := findAXNodeByRef(nodes, p.Ref)
 	if targetNode == nil {
 		return errorResult(fmt.Errorf("element ref %s not found in AX tree (stale snapshot?)", p.Ref)), nil
 	}
@@ -1276,24 +1326,12 @@ func resolveRefByJS(client *juggler.Client, tracker *ContextTracker, sessionID, 
 		return 0, 0, false, fmt.Errorf("resolveRef fallback: getFullAXTree: %w", axErr)
 	}
 
-	var nodes []map[string]interface{}
-	if uerr := json.Unmarshal(axRaw, &nodes); uerr != nil {
+	nodes, uerr := decodeAXTreeNodes(axRaw)
+	if uerr != nil {
 		return 0, 0, false, fmt.Errorf("resolveRef fallback: decode AX tree: %w", uerr)
 	}
 
-	var targetNode map[string]interface{}
-	for _, node := range nodes {
-		r, _ := node["ref"].(string)
-		if r == "" {
-			if rf, ok := node["ref"].(float64); ok {
-				r = fmt.Sprintf("%.0f", rf)
-			}
-		}
-		if r == ref {
-			targetNode = node
-			break
-		}
-	}
+	targetNode := findAXNodeByRef(nodes, ref)
 	if targetNode == nil {
 		return 0, 0, false, fmt.Errorf("element ref %s not found in AX tree (stale snapshot?)", ref)
 	}
@@ -1572,24 +1610,12 @@ func handleElementStatus(client *juggler.Client, tracker *ContextTracker, args j
 		return errorResult(fmt.Errorf("elementStatus: getFullAXTree: %w", err)), nil
 	}
 
-	var nodes []map[string]interface{}
-	if uerr := json.Unmarshal(axRaw, &nodes); uerr != nil {
+	nodes, uerr := decodeAXTreeNodes(axRaw)
+	if uerr != nil {
 		return errorResult(fmt.Errorf("elementStatus: decode AX tree: %w", uerr)), nil
 	}
 
-	var targetNode map[string]interface{}
-	for _, node := range nodes {
-		r, _ := node["ref"].(string)
-		if r == "" {
-			if rf, ok := node["ref"].(float64); ok {
-				r = fmt.Sprintf("%.0f", rf)
-			}
-		}
-		if r == p.Ref {
-			targetNode = node
-			break
-		}
-	}
+	targetNode := findAXNodeByRef(nodes, p.Ref)
 	if targetNode == nil {
 		return errorResult(fmt.Errorf("element ref %s not found in AX tree (stale snapshot?)", p.Ref)), nil
 	}

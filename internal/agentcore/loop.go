@@ -2,7 +2,11 @@ package agentcore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -119,6 +123,7 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 	// if the model then replies as if the task succeeded (false-success).
 	lastToolFailed := false
 	lastFailedTool := ""
+	navGuard := newNavigationGuard(task)
 
 	for iter := 0; iter < l.cfg.MaxIterations; iter++ {
 		if err := ctx.Err(); err != nil {
@@ -172,7 +177,11 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 
 			var result string
 			var isErr bool
-			if l.tools == nil {
+			policyBlocked := false
+			if blockResult, blocked := navGuard.BeforeTool(tc.Function.Name, tc.Function.Arguments); blocked {
+				result, isErr = blockResult, true
+				policyBlocked = true
+			} else if l.tools == nil {
 				result, isErr = fmt.Sprintf("no tools available to satisfy %q", tc.Function.Name), true
 			} else if r, e, derr := l.tools.Dispatch(ctx, tc.Function.Name, tc.Function.Arguments); derr != nil {
 				result, isErr = "tool dispatch error: "+derr.Error(), true
@@ -183,12 +192,15 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 
 			l.events.OnToolResult(tc.Function.Name, result, isErr)
 			if isErr {
-				lastToolFailed = true
-				lastFailedTool = tc.Function.Name
+				if !policyBlocked {
+					lastToolFailed = true
+					lastFailedTool = tc.Function.Name
+				}
 			} else {
 				lastToolFailed = false
 				lastFailedTool = ""
 			}
+			navGuard.AfterTool(tc.Function.Name, tc.Function.Arguments, isErr)
 			messages = append(messages, ChatMessage{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -203,6 +215,130 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 
 	l.events.OnStatus("error")
 	return "", fmt.Errorf("agent did not finish within %d iterations", l.cfg.MaxIterations)
+}
+
+type navigationGuard struct {
+	active      bool
+	maxObserved int
+	currentURL  string
+	observed    map[string]bool
+}
+
+func newNavigationGuard(task string) *navigationGuard {
+	g := &navigationGuard{
+		maxObserved: 3,
+		observed:    make(map[string]bool),
+	}
+	lower := strings.ToLower(task)
+	for _, needle := range []string{
+		"bot detector",
+		"bot-detector",
+		"antibot",
+		"anti-bot",
+		"detector site",
+		"detection site",
+		"fingerprint detector",
+		"fingerprinting test",
+	} {
+		if strings.Contains(lower, needle) {
+			g.active = true
+			break
+		}
+	}
+	if !g.active {
+		return g
+	}
+	if limit := requestedSiteLimit(lower); limit > 0 {
+		g.maxObserved = limit
+	}
+	return g
+}
+
+func requestedSiteLimit(task string) int {
+	for _, pattern := range []string{
+		`\btop\s+(\d+)\b`,
+		`\b(\d+)\s+(?:sites|pages|detectors|checks)\b`,
+	} {
+		re := regexp.MustCompile(pattern)
+		if m := re.FindStringSubmatch(task); len(m) == 2 {
+			n, err := strconv.Atoi(m[1])
+			if err == nil && n > 0 && n <= 10 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+func (g *navigationGuard) BeforeTool(name, rawArgs string) (string, bool) {
+	if g == nil || !g.active || name != "vulpine_navigate" {
+		return "", false
+	}
+	nextURL, ok := normalizeToolURL(rawArgs)
+	if !ok {
+		return "", false
+	}
+	if g.observed[nextURL] {
+		return "Navigation guard: that URL has already produced usable page state. Do not revisit it; use the information already captured and summarize the requested results now.", true
+	}
+	if len(g.observed) >= g.maxObserved {
+		return fmt.Sprintf("Navigation guard: already captured usable page state for %d requested detector/check pages. Do not open extra sites; summarize the observed results now.", len(g.observed)), true
+	}
+	return "", false
+}
+
+func (g *navigationGuard) AfterTool(name, rawArgs string, isErr bool) {
+	if g == nil || !g.active {
+		return
+	}
+	if name == "vulpine_navigate" {
+		if isErr {
+			g.currentURL = ""
+			return
+		}
+		if current, ok := normalizeToolURL(rawArgs); ok {
+			g.currentURL = current
+		}
+		return
+	}
+	if isErr || g.currentURL == "" || !isObservationTool(name) {
+		return
+	}
+	g.observed[g.currentURL] = true
+}
+
+func isObservationTool(name string) bool {
+	switch name {
+	case "vulpine_page_settled", "vulpine_snapshot", "vulpine_page_info", "vulpine_get_ax_tree":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeToolURL(rawArgs string) (string, bool) {
+	var args struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "", false
+	}
+	raw := strings.TrimSpace(args.URL)
+	if raw == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return raw, true
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Fragment = ""
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	if parsed.Path == "" {
+		parsed.Path = "/"
+	}
+	return parsed.String(), true
 }
 
 // streamWithFallback tries each configured model in order, advancing on a

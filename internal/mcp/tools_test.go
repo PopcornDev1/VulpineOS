@@ -263,6 +263,97 @@ func TestHandleClickRefFallbackUsesTrackedExecutionContext(t *testing.T) {
 	}
 }
 
+func TestHandleClickRefFallbackAcceptsWrappedAXTree(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondError("Page.resolveRef", "method not found")
+	transport.RespondJSON("Accessibility.getFullAXTree", map[string]any{
+		"filtered": true,
+		"tree": map[string]any{
+			"role": "document",
+			"name": "Page",
+			"children": []map[string]any{
+				{"ref": "@e1", "role": "button", "name": "Submit", "tag": "button"},
+			},
+		},
+	})
+	respondRuntimeEvaluateValue(t, transport, `{"x":12,"y":34,"found":true}`)
+	transport.RespondJSON("Page.dispatchMouseEvent", map[string]any{})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleToolCall(context.Background(), client, tracker, "vulpine_click_ref", json.RawMessage(`{"sessionId":"session-ref","ref":"@e1"}`))
+	if err != nil {
+		t.Fatalf("click_ref returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("click_ref should accept wrapped AX tree, got %#v", result)
+	}
+	if calls := transport.CallsByMethod("Page.dispatchMouseEvent"); len(calls) != 2 {
+		t.Fatalf("mouse event calls = %d, want mousedown+mouseup", len(calls))
+	}
+}
+
+func TestHandleScrollIntoViewAcceptsWrappedAXTree(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Accessibility.getFullAXTree", map[string]any{
+		"tree": map[string]any{
+			"role": "document",
+			"children": []map[string]any{
+				{"ref": "@target", "role": "button", "name": "Continue", "tag": "button"},
+			},
+		},
+	})
+	respondRuntimeEvaluateValue(t, transport, `{"found":true,"x":50,"y":75,"containerTag":"html","scrollDeltaY":120,"scrollDeltaX":0}`)
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleToolCall(context.Background(), client, tracker, "vulpine_scroll_into_view", json.RawMessage(`{"sessionId":"session-scroll","ref":"@target"}`))
+	if err != nil {
+		t.Fatalf("scroll_into_view returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("scroll_into_view should accept wrapped AX tree, got %#v", result)
+	}
+	if got := result.Content[0].Text; !strings.Contains(got, "Scrolled ref @target into view") {
+		t.Fatalf("scroll_into_view result = %q, want success text", got)
+	}
+}
+
+func TestHandleElementStatusAcceptsWrappedAXTree(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Accessibility.getFullAXTree", map[string]any{
+		"tree": map[string]any{
+			"role": "document",
+			"children": []map[string]any{
+				{"ref": "@target", "role": "button", "name": "Continue", "tag": "button"},
+			},
+		},
+	})
+	respondRuntimeEvaluateValue(t, transport, `{"found":true,"inViewport":true,"isFullyVisible":true,"isTopmostAtCenter":true}`)
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleToolCall(context.Background(), client, tracker, "vulpine_element_status", json.RawMessage(`{"sessionId":"session-status","ref":"@target"}`))
+	if err != nil {
+		t.Fatalf("element_status returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("element_status should accept wrapped AX tree, got %#v", result)
+	}
+	if got := result.Content[0].Text; !strings.Contains(got, `"inViewport":true`) {
+		t.Fatalf("element_status result = %q, want status payload", got)
+	}
+}
+
 func TestTextResult(t *testing.T) {
 	r := textResult("hello world")
 	if r == nil {
@@ -447,6 +538,66 @@ func TestHandleNavigateFailsWhenPageRemainsAboutBlank(t *testing.T) {
 	got := result.Content[0].Text
 	if !strings.Contains(got, "did not load usable content") || !strings.Contains(got, "about:blank") {
 		t.Fatalf("handleNavigate error = %q, want blank-page diagnostic", got)
+	}
+}
+
+func TestNavigationPageStateRequiresBodyContent(t *testing.T) {
+	state := navigationPageState{
+		ReadyState:    "complete",
+		BodyLen:       0,
+		ResourceCount: 23,
+		URL:           "https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API",
+	}
+	if navigationPageStateUsable(state) {
+		t.Fatalf("resource entries without body content should not be treated as usable: %+v", state)
+	}
+}
+
+func TestHandleNavigateRetriesWhenFirstDocumentStaysBodyless(t *testing.T) {
+	previousTimeout := navigateVerificationTimeout
+	previousInterval := navigateVerificationPollInterval
+	navigateVerificationTimeout = 5 * time.Millisecond
+	navigateVerificationPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		navigateVerificationTimeout = previousTimeout
+		navigateVerificationPollInterval = previousInterval
+	})
+
+	transport := testutil.NewFakeJugglerTransport(t)
+	navigateCalls := 0
+	transport.RespondFunc("Page.navigate", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		navigateCalls++
+		return json.RawMessage(`{"navigationId":"nav"}`), nil
+	})
+	transport.RespondFunc("Runtime.evaluate", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		bodyLen := 0
+		if navigateCalls >= 2 {
+			bodyLen = 1200
+		}
+		state := fmt.Sprintf(`{"readyState":"complete","bodyLen":%d,"resourceCount":23,"url":"https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API"}`, bodyLen)
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": state},
+		})
+		if err != nil {
+			t.Fatalf("marshal eval result: %v", err)
+		}
+		return data, nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleNavigate(client, tracker, json.RawMessage(`{"sessionId":"session-retry","url":"https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API"}`))
+	if err != nil {
+		t.Fatalf("handleNavigate returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleNavigate result = %#v, want success after retry", result)
+	}
+	if navigateCalls != 2 {
+		t.Fatalf("navigateCalls = %d, want retry after bodyless first document", navigateCalls)
 	}
 }
 

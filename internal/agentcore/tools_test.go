@@ -61,6 +61,15 @@ func TestBrowserToolsStripSessionIDAndCurate(t *testing.T) {
 		t.Error("vulpine_navigate should still require url")
 	}
 
+	for _, recoveryTool := range []string{"vulpine_scroll_into_view", "vulpine_element_status"} {
+		if _, ok := byName[recoveryTool]; !ok {
+			t.Errorf("%s missing from exposed tools", recoveryTool)
+		}
+		if !IsBrowserTool(recoveryTool) {
+			t.Errorf("IsBrowserTool(%q) = false, want true", recoveryTool)
+		}
+	}
+
 	// Lifecycle/image/extension tools must be excluded.
 	for _, excluded := range []string{"vulpine_new_context", "vulpine_close_context", "vulpine_screenshot", "vulpine_annotated_screenshot"} {
 		if _, ok := byName[excluded]; ok {

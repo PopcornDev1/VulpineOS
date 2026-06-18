@@ -104,6 +104,15 @@ async function waitForAXQuiet(docAcc) {
   clearTimeout(timeout);
 }
 
+async function waitForAXPending(docAcc, domWindow, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (docAcc.document.isUpdatePendingForJugglerAccessibility) {
+    if (Date.now() >= deadline)
+      return;
+    await new Promise(x => domWindow.requestAnimationFrame(x));
+  }
+}
+
 // VulpineOS: Role code mapping for token-optimized DOM export (Phase 3)
 const ROLE_MAP = {
   'document': 'doc',
@@ -862,11 +871,12 @@ export class PageAgent {
 
     const service = Cc["@mozilla.org/accessibilityService;1"]
       .getService(Ci.nsIAccessibilityService);
-    const document = this._frameTree.mainFrame().domWindow().document;
+    const frame = this._frameTree.mainFrame();
+    const domWindow = frame.domWindow();
+    const document = domWindow.document;
     const docAcc = service.getAccessibleFor(document);
 
-    while (docAcc.document.isUpdatePendingForJugglerAccessibility)
-      await new Promise(x => this._frameTree.mainFrame().domWindow().requestAnimationFrame(x));
+    await waitForAXPending(docAcc, domWindow);
 
     const strippedNodes = [];
 
@@ -1008,8 +1018,7 @@ export class PageAgent {
     const document = domWindow.document;
     const docAcc = service.getAccessibleFor(document);
 
-    while (docAcc.document.isUpdatePendingForJugglerAccessibility)
-      await new Promise(x => domWindow.requestAnimationFrame(x));
+    await waitForAXPending(docAcc, domWindow);
     await waitForAXQuiet(docAcc);
 
     const candidates = [];

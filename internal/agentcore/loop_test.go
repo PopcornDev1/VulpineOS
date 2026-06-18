@@ -37,12 +37,14 @@ func (s *scriptedCompleter) Stream(_ context.Context, model string, msgs []ChatM
 }
 
 type fakeDispatcher struct {
-	calls   []string
-	results map[string]string
+	calls    []string
+	callArgs []string
+	results  map[string]string
 }
 
-func (f *fakeDispatcher) Dispatch(_ context.Context, name, _ string) (string, bool, error) {
+func (f *fakeDispatcher) Dispatch(_ context.Context, name, rawArgs string) (string, bool, error) {
 	f.calls = append(f.calls, name)
+	f.callArgs = append(f.callArgs, rawArgs)
 	if r, ok := f.results[name]; ok {
 		return r, false, nil
 	}
@@ -218,6 +220,69 @@ func TestLoopStopsAtMaxIterations(t *testing.T) {
 	}
 	if model.calls != 3 {
 		t.Errorf("model called %d times, want 3 (MaxIterations)", model.calls)
+	}
+}
+
+func TestLoopBlocksExtraDetectorNavigationAfterObservedSet(t *testing.T) {
+	model := &scriptedCompleter{turns: []Completion{
+		toolCallTurn("n1", "vulpine_navigate", `{"url":"https://detector-a.example/"}`),
+		toolCallTurn("s1", "vulpine_snapshot", `{}`),
+		toolCallTurn("n2", "vulpine_navigate", `{"url":"https://detector-b.example/"}`),
+		toolCallTurn("s2", "vulpine_snapshot", `{}`),
+		toolCallTurn("n3", "vulpine_navigate", `{"url":"https://detector-c.example/"}`),
+		toolCallTurn("s3", "vulpine_snapshot", `{}`),
+		toolCallTurn("n4", "vulpine_navigate", `{"url":"https://detector-d.example/"}`),
+		{Message: ChatMessage{Role: "assistant", Content: "summary"}, FinishReason: "stop"},
+	}}
+	disp := &fakeDispatcher{}
+	ev := &recordEvents{}
+	loop := NewLoop(model, disp, ev, LoopConfig{Models: []string{"m"}, MaxIterations: 12})
+
+	final, err := loop.Run(context.Background(), "Give me the results from the most popular antibot detection sites", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if final != "summary" {
+		t.Fatalf("final = %q, want summary", final)
+	}
+
+	var navigations []string
+	for i, name := range disp.calls {
+		if name == "vulpine_navigate" {
+			navigations = append(navigations, disp.callArgs[i])
+		}
+	}
+	if len(navigations) != 3 {
+		t.Fatalf("dispatched navigations = %#v, want only first three detector pages", navigations)
+	}
+	if len(ev.toolRes) != 7 {
+		t.Fatalf("tool result count = %d, want blocked navigation to still be reported", len(ev.toolRes))
+	}
+}
+
+func TestLoopBlocksRepeatedObservedDetectorURL(t *testing.T) {
+	model := &scriptedCompleter{turns: []Completion{
+		toolCallTurn("n1", "vulpine_navigate", `{"url":"https://detector-a.example/"}`),
+		toolCallTurn("s1", "vulpine_snapshot", `{}`),
+		toolCallTurn("n2", "vulpine_navigate", `{"url":"https://detector-a.example/" }`),
+		{Message: ChatMessage{Role: "assistant", Content: "summary"}, FinishReason: "stop"},
+	}}
+	disp := &fakeDispatcher{}
+	ev := &recordEvents{}
+	loop := NewLoop(model, disp, ev, LoopConfig{Models: []string{"m"}, MaxIterations: 8})
+
+	if _, err := loop.Run(context.Background(), "Test Vulpine against the top 3 bot detector sites", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var navigations int
+	for _, name := range disp.calls {
+		if name == "vulpine_navigate" {
+			navigations++
+		}
+	}
+	if navigations != 1 {
+		t.Fatalf("dispatched navigations = %d, want repeated observed URL blocked", navigations)
 	}
 }
 

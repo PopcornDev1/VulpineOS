@@ -34,6 +34,22 @@ func TestLoopDetector_DifferentToolsNoLoop(t *testing.T) {
 	}
 }
 
+func TestLoopDetector_DetectsRepeatedNonConsecutiveAction(t *testing.T) {
+	ld := NewLoopDetector(3)
+	ld.Check("s1", "vulpine_navigate", `{"url":"https://detector-a.example/"}`)
+	ld.Check("s1", "vulpine_page_settled", `{"timeout":15}`)
+	ld.Check("s1", "vulpine_snapshot", `{"profile":"compact"}`)
+	ld.Check("s1", "vulpine_navigate", `{"url":"https://detector-a.example/"}`)
+	ld.Check("s1", "vulpine_get_ax_tree", `{}`)
+	ld.Check("s1", "vulpine_navigate", `{"url":"https://detector-b.example/"}`)
+	ld.Check("s1", "vulpine_snapshot", `{"profile":"expanded"}`)
+
+	w := ld.Check("s1", "vulpine_navigate", `{"url":"https://detector-a.example/"}`)
+	if w == "" {
+		t.Error("expected loop warning after repeated non-consecutive action")
+	}
+}
+
 func TestLoopDetector_IsolatesSessions(t *testing.T) {
 	ld := NewLoopDetector(2)
 	ld.Check("s1", "click", `{"ref":"@1"}`)

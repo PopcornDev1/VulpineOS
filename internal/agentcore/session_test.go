@@ -74,3 +74,16 @@ func TestBrowserSystemPromptIncludesFileWorkspaceTools(t *testing.T) {
 		}
 	}
 }
+
+func TestBrowserSystemPromptBoundsBroadWebsiteChecks(t *testing.T) {
+	for _, want := range []string{
+		"Bounded Website Checks",
+		"do not expand to extra detector or benchmark sites",
+		"Do not revisit a URL after you already captured usable page state",
+		"If one targeted wait times out, inspect the current snapshot once and continue",
+	} {
+		if !strings.Contains(browserSystemPrompt, want) {
+			t.Fatalf("browserSystemPrompt missing bounded website rule %q:\n%s", want, browserSystemPrompt)
+		}
+	}
+}
