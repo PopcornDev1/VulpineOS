@@ -8,15 +8,33 @@
 // Usage:
 //   cd test/puppeteer && npm install && node test-all.js
 
+const net = require('node:net');
 const puppeteer = require('puppeteer-core');
 
-const WS_ENDPOINT = 'ws://127.0.0.1:9222/devtools/browser/foxbridge';
+const WS_HOST = '127.0.0.1';
+const WS_PORT = 9222;
+const WS_ENDPOINT = `ws://${WS_HOST}:${WS_PORT}/devtools/browser/foxbridge`;
+const TEST_TIMEOUT_MS = Number(process.env.FOXBRIDGE_TEST_TIMEOUT_MS || 30000);
 let browser, passed = 0, failed = 0, skipped = 0;
+
+async function withTimeout(name, fn, timeoutMs = TEST_TIMEOUT_MS) {
+  let timer;
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${name} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function test(name, fn) {
   process.stdout.write(`  ${name}... `);
   try {
-    await fn();
+    await withTimeout(name, fn);
     console.log('✅');
     passed++;
   } catch (err) {
@@ -32,6 +50,24 @@ async function skip(name, reason) {
 
 function assert(condition, msg) {
   if (!condition) throw new Error(msg || 'assertion failed');
+}
+
+async function preflightFoxbridge() {
+  await new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: WS_HOST, port: WS_PORT });
+    socket.setTimeout(2000);
+    socket.once('connect', () => {
+      socket.end();
+      resolve();
+    });
+    socket.once('timeout', () => {
+      socket.destroy();
+      reject(new Error(`Start foxbridge first: no response from ${WS_HOST}:${WS_PORT}`));
+    });
+    socket.once('error', err => {
+      reject(new Error(`Start foxbridge first: cannot connect to ${WS_HOST}:${WS_PORT} (${err.code || err.message})`));
+    });
+  });
 }
 
 // ============================================================
@@ -874,6 +910,7 @@ async function main() {
   console.log(`Connecting to ${WS_ENDPOINT}...\n`);
 
   try {
+    await preflightFoxbridge();
     await testConnection();
     await testPageCreation();
     await testEvaluation();
@@ -904,6 +941,7 @@ async function main() {
     await testPerformanceMetrics();
   } catch (err) {
     console.error('\n💥 Fatal error:', err.message);
+    failed++;
   } finally {
     if (browser) {
       try { await browser.disconnect(); } catch {}

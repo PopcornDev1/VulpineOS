@@ -99,8 +99,9 @@ Record each expected artifact before drafting a public release:
 | builder metadata | browser rebuild | `/opt/vulpineos/artifacts/build-*.json` from `scripts/run-ec2-mac-build.sh` |
 | checksums | every shipped binary/archive | `SHA256SUMS` covering every file attached to the release |
 
-`install.sh` resolves assets from the latest GitHub release. It requires the CLI
-asset name `vulpineos-<goos>-<goarch>` and a browser asset matching
+`install.sh` resolves assets from the latest GitHub release. The short install
+URL `https://vulpineos.com/install` should serve or redirect to this script. It
+requires the CLI asset name `vulpineos-<goos>-<goarch>` and a browser asset matching
 `camoufox-*-<lin|mac>.<x86_64|arm64>.zip` for the installer's current platform.
 The `Build and Release` workflow builds the CLI matrix, uploads the browser
 packages from `multibuild.py`, creates `SHA256SUMS`, and drafts the tagged
@@ -116,7 +117,7 @@ Before publishing the drafted release:
 4. verify that release notes and docs do not describe private
    implementation details
 5. verify no local/private files are included in the package contents
-6. after publishing, verify `curl -sL https://raw.githubusercontent.com/VulpineOS/VulpineOS/main/install.sh | bash`
+6. after publishing, verify `curl -fsSL https://vulpineos.com/install | bash`
    installs from the latest release
 
 ## Tagging

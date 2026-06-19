@@ -2,7 +2,7 @@
 set -euo pipefail
 
 VULPINEOS_REPO="${VULPINEOS_REPO:-VulpineOS/VulpineOS}"
-VULPINEOS_HOME="${HOME}/.vulpineos"
+VULPINEOS_HOME="${VULPINEOS_HOME:-${HOME}/.vulpineos}"
 VULPINEOS_BIN_DIR="${VULPINEOS_BIN_DIR:-}"
 VULPINEOS_BROWSER_DIR="${VULPINEOS_BROWSER_DIR:-${VULPINEOS_HOME}/browser}"
 
@@ -270,6 +270,30 @@ os.chmod(config_path, 0o600)
 PY
 }
 
+install_camoufox_launcher() {
+    local browser_bin="$1"
+    local bin_dir="$2"
+    local launcher="${bin_dir}/camoufox"
+
+    if [ "$(detect_goos)" = "darwin" ]; then
+        python3 - "${launcher}" "${browser_bin}" <<'PY'
+import os
+import shlex
+import sys
+
+launcher, browser_bin = sys.argv[1:]
+with open(launcher, "w", encoding="utf-8") as f:
+    f.write("#!/bin/sh\n")
+    f.write("exec " + shlex.quote(browser_bin) + ' "$@"\n')
+os.chmod(launcher, 0o755)
+PY
+    else
+        local target="${browser_bin}"
+        ln -sf "${target}" "${launcher}" || true
+        chmod 0755 "${launcher}" >/dev/null 2>&1 || true
+    fi
+}
+
 install_browser() {
     local bin_dir="$1"
     local zip_path="${VULPINEOS_HOME}/${VULPINEOS_BROWSER_ASSET}.tmp.$$"
@@ -297,8 +321,8 @@ install_browser() {
         xattr -dr com.apple.quarantine "${VULPINEOS_BROWSER_DIR}" >/dev/null 2>&1 || true
     fi
 
-    ln -sf "${browser_bin}" "${bin_dir}/camoufox" || true
     write_browser_config "${browser_bin}"
+    install_camoufox_launcher "${browser_bin}" "${bin_dir}"
     log "Installed Camoufox: ${browser_bin}"
 }
 

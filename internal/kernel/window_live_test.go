@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -32,17 +33,29 @@ func TestLive_WindowHideShow(t *testing.T) {
 		t.Fatal("no window controller")
 	}
 
-	// Wait for the window to appear (X11 enumeration works).
+	// Wait for the window to appear. Linux can enumerate X11 windows directly;
+	// macOS discovers the app process via System Events.
 	appeared := false
 	for i := 0; i < 30; i++ {
 		time.Sleep(500 * time.Millisecond)
-		if len(win.linuxWindowIDs(false)) > 0 {
+		if runtime.GOOS == "linux" && len(win.linuxWindowIDs(false)) > 0 {
+			appeared = true
+			break
+		}
+		if runtime.GOOS == "darwin" {
+			_, found := win.Status()
+			if found {
+				appeared = true
+				break
+			}
+		}
+		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 			appeared = true
 			break
 		}
 	}
 	if !appeared {
-		t.Fatal("browser window never appeared in X11 tree")
+		t.Fatalf("browser window never appeared for %s", runtime.GOOS)
 	}
 
 	// It should auto-hide on launch (HideWhenReady runs shortly after Start).

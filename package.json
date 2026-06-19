@@ -7,10 +7,13 @@
     "postinstall": "echo 'VulpineOS dependencies installed.'",
     "build-go": "go build -o vulpineos ./cmd/vulpineos/",
     "setup": "go build -o vulpineos ./cmd/vulpineos/ && ./vulpineos --no-browser",
-    "benchmark:tokens": "node benchmarks/token-optimization/benchmark.mjs"
+    "benchmark:tokens": "node benchmarks/token-optimization/benchmark.mjs",
+    "foxbridge:docs:build": "npm --prefix local/foxbridge/docs ci && npm --prefix local/foxbridge/docs run build",
+    "foxbridge:puppeteer:test": "npm --prefix local/foxbridge/test/puppeteer ci && npm --prefix local/foxbridge/test/puppeteer test"
   },
   "devDependencies": {
-    "gpt-tokenizer": "^3.4.0"
+    "gpt-tokenizer": "^3.4.0",
+    "playwright-core": "^1.61.0"
   },
   "engines": {
     "node": ">=22.16.0"

@@ -22,7 +22,7 @@ VulpineOS is the operating system for AI browser agents: a Firefox/Camoufox-base
 </p>
 
 ```bash
-curl -sL https://raw.githubusercontent.com/VulpineOS/VulpineOS/main/install.sh | bash
+curl -fsSL https://vulpineos.com/install | bash
 ```
 
 ---
@@ -250,12 +250,15 @@ configures the browser path under `~/.vulpineos/config.json`. Developers can
 force a source build with `VULPINEOS_BUILD_FROM_SOURCE=1`.
 
 ```bash
-curl -sL https://raw.githubusercontent.com/VulpineOS/VulpineOS/main/install.sh | bash
+curl -fsSL https://vulpineos.com/install | bash
 vulpineos
 ```
 
 The installer fails clearly if the latest release is missing the required CLI or
 browser assets for your platform.
+
+`https://vulpineos.com/install` should serve or redirect to the current
+`install.sh` from the public VulpineOS repo.
 
 ### Installer Prerequisites
 

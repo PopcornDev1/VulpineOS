@@ -116,6 +116,21 @@ func (b *Bridge) SetupEventSubscriptions() {
 			browserCtxID:  browserContextID,
 			url:           ev.TargetInfo.URL,
 		}
+		pageURL := ev.TargetInfo.URL
+		if pageURL == "" {
+			pageURL = "about:blank"
+		}
+		b.emitEvent("Target.targetCreated", map[string]interface{}{
+			"targetInfo": map[string]interface{}{
+				"targetId":         targetID,
+				"type":             "page",
+				"title":            "",
+				"url":              pageURL,
+				"attached":         true,
+				"canAccessOpener":  false,
+				"browserContextId": browserContextID,
+			},
+		}, "")
 
 		// Register the PAGE session (what actually talks to Juggler)
 		pageInfo := &cdp.SessionInfo{
