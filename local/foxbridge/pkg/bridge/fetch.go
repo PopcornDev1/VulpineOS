@@ -32,6 +32,7 @@ func (b *Bridge) handleFetch(conn *cdp.Connection, msg *cdp.Message) (json.RawMe
 		if err != nil {
 			return nil, &cdp.Error{Code: -32000, Message: err.Error()}
 		}
+		b.setRequestInterceptionEnabled(true)
 		return json.RawMessage(`{}`), nil
 
 	case "Fetch.disable":
@@ -48,6 +49,7 @@ func (b *Bridge) handleFetch(conn *cdp.Connection, msg *cdp.Message) (json.RawMe
 		if err != nil {
 			return nil, &cdp.Error{Code: -32000, Message: err.Error()}
 		}
+		b.setRequestInterceptionEnabled(false)
 		return json.RawMessage(`{}`), nil
 
 	case "Fetch.continueRequest":

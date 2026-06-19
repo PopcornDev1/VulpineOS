@@ -375,10 +375,14 @@ func TestNetworkSetRequestInterception_WithPatterns(t *testing.T) {
 	if params["enabled"] != true {
 		t.Errorf("enabled = %v, want true", params["enabled"])
 	}
+	if !b.isRequestInterceptionEnabled() {
+		t.Fatal("request interception state was not enabled")
+	}
 }
 
 func TestNetworkSetRequestInterception_EmptyPatterns(t *testing.T) {
 	b, mb := newTestBridge()
+	b.setRequestInterceptionEnabled(true)
 
 	msg := &cdp.Message{
 		ID:     1,
@@ -397,6 +401,9 @@ func TestNetworkSetRequestInterception_EmptyPatterns(t *testing.T) {
 
 	if params["enabled"] != false {
 		t.Errorf("enabled = %v, want false (empty patterns)", params["enabled"])
+	}
+	if b.isRequestInterceptionEnabled() {
+		t.Fatal("request interception state was not disabled")
 	}
 }
 

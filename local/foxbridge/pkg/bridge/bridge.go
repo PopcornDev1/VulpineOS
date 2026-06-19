@@ -51,6 +51,15 @@ type Bridge struct {
 	// The next executionContextCreated should trigger isolated world re-emission.
 	pendingContextClearMu sync.Mutex
 	pendingContextClear   map[string]bool // cdpSessionID → true
+	// pendingNavigation tracks in-flight non-blank Page.navigate calls so late
+	// initial about:blank commits do not satisfy Puppeteer's navigation waiter.
+	pendingNavigationMu sync.Mutex
+	pendingNavigation   map[string]string // cdpSessionID → target URL
+	// requestInterception tracks whether Fetch/Network interception is active.
+	// When active, normal Network.requestWillBeSent events are suppressed and
+	// Browser.requestIntercepted emits the paired Network/Fetch events instead.
+	requestInterceptionMu sync.RWMutex
+	requestInterception   bool
 	// deterministicScript is injected into page sessions when deterministic mode is enabled.
 	deterministicMu      sync.RWMutex
 	deterministicScript  string
@@ -97,6 +106,7 @@ func New(b backend.Backend, sessions *cdp.SessionManager, server *cdp.Server, is
 		lastDialog:           make(map[string]string),
 		pdfStreams:           make(map[string]string),
 		pendingContextClear:  make(map[string]bool),
+		pendingNavigation:    make(map[string]string),
 		deterministicApplied: make(map[string]bool),
 	}
 }
@@ -222,18 +232,25 @@ func (b *Bridge) cdpFrameIDForJugglerSession(jugglerSessionID, frameID string) s
 	if frameID == "" {
 		return frameID
 	}
-	if info, ok := b.sessions.GetByJugglerSession(jugglerSessionID); ok {
+	if info, ok := b.pageSessionInfoForJugglerSession(jugglerSessionID); ok {
 		return b.cdpFrameIDForInfo(info, frameID)
+	}
+	return frameID
+}
+
+func (b *Bridge) pageSessionInfoForJugglerSession(jugglerSessionID string) (*cdp.SessionInfo, bool) {
+	if info, ok := b.sessions.GetByJugglerSession(jugglerSessionID); ok {
+		return info, true
 	}
 	b.autoAttach.mu.Lock()
 	pair, ok := b.autoAttach.pairs[jugglerSessionID]
 	b.autoAttach.mu.Unlock()
 	if ok {
 		if info, ok := b.sessions.Get(pair.pageSessionID); ok {
-			return b.cdpFrameIDForInfo(info, frameID)
+			return info, true
 		}
 	}
-	return frameID
+	return nil, false
 }
 
 func (b *Bridge) cdpFrameIDForInfo(info *cdp.SessionInfo, frameID string) string {
@@ -244,6 +261,63 @@ func (b *Bridge) cdpFrameIDForInfo(info *cdp.SessionInfo, frameID string) string
 		return info.TargetID
 	}
 	return frameID
+}
+
+func (b *Bridge) refreshMainFrameIDForNavigation(jugglerSessionID, frameID string) {
+	if frameID == "" {
+		return
+	}
+	info, ok := b.pageSessionInfoForJugglerSession(jugglerSessionID)
+	if !ok || info.Type != "page" || info.TargetID == "" {
+		return
+	}
+	if info.FrameID == "" || info.FrameID == frameID || strings.HasPrefix(frameID, "mainframe-") {
+		info.FrameID = frameID
+	}
+}
+
+func (b *Bridge) markPendingNavigation(cdpSessionID, url string) {
+	if cdpSessionID == "" {
+		return
+	}
+	b.pendingNavigationMu.Lock()
+	defer b.pendingNavigationMu.Unlock()
+	if url == "" || url == "about:blank" {
+		delete(b.pendingNavigation, cdpSessionID)
+		return
+	}
+	b.pendingNavigation[cdpSessionID] = url
+}
+
+func (b *Bridge) clearPendingNavigation(cdpSessionID string) {
+	if cdpSessionID == "" {
+		return
+	}
+	b.pendingNavigationMu.Lock()
+	delete(b.pendingNavigation, cdpSessionID)
+	b.pendingNavigationMu.Unlock()
+}
+
+func (b *Bridge) shouldSkipAboutBlankNavigation(cdpSessionID, url string) bool {
+	if cdpSessionID == "" || url != "about:blank" {
+		return false
+	}
+	b.pendingNavigationMu.Lock()
+	defer b.pendingNavigationMu.Unlock()
+	pending := b.pendingNavigation[cdpSessionID]
+	return pending != "" && pending != "about:blank"
+}
+
+func (b *Bridge) setRequestInterceptionEnabled(enabled bool) {
+	b.requestInterceptionMu.Lock()
+	b.requestInterception = enabled
+	b.requestInterceptionMu.Unlock()
+}
+
+func (b *Bridge) isRequestInterceptionEnabled() bool {
+	b.requestInterceptionMu.RLock()
+	defer b.requestInterceptionMu.RUnlock()
+	return b.requestInterception
 }
 
 func (b *Bridge) jugglerFrameIDForSession(cdpSessionID, frameID string) string {

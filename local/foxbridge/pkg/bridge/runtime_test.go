@@ -120,6 +120,43 @@ func TestHandleRuntime_Evaluate_ContextIDMapping(t *testing.T) {
 	}
 }
 
+func TestHandleRuntime_Evaluate_PrefersRequestedContextOverLatest(t *testing.T) {
+	b, mb := newTestBridge()
+	mb.SetResponse("", "Runtime.evaluate", json.RawMessage(`{}`), nil)
+
+	b.sessions.Add(&cdp.SessionInfo{
+		SessionID:        "cdp-s1",
+		JugglerSessionID: "jug-s1",
+		TargetID:         "target-1",
+		FrameID:          "mainframe-1",
+		Type:             "page",
+	})
+	b.ctxMapMu.Lock()
+	b.ctxMap[101] = "main-context"
+	b.ctxMapMu.Unlock()
+	b.latestCtxMu.Lock()
+	b.latestCtx["jug-s1"] = "subframe-context"
+	b.latestCtxMu.Unlock()
+
+	msg := &cdp.Message{
+		ID:        1,
+		Method:    "Runtime.evaluate",
+		SessionID: "cdp-s1",
+		Params:    json.RawMessage(`{"expression":"location.href","contextId":101}`),
+	}
+	_, cdpErr := b.handleRuntime(nil, msg)
+	if cdpErr != nil {
+		t.Fatalf("unexpected error: %s", cdpErr.Message)
+	}
+
+	last, _ := mb.LastCall()
+	var p map[string]interface{}
+	json.Unmarshal(last.Params, &p)
+	if p["executionContextId"] != "main-context" {
+		t.Errorf("executionContextId = %v, want main-context", p["executionContextId"])
+	}
+}
+
 func TestHandleRuntime_Evaluate_AwaitPromise(t *testing.T) {
 	b, mb := newTestBridge()
 	mb.SetResponse("", "Runtime.evaluate", json.RawMessage(`{}`), nil)
@@ -235,6 +272,43 @@ func TestHandleRuntime_CallFunctionOn_ExecutionContextIDMapping(t *testing.T) {
 	json.Unmarshal(last.Params, &p)
 	if p["executionContextId"] != "juggler-ctx-xyz" {
 		t.Errorf("executionContextId = %v, want juggler-ctx-xyz", p["executionContextId"])
+	}
+}
+
+func TestHandleRuntime_CallFunctionOn_PrefersRequestedContextOverLatest(t *testing.T) {
+	b, mb := newTestBridge()
+	mb.SetResponse("", "Runtime.callFunction", json.RawMessage(`{}`), nil)
+
+	b.sessions.Add(&cdp.SessionInfo{
+		SessionID:        "cdp-s1",
+		JugglerSessionID: "jug-s1",
+		TargetID:         "target-1",
+		FrameID:          "mainframe-1",
+		Type:             "page",
+	})
+	b.ctxMapMu.Lock()
+	b.ctxMap[200] = "main-context"
+	b.ctxMapMu.Unlock()
+	b.latestCtxMu.Lock()
+	b.latestCtx["jug-s1"] = "subframe-context"
+	b.latestCtxMu.Unlock()
+
+	msg := &cdp.Message{
+		ID:        1,
+		Method:    "Runtime.callFunctionOn",
+		SessionID: "cdp-s1",
+		Params:    json.RawMessage(`{"functionDeclaration":"() => location.href","executionContextId":200,"returnByValue":true}`),
+	}
+	_, cdpErr := b.handleRuntime(nil, msg)
+	if cdpErr != nil {
+		t.Fatalf("unexpected error: %s", cdpErr.Message)
+	}
+
+	last, _ := mb.LastCall()
+	var p map[string]interface{}
+	json.Unmarshal(last.Params, &p)
+	if p["executionContextId"] != "main-context" {
+		t.Errorf("executionContextId = %v, want main-context", p["executionContextId"])
 	}
 }
 

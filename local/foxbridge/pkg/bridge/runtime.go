@@ -81,10 +81,8 @@ func (b *Bridge) handleRuntime(conn *cdp.Connection, msg *cdp.Message) (json.Raw
 			b.ctxMapMu.RUnlock()
 		}
 
-		// Always prefer the latest context to avoid stale context errors after navigation
-		latest := b.latestContextForSession(msg.SessionID)
-		if latest != "" {
-			execCtxID = latest
+		if execCtxID == "" {
+			execCtxID = b.latestContextForSession(msg.SessionID)
 		}
 
 		// If awaitPromise is requested, wrap the expression so the promise is resolved
@@ -141,13 +139,8 @@ func (b *Bridge) handleRuntime(conn *cdp.Connection, msg *cdp.Message) (json.Raw
 			b.ctxMapMu.RUnlock()
 		}
 
-		// If we have a context ID but no objectId, always use the LATEST context
-		// to avoid stale context errors after navigation
-		if params.ObjectID == "" {
-			latest := b.latestContextForSession(msg.SessionID)
-			if latest != "" {
-				execCtxID = latest
-			}
+		if params.ObjectID == "" && execCtxID == "" {
+			execCtxID = b.latestContextForSession(msg.SessionID)
 		}
 
 		funcDecl := params.FunctionDeclaration
@@ -237,7 +230,9 @@ func (b *Bridge) handleRuntime(conn *cdp.Connection, msg *cdp.Message) (json.Raw
 				"expression":    expr,
 				"returnByValue": params.ReturnByValue,
 			}
-			if latest := b.latestContextForSession(msg.SessionID); latest != "" {
+			if execCtxID != "" {
+				evalParams["executionContextId"] = execCtxID
+			} else if latest := b.latestContextForSession(msg.SessionID); latest != "" {
 				evalParams["executionContextId"] = latest
 			}
 			result, err := b.callJuggler(msg.SessionID, "Runtime.evaluate", evalParams)
@@ -245,7 +240,9 @@ func (b *Bridge) handleRuntime(conn *cdp.Connection, msg *cdp.Message) (json.Raw
 				// Retry once with fresh latest context — setContent may have changed it
 				if strings.Contains(err.Error(), "Failed to find execution context") {
 					time.Sleep(100 * time.Millisecond)
-					if latest := b.latestContextForSession(msg.SessionID); latest != "" {
+					if execCtxID != "" {
+						evalParams["executionContextId"] = execCtxID
+					} else if latest := b.latestContextForSession(msg.SessionID); latest != "" {
 						evalParams["executionContextId"] = latest
 					}
 					result, err = b.callJuggler(msg.SessionID, "Runtime.evaluate", evalParams)
@@ -298,7 +295,9 @@ func (b *Bridge) handleRuntime(conn *cdp.Connection, msg *cdp.Message) (json.Raw
 						"expression":    expr,
 						"returnByValue": false,
 					}
-					if latest := b.latestContextForSession(msg.SessionID); latest != "" {
+					if execCtxID != "" {
+						evalParams["executionContextId"] = execCtxID
+					} else if latest := b.latestContextForSession(msg.SessionID); latest != "" {
 						evalParams["executionContextId"] = latest
 					}
 					result, err := b.callJuggler(msg.SessionID, "Runtime.evaluate", evalParams)
@@ -353,38 +352,14 @@ func (b *Bridge) handleRuntime(conn *cdp.Connection, msg *cdp.Message) (json.Raw
 			jugglerParams["awaitPromise"] = params.AwaitPromise
 		}
 
-		// Juggler ALWAYS requires executionContextId.
-		// When arguments contain objectIds, the objects are bound to a specific context.
-		// Using the latest context would cause "JSHandles can be evaluated only in the
-		// context they were created" errors. Honor the caller's requested context instead.
-		hasObjectIdArgs := false
-		if finalArgs != nil {
-			hasObjectIdArgs = strings.Contains(string(finalArgs), `"objectId"`)
-		}
-		if hasObjectIdArgs || params.ObjectID != "" {
-			// Object handles from our querySelector interception live in the latest context.
-			// The caller might request a utility world context (mapped to a stale Juggler ID).
-			// For Juggler (not BiDi), prefer latest context since all worlds share the same
-			// underlying JavaScript environment. For BiDi, use the caller's context.
-			if !b.isBiDi {
-				if latest := b.latestContextForSession(msg.SessionID); latest != "" {
-					jugglerParams["executionContextId"] = latest
-				} else if execCtxID != "" {
-					jugglerParams["executionContextId"] = execCtxID
-				}
-			} else if execCtxID != "" {
-				jugglerParams["executionContextId"] = execCtxID
-			} else {
-				if latest := b.latestContextForSession(msg.SessionID); latest != "" {
-					jugglerParams["executionContextId"] = latest
-				}
-			}
+		// Juggler ALWAYS requires executionContextId. Honor the caller's requested
+		// context first; on iframe-heavy pages the latest context may belong to a
+		// child frame while Puppeteer is evaluating against the main frame.
+		if execCtxID != "" {
+			jugglerParams["executionContextId"] = execCtxID
 		} else {
-			latest := b.latestContextForSession(msg.SessionID)
-			if latest != "" {
+			if latest := b.latestContextForSession(msg.SessionID); latest != "" {
 				jugglerParams["executionContextId"] = latest
-			} else if execCtxID != "" {
-				jugglerParams["executionContextId"] = execCtxID
 			}
 		}
 

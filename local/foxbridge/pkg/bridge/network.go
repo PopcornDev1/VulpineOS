@@ -123,6 +123,7 @@ func (b *Bridge) handleNetwork(conn *cdp.Connection, msg *cdp.Message) (json.Raw
 		jugglerParams := map[string]interface{}{
 			"enabled": len(params.Patterns) > 0,
 		}
+		enabled := len(params.Patterns) > 0
 		if msg.SessionID != "" {
 			if info, ok := b.sessions.Get(msg.SessionID); ok {
 				b.setJugglerBrowserContext(jugglerParams, info.BrowserContextID)
@@ -133,6 +134,7 @@ func (b *Bridge) handleNetwork(conn *cdp.Connection, msg *cdp.Message) (json.Raw
 		if err != nil {
 			return nil, &cdp.Error{Code: -32000, Message: err.Error()}
 		}
+		b.setRequestInterceptionEnabled(enabled)
 		return json.RawMessage(`{}`), nil
 
 	case "Network.setUserAgentOverride":

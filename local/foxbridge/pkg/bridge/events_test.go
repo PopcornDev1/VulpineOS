@@ -266,6 +266,107 @@ func TestSetupEventSubscriptions_NavigationCommitted(t *testing.T) {
 	}
 }
 
+func TestSetupEventSubscriptions_NavigationCommittedRefreshesMainFrameMapping(t *testing.T) {
+	b, mb := newTestBridge()
+	b.SetupEventSubscriptions()
+
+	b.sessions.Add(&cdp.SessionInfo{
+		SessionID:        "cdp-s1",
+		JugglerSessionID: "jug-s1",
+		TargetID:         "target-1",
+		FrameID:          "mainframe-old",
+		Type:             "page",
+		URL:              "about:blank",
+	})
+	b.autoAttach.mu.Lock()
+	b.autoAttach.pairs["jug-s1"] = &targetPair{
+		pageSessionID: "cdp-s1",
+		pageTargetID:  "target-1",
+		url:           "about:blank",
+	}
+	b.autoAttach.mu.Unlock()
+
+	mb.mu.Lock()
+	handlers := mb.handlers["Page.navigationCommitted"]
+	mb.mu.Unlock()
+
+	if len(handlers) == 0 {
+		t.Fatal("no handlers registered for Page.navigationCommitted")
+	}
+
+	params := json.RawMessage(`{"frameId":"mainframe-new","url":"https://example.com","navigationId":"nav-1"}`)
+	handlers[0]("jug-s1", params)
+
+	info, ok := b.sessions.GetByJugglerSession("jug-s1")
+	if !ok {
+		t.Fatal("session not found")
+	}
+	if info.FrameID != "mainframe-new" {
+		t.Fatalf("frameID = %q, want mainframe-new", info.FrameID)
+	}
+	if got := b.cdpFrameIDForJugglerSession("jug-s1", "mainframe-new"); got != "target-1" {
+		t.Fatalf("cdpFrameIDForJugglerSession(new main frame) = %q, want target-1", got)
+	}
+}
+
+func TestSetupEventSubscriptions_NavigationCommittedSkipsAboutBlankDuringPendingNavigation(t *testing.T) {
+	b, mb := newTestBridge()
+	b.SetupEventSubscriptions()
+
+	b.sessions.Add(&cdp.SessionInfo{
+		SessionID:        "cdp-s1",
+		JugglerSessionID: "jug-s1",
+		TargetID:         "target-1",
+		FrameID:          "mainframe-1",
+		Type:             "page",
+		URL:              "about:blank",
+	})
+	b.autoAttach.mu.Lock()
+	b.autoAttach.pairs["jug-s1"] = &targetPair{
+		pageSessionID: "cdp-s1",
+		pageTargetID:  "target-1",
+		url:           "about:blank",
+	}
+	b.autoAttach.mu.Unlock()
+	b.markPendingNavigation("cdp-s1", "https://example.com")
+
+	mb.mu.Lock()
+	handlers := mb.handlers["Page.navigationCommitted"]
+	mb.mu.Unlock()
+
+	if len(handlers) == 0 {
+		t.Fatal("no handlers registered for Page.navigationCommitted")
+	}
+
+	handlers[0]("jug-s1", json.RawMessage(`{"frameId":"mainframe-1","url":"about:blank","navigationId":"nav-blank"}`))
+
+	info, ok := b.sessions.GetByJugglerSession("jug-s1")
+	if !ok {
+		t.Fatal("session not found")
+	}
+	if info.URL != "about:blank" {
+		t.Fatalf("URL after skipped about:blank = %q, want about:blank", info.URL)
+	}
+	b.pendingNavigationMu.Lock()
+	pending := b.pendingNavigation["cdp-s1"]
+	b.pendingNavigationMu.Unlock()
+	if pending != "https://example.com" {
+		t.Fatalf("pending navigation = %q, want https://example.com", pending)
+	}
+
+	handlers[0]("jug-s1", json.RawMessage(`{"frameId":"mainframe-1","url":"https://example.com/","navigationId":"nav-real"}`))
+
+	if info.URL != "https://example.com/" {
+		t.Fatalf("URL after real commit = %q, want https://example.com/", info.URL)
+	}
+	b.pendingNavigationMu.Lock()
+	_, stillPending := b.pendingNavigation["cdp-s1"]
+	b.pendingNavigationMu.Unlock()
+	if stillPending {
+		t.Fatal("pending navigation was not cleared after real commit")
+	}
+}
+
 func TestSetupEventSubscriptions_ExecutionContextCreated(t *testing.T) {
 	b, mb := newTestBridge()
 	b.SetupEventSubscriptions()

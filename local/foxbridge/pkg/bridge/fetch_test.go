@@ -38,6 +38,9 @@ func TestFetchEnable(t *testing.T) {
 	if params["enabled"] != true {
 		t.Errorf("enabled = %v, want true", params["enabled"])
 	}
+	if !b.isRequestInterceptionEnabled() {
+		t.Fatal("request interception state was not enabled")
+	}
 }
 
 func TestFetchEnableWithSession(t *testing.T) {
@@ -69,6 +72,7 @@ func TestFetchEnableWithSession(t *testing.T) {
 
 func TestFetchDisable(t *testing.T) {
 	b, mb := newTestBridge()
+	b.setRequestInterceptionEnabled(true)
 
 	msg := &cdp.Message{
 		ID:     1,
@@ -92,6 +96,9 @@ func TestFetchDisable(t *testing.T) {
 	json.Unmarshal(last.Params, &params)
 	if params["enabled"] != false {
 		t.Errorf("enabled = %v, want false", params["enabled"])
+	}
+	if b.isRequestInterceptionEnabled() {
+		t.Fatal("request interception state was not disabled")
 	}
 }
 

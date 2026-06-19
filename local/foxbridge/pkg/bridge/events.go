@@ -27,6 +27,10 @@ type targetPair struct {
 type autoAttachState struct {
 	mu      sync.Mutex
 	enabled bool
+	// rootExcludePage tracks browser-session Target.setAutoAttach filters such
+	// as Puppeteer's [{"type":"page","exclude":true},{}]. In that mode Chrome
+	// attaches tabs at the root and pages under their tab sessions only.
+	rootExcludePage bool
 	// targets that arrived before setAutoAttach — need retroactive emission
 	pending []*targetPair
 	// all known pairs for lookup
@@ -258,6 +262,10 @@ func (b *Bridge) SetupEventSubscriptions() {
 		}
 
 		cdpSessionID := b.resolveCDPSession(jugglerSessionID)
+		if b.shouldSkipAboutBlankNavigation(cdpSessionID, ev.URL) {
+			return
+		}
+		b.refreshMainFrameIDForNavigation(jugglerSessionID, ev.FrameID)
 		cdpFrameID := b.cdpFrameIDForJugglerSession(jugglerSessionID, ev.FrameID)
 
 		// Skip intermediate about:blank navigations during reload/redirect.
@@ -282,6 +290,9 @@ func (b *Bridge) SetupEventSubscriptions() {
 		// Update session URL
 		if info, ok := b.sessions.GetByJugglerSession(jugglerSessionID); ok {
 			info.URL = ev.URL
+		}
+		if ev.URL != "about:blank" {
+			b.clearPendingNavigation(cdpSessionID)
 		}
 		b.autoAttach.mu.Lock()
 		if pair, ok := b.autoAttach.pairs[jugglerSessionID]; ok {
@@ -678,6 +689,9 @@ func (b *Bridge) SetupEventSubscriptions() {
 		if err := json.Unmarshal(params, &ev); err != nil {
 			return
 		}
+		if b.isRequestInterceptionEnabled() {
+			return
+		}
 
 		cdpSessionID := b.resolveCDPSession(jugglerSessionID)
 		cdpFrameID := b.cdpFrameIDForJugglerSession(jugglerSessionID, ev.FrameID)
@@ -1014,7 +1028,12 @@ func (b *Bridge) emitTabAttach(pair *targetPair) {
 
 func (b *Bridge) emitAutoAttachPair(pair *targetPair) {
 	b.emitTabAttach(pair)
-	b.emitPageAttachOnSession(pair, "")
+	b.autoAttach.mu.Lock()
+	rootExcludePage := b.autoAttach.rootExcludePage
+	b.autoAttach.mu.Unlock()
+	if !rootExcludePage {
+		b.emitPageAttachOnSession(pair, "")
+	}
 }
 
 // emitPageAttach emits the page-level attachment on the provided parent session.

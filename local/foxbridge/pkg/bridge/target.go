@@ -38,6 +38,10 @@ func (b *Bridge) handleTarget(conn *cdp.Connection, msg *cdp.Message) (json.RawM
 			AutoAttach             bool `json:"autoAttach"`
 			WaitForDebuggerOnStart bool `json:"waitForDebuggerOnStart"`
 			Flatten                bool `json:"flatten"`
+			Filter                 []struct {
+				Type    string `json:"type"`
+				Exclude bool   `json:"exclude"`
+			} `json:"filter"`
 		}
 		json.Unmarshal(msg.Params, &params)
 
@@ -45,6 +49,7 @@ func (b *Bridge) handleTarget(conn *cdp.Connection, msg *cdp.Message) (json.RawM
 			// Browser-level setAutoAttach: emit pending target attachments immediately.
 			b.autoAttach.mu.Lock()
 			b.autoAttach.enabled = params.AutoAttach
+			b.autoAttach.rootExcludePage = autoAttachFilterExcludes(params.Filter, "page")
 			pending := b.autoAttach.pending
 			b.autoAttach.pending = nil
 			b.autoAttach.mu.Unlock()
@@ -342,6 +347,18 @@ func (b *Bridge) handleTarget(conn *cdp.Connection, msg *cdp.Message) (json.RawM
 	default:
 		return nil, &cdp.Error{Code: -32601, Message: fmt.Sprintf("method not found: %s", msg.Method)}
 	}
+}
+
+func autoAttachFilterExcludes(filter []struct {
+	Type    string `json:"type"`
+	Exclude bool   `json:"exclude"`
+}, targetType string) bool {
+	for _, entry := range filter {
+		if entry.Type == targetType && entry.Exclude {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Bridge) navigateNewTarget(targetID, url string) error {

@@ -45,8 +45,10 @@ func (b *Bridge) handlePage(conn *cdp.Connection, msg *cdp.Message) (json.RawMes
 
 		jp, _ := json.Marshal(jugglerParams)
 		log.Printf("[page] navigate: params=%s cdpSession=%s", string(jp), msg.SessionID)
+		b.markPendingNavigation(msg.SessionID, params.URL)
 		result, err := b.callJuggler(msg.SessionID, "Page.navigate", jugglerParams)
 		if err != nil {
+			b.clearPendingNavigation(msg.SessionID)
 			return nil, &cdp.Error{Code: -32000, Message: err.Error()}
 		}
 
@@ -60,8 +62,15 @@ func (b *Bridge) handlePage(conn *cdp.Connection, msg *cdp.Message) (json.RawMes
 		log.Printf("[page] navigate response: navigationId=%s frameId=%s raw=%s",
 			navResult.NavigationID, navResult.FrameID, string(result)[:min(len(result), 200)])
 
+		responseFrameID := navResult.FrameID
+		if responseFrameID == "" {
+			if info, ok := b.sessions.Get(msg.SessionID); ok {
+				responseFrameID = info.FrameID
+			}
+		}
+
 		return marshalResult(map[string]interface{}{
-			"frameId":  b.cdpFrameIDForSession(msg.SessionID, navResult.FrameID),
+			"frameId":  b.cdpFrameIDForSession(msg.SessionID, responseFrameID),
 			"loaderId": navResult.NavigationID,
 		})
 

@@ -10,8 +10,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // serverForTest creates an http.ServeMux with the Server's HTTP handlers wired up.
@@ -326,6 +330,107 @@ func TestServer_JSONList_UnixSocket(t *testing.T) {
 	}
 	if got := targets[0]["socketPath"]; got != socketPath {
 		t.Fatalf("socketPath = %v, want %q", got, socketPath)
+	}
+}
+
+func TestServer_WebSocketDispatchesRequestsWhilePreviousHandlerIsBlocked(t *testing.T) {
+	firstEntered := make(chan struct{})
+	secondHandled := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseFirst) })
+
+	s := NewServer(0, func(conn *Connection, msg *Message) {
+		switch msg.ID {
+		case 1:
+			close(firstEntered)
+			<-releaseFirst
+		case 2:
+			close(secondHandled)
+		}
+		_ = conn.Send(&Message{ID: msg.ID, Result: json.RawMessage(`{}`)})
+	}, NewSessionManager())
+	ts := httptest.NewServer(s.mux())
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/devtools/browser/foxbridge"
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer ws.Close()
+
+	if err := ws.WriteJSON(&Message{ID: 1, Method: "Runtime.evaluate"}); err != nil {
+		t.Fatalf("write first request: %v", err)
+	}
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first handler was not entered")
+	}
+
+	if err := ws.WriteJSON(&Message{ID: 2, Method: "Page.handleJavaScriptDialog"}); err != nil {
+		t.Fatalf("write second request: %v", err)
+	}
+	select {
+	case <-secondHandled:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("second request was not dispatched while first handler was blocked")
+	}
+
+	releaseOnce.Do(func() { close(releaseFirst) })
+}
+
+func TestServer_WebSocketPreservesOrderForRegularRequests(t *testing.T) {
+	firstEntered := make(chan struct{})
+	secondHandled := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseFirst) })
+
+	s := NewServer(0, func(conn *Connection, msg *Message) {
+		switch msg.ID {
+		case 1:
+			close(firstEntered)
+			<-releaseFirst
+		case 2:
+			close(secondHandled)
+		}
+		_ = conn.Send(&Message{ID: msg.ID, Result: json.RawMessage(`{}`)})
+	}, NewSessionManager())
+	ts := httptest.NewServer(s.mux())
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/devtools/browser/foxbridge"
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer ws.Close()
+
+	if err := ws.WriteJSON(&Message{ID: 1, Method: "Runtime.evaluate"}); err != nil {
+		t.Fatalf("write first request: %v", err)
+	}
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first handler was not entered")
+	}
+
+	if err := ws.WriteJSON(&Message{ID: 2, Method: "Runtime.callFunctionOn"}); err != nil {
+		t.Fatalf("write second request: %v", err)
+	}
+	select {
+	case <-secondHandled:
+		t.Fatal("regular second request was dispatched before first request completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(releaseFirst) })
+	select {
+	case <-secondHandled:
+	case <-time.After(time.Second):
+		t.Fatal("regular second request was not dispatched after first request completed")
 	}
 }
 

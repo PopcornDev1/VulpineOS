@@ -176,6 +176,39 @@ func TestHandleTarget_SetAutoAttach_BrowserLevel(t *testing.T) {
 	}
 }
 
+func TestHandleTarget_SetAutoAttach_BrowserLevelHonorsPageExcludeFilter(t *testing.T) {
+	b, _ := newTestBridge()
+
+	pair := &targetPair{
+		tabSessionID:  "tab-s1",
+		tabTargetID:   "tab-t1",
+		pageSessionID: "page-s1",
+		pageTargetID:  "page-t1",
+		browserCtxID:  "ctx-1",
+		url:           "about:blank",
+	}
+	b.autoAttach.mu.Lock()
+	b.autoAttach.pending = append(b.autoAttach.pending, pair)
+	b.autoAttach.mu.Unlock()
+
+	msg := &cdp.Message{
+		ID:     1,
+		Method: "Target.setAutoAttach",
+		Params: json.RawMessage(`{"autoAttach":true,"waitForDebuggerOnStart":true,"flatten":true,"filter":[{"type":"page","exclude":true},{}]}`),
+	}
+	_, cdpErr := b.handleTarget(nil, msg)
+	if cdpErr != nil {
+		t.Fatalf("unexpected error: %s", cdpErr.Message)
+	}
+
+	if pair.pageAttachedRoot {
+		t.Fatal("browser-level auto-attach with page exclude filter must not attach the page at the root")
+	}
+	if pair.pageAttachedTab {
+		t.Fatal("browser-level auto-attach must leave page attachment for tab-level auto-attach")
+	}
+}
+
 func TestHandleTarget_SetAutoAttach_SessionLevel_Tab(t *testing.T) {
 	b, _ := newTestBridge()
 

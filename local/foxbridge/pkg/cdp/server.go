@@ -33,16 +33,16 @@ type BatchRequest struct {
 
 // Connection represents a single CDP WebSocket connection.
 type Connection struct {
-	ws          *websocket.Conn
-	writeMu     sync.Mutex
-	recorder    FrameRecorder
-	compress    bool         // Enable compression
-	batchSize   int          // Commands to batch
-	pendingBuf  []Message    // Buffer for batching
-	batchMu     sync.Mutex
+	ws         *websocket.Conn
+	writeMu    sync.Mutex
+	recorder   FrameRecorder
+	compress   bool      // Enable compression
+	batchSize  int       // Commands to batch
+	pendingBuf []Message // Buffer for batching
+	batchMu    sync.Mutex
 }
 
-var(
+var (
 	// Compression level (default: best speed)
 	flateLevel = flate.BestSpeed
 )
@@ -385,6 +385,15 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
+	handlerCh := make(chan Message, 32)
+	go func() {
+		for cdpMsg := range handlerCh {
+			msgCopy := cdpMsg
+			s.handler(conn, &msgCopy)
+		}
+	}()
+	defer close(handlerCh)
+
 	type wsMessage struct {
 		data []byte
 		err  error
@@ -427,7 +436,21 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 
 			log.Printf("[cdp-in] #%d %s (session=%s)", cdpMsg.ID, cdpMsg.Method, cdpMsg.SessionID)
-			s.handler(conn, &cdpMsg)
+			if bypassSequentialDispatch(cdpMsg.Method) {
+				msgCopy := cdpMsg
+				go s.handler(conn, &msgCopy)
+				continue
+			}
+			handlerCh <- cdpMsg
 		}
+	}
+}
+
+func bypassSequentialDispatch(method string) bool {
+	switch method {
+	case "Browser.close", "Page.handleJavaScriptDialog", "Page.stopLoading", "Target.closeTarget", "Target.detachFromTarget":
+		return true
+	default:
+		return false
 	}
 }
