@@ -203,14 +203,14 @@ func TestDelegateDefaultMaxTurnsStored(t *testing.T) {
 	if !ok {
 		t.Fatal("agent not found in map")
 	}
-	if ag.maxTurns != 25 {
-		t.Fatalf("default maxTurns = %d, want 25", ag.maxTurns)
+	if ag.maxTurns != 60 {
+		t.Fatalf("default maxTurns = %d, want 60", ag.maxTurns)
 	}
 }
 
-func TestMissionMaxTurnsDefaultsToTwentyFive(t *testing.T) {
-	if got := missionMaxTurns(Mission{}); got != 25 {
-		t.Fatalf("missionMaxTurns default = %d, want 25", got)
+func TestMissionMaxTurnsDefaultsToSixty(t *testing.T) {
+	if got := missionMaxTurns(Mission{}); got != 60 {
+		t.Fatalf("missionMaxTurns default = %d, want 60", got)
 	}
 	if got := missionMaxTurns(Mission{MaxTurns: 7}); got != 7 {
 		t.Fatalf("missionMaxTurns explicit = %d, want 7", got)

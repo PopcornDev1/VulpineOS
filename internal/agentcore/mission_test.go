@@ -38,7 +38,7 @@ func TestMissionDefaults(t *testing.T) {
 		Objective: "test",
 	}
 	prompt := ComposeSubAgentPrompt(m)
-	if !strings.Contains(prompt, "Maximum turns: 25") {
-		t.Errorf("expected default MaxTurns=25, got: %q", prompt)
+	if !strings.Contains(prompt, "Maximum turns: 60") {
+		t.Errorf("expected default MaxTurns=60, got: %q", prompt)
 	}
 }

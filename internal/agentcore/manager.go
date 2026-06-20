@@ -610,7 +610,7 @@ func missionMaxTurns(mission Mission) int {
 	if mission.MaxTurns > 0 {
 		return mission.MaxTurns
 	}
-	return 25
+	return defaultMissionMaxTurns
 }
 
 // DelegateForParentMission spawns a sub-agent with a known parent lead agent ID.

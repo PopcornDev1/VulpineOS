@@ -2,18 +2,20 @@ package agentcore
 
 import "fmt"
 
+const defaultMissionMaxTurns = 60
+
 // Mission is the declarative task document the lead agent writes when
 // delegating work to a sub-agent. It is structured (not natural-language)
 // so the sub-agent spends zero tokens parsing intent.
 type Mission struct {
-	AgentID     string   `json:"agent_id,omitempty"`     // target sub-agent ID, or empty for auto-select
-	RoleSeed    string   `json:"role_seed,omitempty"`    // role identity for this sub-agent
-	Objective   string   `json:"objective"`              // what to accomplish (concise)
-	Context     string   `json:"context,omitempty"`      // relevant background information (compact)
-	Constraints []string `json:"constraints,omitempty"`  // rules and boundaries
-	OutputSpec  string   `json:"output_spec,omitempty"`  // expected output format
-	MaxTurns    int      `json:"max_turns,omitempty"`    // maximum iterations for this mission
-	Priority    int      `json:"priority,omitempty"`     // scheduling priority (reserved)
+	AgentID     string   `json:"agent_id,omitempty"`    // target sub-agent ID, or empty for auto-select
+	RoleSeed    string   `json:"role_seed,omitempty"`   // role identity for this sub-agent
+	Objective   string   `json:"objective"`             // what to accomplish (concise)
+	Context     string   `json:"context,omitempty"`     // relevant background information (compact)
+	Constraints []string `json:"constraints,omitempty"` // rules and boundaries
+	OutputSpec  string   `json:"output_spec,omitempty"` // expected output format
+	MaxTurns    int      `json:"max_turns,omitempty"`   // maximum iterations for this mission
+	Priority    int      `json:"priority,omitempty"`    // scheduling priority (reserved)
 }
 
 // ComposeSubAgentPrompt assembles the full system prompt for a sub-agent
@@ -23,7 +25,7 @@ type Mission struct {
 func ComposeSubAgentPrompt(m Mission) string {
 	maxTurns := m.MaxTurns
 	if maxTurns <= 0 {
-		maxTurns = 25
+		maxTurns = defaultMissionMaxTurns
 	}
 
 	roleSeed := m.RoleSeed
