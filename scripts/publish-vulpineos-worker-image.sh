@@ -11,7 +11,7 @@ DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
 PUBLISH_LATEST="${PUBLISH_LATEST:-1}"
 PREPARE_BROWSER="${PREPARE_BROWSER:-1}"
 VULPINEOS_REPO="${VULPINEOS_REPO:-VulpineOS/VulpineOS}"
-VULPINEOS_BROWSER_ASSET_PATTERN="${VULPINEOS_BROWSER_ASSET_PATTERN:-camoufox-*-lin.x86_64.zip}"
+VULPINEOS_BROWSER_ASSET_PATTERN="${VULPINEOS_BROWSER_ASSET_PATTERN:-vulpine-*-lin.x86_64.zip,camoufox-*-lin.x86_64.zip}"
 
 download_browser_asset() {
   local dest="$1"
@@ -31,7 +31,8 @@ import sys
 import urllib.error
 import urllib.request
 
-repo, release_tag, pattern = sys.argv[1:]
+repo, release_tag, patterns = sys.argv[1:]
+patterns = [p.strip() for p in patterns.split(",") if p.strip()]
 release_path = "latest" if not release_tag else f"tags/{release_tag}"
 url = f"https://api.github.com/repos/{repo}/releases/{release_path}"
 headers = {"Accept": "application/vnd.github+json", "User-Agent": "vulpineos-worker-image-publisher"}
@@ -46,14 +47,15 @@ except urllib.error.HTTPError as exc:
     sys.stderr.write(f"GitHub release lookup failed for {repo} {release_tag or 'latest'}: HTTP {exc.code}\n")
     sys.exit(1)
 
-for asset in release.get("assets") or []:
-    name = asset.get("name", "")
-    if fnmatch.fnmatch(name, pattern):
-        print(asset["browser_download_url"])
-        sys.exit(0)
+for pattern in patterns:
+    for asset in release.get("assets") or []:
+        name = asset.get("name", "")
+        if fnmatch.fnmatch(name, pattern):
+            print(asset["browser_download_url"])
+            sys.exit(0)
 
 tag = release.get("tag_name", release_tag or "latest")
-sys.stderr.write(f"Release {tag} is missing required asset matching {pattern}\n")
+sys.stderr.write(f"Release {tag} is missing required asset matching one of: {', '.join(patterns)}\n")
 sys.exit(1)
 PY
 )"
@@ -67,34 +69,47 @@ prepare_browser_dist() {
   local extract_dir
   extract_dir="$(mktemp -d)"
 
-  rm -rf dist/camoufox-linux
-  mkdir -p dist/camoufox-linux
+  rm -rf dist/vulpine-linux dist/camoufox-linux
+  mkdir -p dist/vulpine-linux
 
   unzip -q "$archive" -d "$extract_dir"
-  cp -a "$extract_dir"/. dist/camoufox-linux/
+  cp -a "$extract_dir"/. dist/vulpine-linux/
   rm -rf "$extract_dir"
 
-  if [[ -f dist/camoufox-linux/camoufox ]]; then
-    chmod 0755 dist/camoufox-linux/camoufox >/dev/null 2>&1 || true
+  for browser_dir in vulpine camoufox; do
+    if [[ -d "dist/vulpine-linux/$browser_dir" ]]; then
+      find "dist/vulpine-linux/$browser_dir" -mindepth 1 -maxdepth 1 -exec mv {} dist/vulpine-linux/ \;
+      rmdir "dist/vulpine-linux/$browser_dir" 2>/dev/null || true
+    fi
+  done
+
+  if [[ -f dist/vulpine-linux/vulpine ]]; then
+    chmod 0755 dist/vulpine-linux/vulpine >/dev/null 2>&1 || true
+  elif [[ -f dist/vulpine-linux/vulpine-bin ]]; then
+    chmod 0755 dist/vulpine-linux/vulpine-bin >/dev/null 2>&1 || true
+  elif [[ -f dist/vulpine-linux/camoufox ]]; then
+    chmod 0755 dist/vulpine-linux/camoufox >/dev/null 2>&1 || true
+  elif [[ -f dist/vulpine-linux/camoufox-bin ]]; then
+    chmod 0755 dist/vulpine-linux/camoufox-bin >/dev/null 2>&1 || true
   fi
 
-  if [[ ! -x dist/camoufox-linux/camoufox ]]; then
-    echo "Missing executable Linux browser artifact at dist/camoufox-linux/camoufox" >&2
-    echo "The release asset must be a Linux x86_64 VulpineOS/Camoufox package." >&2
+  if [[ ! -x dist/vulpine-linux/vulpine && ! -x dist/vulpine-linux/vulpine-bin && ! -x dist/vulpine-linux/camoufox && ! -x dist/vulpine-linux/camoufox-bin ]]; then
+    echo "Missing executable Linux browser artifact at dist/vulpine-linux/vulpine, vulpine-bin, camoufox, or camoufox-bin" >&2
+    echo "The release asset must be a Linux x86_64 VulpineOS browser package." >&2
     exit 1
   fi
 
-  echo "Prepared dist/camoufox-linux from release artifact."
+  echo "Prepared dist/vulpine-linux from release artifact."
 }
 
 if [[ "$PREPARE_BROWSER" == "1" || "$PREPARE_BROWSER" == "true" ]]; then
-  browser_archive="${BROWSER_ARCHIVE:-/tmp/vulpineos-camoufox-linux-x86_64.zip}"
+  browser_archive="${BROWSER_ARCHIVE:-/tmp/vulpineos-vulpine-linux-x86_64.zip}"
   download_browser_asset "$browser_archive"
   prepare_browser_dist "$browser_archive"
 fi
 
-if [[ ! -x dist/camoufox-linux/camoufox ]]; then
-  echo "Missing dist/camoufox-linux/camoufox. Set PREPARE_BROWSER=1 or provide the extracted browser artifact first." >&2
+if [[ ! -x dist/vulpine-linux/vulpine && ! -x dist/vulpine-linux/vulpine-bin && ! -x dist/vulpine-linux/camoufox && ! -x dist/vulpine-linux/camoufox-bin ]]; then
+  echo "Missing dist/vulpine-linux/vulpine, vulpine-bin, camoufox, or camoufox-bin. Set PREPARE_BROWSER=1 or provide the extracted browser artifact first." >&2
   exit 1
 fi
 

@@ -24,21 +24,24 @@ func (e liveLogEvents) OnToolResult(n, r string, er bool) {
 func (e liveLogEvents) OnStatus(s string)  { e.t.Logf("[status] %s", s) }
 func (e liveLogEvents) OnUsage(u Usage)    { e.t.Logf("[usage] total=%d", u.TotalTokens) }
 func (e liveLogEvents) OnWarning(w string) { e.t.Logf("[warning] %s", w) }
-func (e liveLogEvents) OnPhase(p string)  { e.t.Logf("[phase] %s", p) }
-func (e liveLogEvents) OnTurn(t int)      { e.t.Logf("[turn] %d", t) }
+func (e liveLogEvents) OnPhase(p string)   { e.t.Logf("[phase] %s", p) }
+func (e liveLogEvents) OnTurn(t int)       { e.t.Logf("[turn] %d", t) }
 
-// startLiveKernel boots headless Camoufox and enables the browser, mirroring the
+// startLiveKernel boots headless Vulpine and enables the browser, mirroring the
 // integration harness. Gated by VULPINEOS_RUN_LIVE + VULPINE_AGENTCORE_LIVE.
 func startLiveKernel(t *testing.T) (*kernel.Kernel, *juggler.Client) {
 	t.Helper()
 	if os.Getenv("VULPINEOS_RUN_LIVE") == "" || os.Getenv("VULPINE_AGENTCORE_LIVE") == "" {
 		t.Skip("set VULPINEOS_RUN_LIVE=1 and VULPINE_AGENTCORE_LIVE=1 to run the native agent live test")
 	}
-	binary := strings.TrimSpace(os.Getenv("CAMOUFOX_BINARY"))
+	binary := strings.TrimSpace(os.Getenv("VULPINE_BROWSER_BINARY"))
 	if binary == "" {
-		t.Skip("set CAMOUFOX_BINARY to the camoufox-bin path")
+		binary = strings.TrimSpace(os.Getenv("CAMOUFOX_BINARY"))
 	}
-	// Camoufox (anti-detect) may only initialize Juggler properly headful; set
+	if binary == "" {
+		t.Skip("set VULPINE_BROWSER_BINARY to the Vulpine browser path")
+	}
+	// The browser may only initialize Juggler properly headful; set
 	// VULPINE_AGENTCORE_HEADFUL=1 (under Xvfb) to launch with a display.
 	headless := os.Getenv("VULPINE_AGENTCORE_HEADFUL") == ""
 	k := kernel.New()
@@ -80,7 +83,7 @@ func liveConfig(t *testing.T) Config {
 }
 
 // TestLive_NativeAgent_TextReply proves the native runtime end-to-end with a
-// minimal model requirement (no tool-calling): boot Camoufox, open a page, run
+// minimal model requirement (no tool-calling): boot Vulpine, open a page, run
 // the loop, get a text reply. This validates page setup + model client + loop
 // against the real browser and provider.
 func TestLive_NativeAgent_TextReply(t *testing.T) {

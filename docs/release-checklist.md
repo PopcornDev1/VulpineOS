@@ -70,12 +70,12 @@ These must pass before a release candidate or public tag.
 
 ## Browser build status
 
-Record whether the release depends on a fresh Camoufox rebuild.
+Record whether the release depends on a fresh Vulpine browser rebuild.
 
 - If only Go/runtime/docs changed, the rebuilt `./vulpineos` binary is
   enough.
 - If Firefox/Juggler patches changed, the release is not complete until a
-  new Camoufox build has been produced on the trusted builder path.
+  new Vulpine browser build has been produced on the trusted builder path.
 
 For deferred browser rebuild work, link the release notes to the
 tracking issue rather than implying the browser binary already contains
@@ -92,9 +92,9 @@ Record each expected artifact before drafting a public release:
 |---|---|---|
 | `vulpineos-darwin-arm64` / `vulpineos-darwin-amd64` | every macOS installer release | `GOOS=darwin GOARCH=<arch> go build -o vulpineos-darwin-<arch> ./cmd/vulpineos` |
 | `vulpineos-linux-amd64` / `vulpineos-linux-arm64` | every Linux installer release | `GOOS=linux GOARCH=<arch> go build -o vulpineos-linux-<arch> ./cmd/vulpineos` |
-| macOS browser packages | every macOS installer release | `make package-macos arch=<arch>`, producing `camoufox-<version>-<release>-mac.<x86_64|arm64>.zip` |
-| Linux browser packages | every Linux installer release | `make package-linux arch=<arch>`, producing `camoufox-<version>-<release>-lin.<x86_64|arm64>.zip` |
-| Linux Docker browser directory | Docker/Vulpine-Box release | extracted Linux browser artifact at `dist/camoufox-linux/camoufox` before `docker build` |
+| macOS browser packages | every macOS installer release | `make package-macos arch=<arch>`, producing `vulpine-<version>-<release>-mac.<x86_64|arm64>.zip` |
+| Linux browser packages | every Linux installer release | `make package-linux arch=<arch>`, producing `vulpine-<version>-<release>-lin.<x86_64|arm64>.zip` |
+| Linux Docker browser directory | Docker/Vulpine-Box release | extracted Linux browser artifact at `dist/vulpine-linux/vulpine` before `docker build` |
 | soak JSON/log | release candidate | `.artifacts/soak/soak-*.json` and `.artifacts/soak/soak-*.log` from `./scripts/run-soak.sh 3` |
 | builder metadata | browser rebuild | `/opt/vulpineos/artifacts/build-*.json` from `scripts/run-ec2-mac-build.sh` |
 | checksums | every shipped binary/archive | `SHA256SUMS` covering every file attached to the release |
@@ -102,7 +102,7 @@ Record each expected artifact before drafting a public release:
 `install.sh` resolves assets from the latest GitHub release. The short install
 URL `https://vulpineos.com/install` should serve or redirect to this script. It
 requires the CLI asset name `vulpineos-<goos>-<goarch>` and a browser asset matching
-`camoufox-*-<lin|mac>.<x86_64|arm64>.zip` for the installer's current platform.
+`vulpine-*-<lin|mac>.<x86_64|arm64>.zip` for the installer's current platform.
 The `Build and Release` workflow builds the CLI matrix, uploads the browser
 packages from `multibuild.py`, creates `SHA256SUMS`, and drafts the tagged
 GitHub release with all installer assets attached.

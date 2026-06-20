@@ -61,7 +61,7 @@ var (
 )
 
 // nativeAgentRuntime builds the native, in-process agent backend from config.
-// It drives the host Camoufox directly via the MCP/Juggler tools — no daemon,
+// It drives the host Vulpine browser directly via the MCP/Juggler tools — no daemon,
 // no per-agent container. Returns nil only when prerequisites are missing.
 func nativeAgentRuntime(cfg *config.Config, client *juggler.Client, v *vault.DB) orchestrator.AgentRuntime {
 	if cfg == nil || client == nil {
@@ -231,7 +231,7 @@ func Run(args []string) int {
 	}
 
 	var (
-		binaryPath = fs.String("binary", "", "Path to VulpineOS/Camoufox binary")
+		binaryPath = fs.String("binary", "", "Path to Vulpine browser binary")
 		headless   = fs.Bool("headless", false, "Run in headless mode")
 		profileDir = fs.String("profile", "", "Firefox profile directory")
 		noBrowser  = fs.Bool("no-browser", false, "Start without launching browser/kernel")
@@ -371,7 +371,7 @@ func runAuthSubcommand(args []string) int {
 func runServeSubcommand(args []string) int {
 	fs := flag.NewFlagSet("vulpineos serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	binaryPath := fs.String("binary", "", "Path to VulpineOS/Camoufox binary")
+	binaryPath := fs.String("binary", "", "Path to Vulpine browser binary")
 	headless := fs.Bool("headless", true, "Run in headless mode")
 	profileDir := fs.String("profile", "", "Firefox profile directory")
 	host := fs.String("host", "0.0.0.0", "Host/interface to bind")
@@ -431,7 +431,7 @@ func runRemoteSubcommand(args []string) int {
 func runMCPSubcommand(args []string) int {
 	fs := flag.NewFlagSet("vulpineos mcp", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	binaryPath := fs.String("binary", "", "Path to VulpineOS/Camoufox binary")
+	binaryPath := fs.String("binary", "", "Path to Vulpine browser binary")
 	headless := fs.Bool("headless", false, "Run in headless mode")
 	profileDir := fs.String("profile", "", "Firefox profile directory")
 	connect := fs.String("connect", "", "Remote VulpineOS URL for MCP to attach to")
@@ -1071,7 +1071,7 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 			}
 
 			// Start foxbridge as an embedded CDP server sharing the kernel's Juggler
-			// client, exposing the same Camoufox over CDP on :9222 for external tools.
+			// client, exposing the same Vulpine browser over CDP on :9222 for external tools.
 			if startErr == nil && client != nil {
 				fb = foxbridge.New()
 				fb.SetRuntimeAudit(audit)
@@ -1081,7 +1081,7 @@ func runLocal(binaryPath string, headless bool, profileDir string, noBrowser boo
 					fb = nil
 				} else {
 					cfg.FoxbridgeCDPURL = fb.CDPURL()
-					log.Printf("foxbridge embedded — Camoufox exposed over CDP at %s", fb.CDPURL())
+					log.Printf("foxbridge embedded — Vulpine browser exposed over CDP at %s", fb.CDPURL())
 				}
 			}
 

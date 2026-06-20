@@ -33,8 +33,18 @@ func TestInstallScriptContracts(t *testing.T) {
 	if !strings.Contains(script, `VULPINEOS_HOME="${VULPINEOS_HOME:-${HOME}/.vulpineos}"`) {
 		t.Fatal("install.sh must allow tests and advanced users to override VULPINEOS_HOME")
 	}
-	if !strings.Contains(script, "install_camoufox_launcher()") {
-		t.Fatal("install.sh must create a platform-aware camoufox launcher")
+	if !strings.Contains(script, "install_browser_launchers()") {
+		t.Fatal("install.sh must create platform-aware browser launchers")
+	}
+	for _, want := range []string{
+		`"${root}/vulpine"`,
+		`"${root}/Vulpine.app/Contents/MacOS/vulpine"`,
+		`local primary_launcher="${bin_dir}/vulpine"`,
+		`local legacy_launcher="${bin_dir}/camoufox"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("install.sh missing Vulpine browser compatibility contract %q", want)
+		}
 	}
 	if strings.Contains(script, `ln -sf "${browser_bin}" "${bin_dir}/camoufox"`) {
 		t.Fatal("install.sh must not symlink directly to macOS app bundle executable; that breaks XPCOM")
@@ -69,6 +79,24 @@ func TestBrowserVisibleBrandingUsesVulpine(t *testing.T) {
 		if strings.Contains(content, "Camoufox") {
 			t.Fatalf("%s still exposes the old Camoufox user-facing brand", name)
 		}
+	}
+}
+
+func TestBrowserBuildConfigUsesVulpineExecutableName(t *testing.T) {
+	configure := readRepoFile(t, "additions/browser/branding/camoufox/configure.sh")
+	for _, want := range []string{
+		"MOZ_APP_NAME=vulpine",
+		"MOZ_APP_BASENAME=Vulpine",
+		"MOZ_APP_DISPLAYNAME=Vulpine",
+		"MOZ_APP_REMOTINGNAME=vulpine",
+	} {
+		if !strings.Contains(configure, want) {
+			t.Fatalf("configure.sh missing %q", want)
+		}
+	}
+	compilePatch := readRepoFile(t, "patches/librewolf/disable-data-reporting-at-compile-time.patch")
+	if !strings.Contains(compilePatch, `imply_option("MOZ_APP_PROFILE", "vulpine")`) {
+		t.Fatal("compile-time browser profile name should be vulpine")
 	}
 }
 

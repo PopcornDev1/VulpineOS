@@ -959,7 +959,7 @@ Expected: Build succeeds with no errors.
 
 - [ ] **Step 2: Install binary**
 
-Run: `cp vulpineos /Users/rowan/.local/bin/vulpineos`
+Run: `cp vulpineos ~/.local/bin/vulpineos`
 Expected: Binary copied.
 
 - [ ] **Step 3: Full unit test suite**

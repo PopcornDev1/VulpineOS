@@ -3191,7 +3191,7 @@ func (a *App) browserRouteLabel() string {
 		return ""
 	}
 	if a.activeFoxbridgeCDPURL() != "" {
-		return "CAMOUFOX"
+		return "VULPINE"
 	}
 	if a.kernel != nil && a.kernel.IsHeadless() {
 		return "HEADLESS"

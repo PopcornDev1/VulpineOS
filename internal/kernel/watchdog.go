@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Watchdog monitors the Camoufox kernel process and handles crashes
+// Watchdog monitors the Vulpine browser kernel process and handles crashes.
 // with optional auto-restart.
 type Watchdog struct {
 	kernel      *Kernel

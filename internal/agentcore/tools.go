@@ -17,7 +17,7 @@ import (
 
 // browserToolAllowList is the curated set of MCP browser tools exposed to the
 // model. It covers navigation, inspection, interaction, reliability, and
-// human-like input — everything an agent needs to drive Camoufox — while
+// human-like input — everything an agent needs to drive Vulpine — while
 // excluding page/context lifecycle tools (the loop manages a single page),
 // pure-image tools (most models aren't multimodal), and extension-gated tools
 // (credential/audio/mobile) that are no-ops without the private build.

@@ -47,7 +47,7 @@ func TestAgentPromptsContainExpectedDirectives(t *testing.T) {
 
 	for _, want := range []string{
 		"VulpineOS",
-		"Camoufox",
+		"Vulpine",
 		"vulpine_navigate",
 		"vulpine_snapshot",
 	} {

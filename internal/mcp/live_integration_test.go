@@ -18,12 +18,18 @@ import (
 	"vulpineos/internal/kernel"
 )
 
-func findCamoufoxBinary() string {
+func findBrowserBinary() string {
+	if binary := strings.TrimSpace(os.Getenv("VULPINE_BROWSER_BINARY")); binary != "" {
+		return binary
+	}
 	if binary := strings.TrimSpace(os.Getenv("CAMOUFOX_BINARY")); binary != "" {
 		return binary
 	}
 	home, _ := os.UserHomeDir()
 	candidates := []string{
+		filepath.Join(home, "Downloads", "Vulpine.app", "Contents", "MacOS", "vulpine"),
+		filepath.Join(home, ".vulpineos", "browser", "vulpine"),
+		"/usr/local/bin/vulpine",
 		filepath.Join(home, "Downloads", "Camoufox.app", "Contents", "MacOS", "camoufox"),
 		filepath.Join(home, ".camoufox", "camoufox"),
 		"/usr/local/bin/camoufox",
@@ -44,9 +50,9 @@ func startLiveKernel(t *testing.T) (*kernel.Kernel, *juggler.Client) {
 		t.Skip("set VULPINEOS_RUN_LIVE=1 to run live VulpineOS MCP integration tests")
 	}
 
-	binary := findCamoufoxBinary()
+	binary := findBrowserBinary()
 	if binary == "" {
-		t.Skip("Camoufox binary not found")
+		t.Skip("Vulpine browser binary not found")
 	}
 
 	var lastErr error

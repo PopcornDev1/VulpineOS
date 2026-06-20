@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-VulpineOS is the operating system for AI browser agents: a Firefox/Camoufox-based platform for managing native in-process agents with unique identities, browser-engine security, and TUI-first runtime controls.
+VulpineOS is the operating system for AI browser agents: a Firefox-based platform for managing native in-process agents with unique identities, browser-engine security, and TUI-first runtime controls.
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@ VulpineOS builds on Camoufox's battle-tested stealth foundation (Firefox 146.0.1
 ┌──────────────────────────────────────────────────────────────┐
 │                        VulpineOS                              │
 │                                                              │
-│  C++ Engine (Firefox 146.0.1 + Camoufox patches)             │
+│  Vulpine Browser Engine (Firefox 146.0.1 + Vulpine patches)  │
 │  ├── Phase 1: Injection-Proof Accessibility Filter            │
 │  ├── Phase 2: Deterministic Execution (Action-Lock)           │
 │  ├── Phase 3: Token-Optimized DOM Export                      │
@@ -160,7 +160,7 @@ Beyond the four core phases, VulpineOS includes hardened runtime security:
 | **Proxy Rotation** | Auto-rotate proxies on rate limit, IP block, or time interval. Fingerprint re-synced on every rotation. 32-country locale map. |
 | **Webhook Notifications** | HTTP webhooks for agent.completed/failed/paused/interrupted, rate_limit.detected, injection.detected, budget.alert/exceeded. Async delivery with secret verification and redacted delivery logs. |
 | **Scripting DSL** | JSON scripting language for repetitive tasks without LLM calls. 8 actions: navigate, click, type, wait, extract, screenshot, set, if. Variable expansion with bounded script payloads, capped waits, and redacted operator-facing results. |
-| **Kernel Watchdog** | Monitors Camoufox every 2s. On crash: fires callback, auto-restarts (up to 3 attempts), re-establishes Juggler connection. |
+| **Kernel Watchdog** | Monitors Vulpine every 2s. On crash: fires callback, auto-restarts (up to 3 attempts), re-establishes Juggler connection. |
 | **Token Optimization** | Viewport-aware DOM pruning, persistent page cache, delta encoding between snapshots, batch operations. |
 | **Page Cache** | Saves and restores page state (URL, HTML, cookies, scroll, forms) across agent restarts. |
 | **Rate Limit Monitor** | Pattern-based scanning of agent output for 429s, captchas, and blocks. Per-agent failure tracking. |
@@ -177,7 +177,7 @@ A terminal-based command center for managing AI agents, browser contexts, and id
 | System         | Conversation                                 |
 | Kernel: running|                                              |
 | Mode: GUI      | you  Find cheap flights to Tokyo in March    |
-| Route: CAMOUFOX|                                              |
+| Route: VULPINE |                                              |
 | Window: VISIBLE| scout  Thinking...                           |
 |                |                                              |
 | Agents         |                                              |
@@ -190,7 +190,7 @@ A terminal-based command center for managing AI agents, browser contexts, and id
 Use `/` in an empty chat input to open the command palette. It includes common actions such as creating agents, opening settings, viewing logs, toggling trace output, showing or hiding the browser, and opening the `/agents` picker. Clicking an agent row in the sidebar selects that agent.
 
 The native runtime keeps agent identity and browser guidance in the model prompt. New agents start on the assigned task immediately and restate their assigned runtime name, reducing drift toward stale persona state. The prompt forces exact action/result reporting and explicitly forbids claiming a browser action succeeded after an error, timeout, or incomplete result.
-The system panel shows both the browser mode (`GUI` or `HEADLESS`) and the active browser route (`CAMOUFOX`), so the operator can verify the runtime path without checking logs.
+The system panel shows both the browser mode (`GUI` or `HEADLESS`) and the active browser route (`VULPINE`), so the operator can verify the runtime path without checking logs.
 The TUI also shows the current browser window state (`VISIBLE`, `HIDDEN`, `HEADLESS`, or `N/A`) so browser visibility is diagnosable without checking logs.
 Served mode also supports `--no-browser`, which keeps the TUI remote/control API available without launching a kernel.
 Runtime startup failures land in the secret-redacted runtime audit stream, so startup problems appear in runtime views instead of only in raw log files.
@@ -211,7 +211,7 @@ On quit, VulpineOS pauses active agents before exiting so the next launch can re
 
 Local TUI startup and runtime logs are written to `~/.vulpineos/logs/local-tui.log` so the terminal UI stays clean while the kernel, foxbridge, and native runtime initialize.
 
-Live browser and MCP-browser integration tests are gated behind `VULPINEOS_RUN_LIVE=1` so the default `go test` and CI path stay hermetic even on machines that already have Camoufox installed.
+Live browser and MCP-browser integration tests are gated behind `VULPINEOS_RUN_LIVE=1` so the default `go test` and CI path stay hermetic even on machines that already have Vulpine installed.
 
 ---
 
@@ -229,13 +229,13 @@ deployments, pass `--api-key` to use an explicit bearer access key instead.
 
 ## Foxbridge: CDP-to-Firefox Protocol Proxy
 
-[Foxbridge](https://github.com/VulpineOS/foxbridge) is a standalone Go binary that translates Chrome DevTools Protocol (CDP) to Firefox's Juggler and WebDriver BiDi protocols. CDP-compatible tools can control Camoufox as if it were Chrome.
+[Foxbridge](https://github.com/VulpineOS/foxbridge) is a standalone Go binary that translates Chrome DevTools Protocol (CDP) to Firefox's Juggler and WebDriver BiDi protocols. CDP-compatible tools can control Vulpine as if it were Chrome.
 
 - **74/74 Puppeteer Juggler tests** passing
 - **62/62 Puppeteer BiDi tests** passing
 - Dual backend: `--backend juggler` (pipe) or `--backend bidi` (WebSocket)
 - Fetch domain with request/response interception
-- Embedded into VulpineOS startup so CDP-compatible tools can route through the same Camoufox process as the TUI
+- Embedded into VulpineOS startup so CDP-compatible tools can route through the same Vulpine process as the TUI
 - The native agent runtime uses VulpineOS MCP/Juggler browser tools directly inside the assigned browser context
 
 ---
@@ -245,7 +245,7 @@ deployments, pass `--api-key` to use an explicit bearer access key instead.
 ### Install
 
 The installer downloads the latest published VulpineOS CLI and matching
-VulpineOS Camoufox browser bundle, installs `vulpineos` onto your PATH, and
+Vulpine browser bundle, installs `vulpineos` onto your PATH, and
 configures the browser path under `~/.vulpineos/config.json`. Developers can
 force a source build with `VULPINEOS_BUILD_FROM_SOURCE=1`.
 
@@ -273,9 +273,9 @@ cd VulpineOS
 go build -o vulpineos ./cmd/vulpineos
 ```
 
-Source builds still need a Camoufox/Firefox-compatible browser binary. Either
-complete the browser source build below, place a packaged Camoufox next to
-`./vulpineos`, or pass one explicitly with `--binary /path/to/camoufox`.
+Source builds still need a Vulpine/Firefox-compatible browser binary. Either
+complete the browser source build below, place a packaged Vulpine bundle next to
+`./vulpineos`, or pass one explicitly with `--binary /path/to/vulpine`.
 
 ### Run
 
@@ -322,10 +322,11 @@ MCP server:
 ```
 
 When no `--binary` flag is provided, VulpineOS prefers a repo-local
-`camoufox-*/obj-*/dist` build before falling back to a saved configured
+`camoufox-*/obj-*/dist` source build before falling back to a saved configured
 binary or older installed copies.
-`--binary` may point directly at the executable, at `Camoufox.app`, at a browser
-`dist` directory, or at the repo root containing `camoufox-*/obj-*/dist`.
+`--binary` may point directly at the executable, at `Vulpine.app` or legacy
+`Camoufox.app`, at a browser `dist` directory, or at the repo root containing
+`camoufox-*/obj-*/dist`.
 
 First launch opens a setup wizard to configure your AI provider (Anthropic, OpenAI, Google, xAI, and 27 more).
 
@@ -338,7 +339,7 @@ docker compose up -d
 vulpineos remote --url http://your-vps:8443 --api-key $VULPINE_API_KEY
 ```
 
-`docker compose up -d` starts `vulpineos serve --binary ./browser/camoufox --port 8443 --no-tls`
+`docker compose up -d` starts `vulpineos serve --binary ./browser/vulpine --port 8443 --no-tls`
 inside the container. By default the bundled `docker-compose.yml` exposes plain HTTP on
 port `8443`; add `VULPINE_TLS_CERT` and `VULPINE_TLS_KEY` plus mounted certificate files if
 you want HTTPS/WSS.
@@ -348,7 +349,7 @@ Use the same value with `vulpineos remote` when connecting from another machine.
 Run `./scripts/check-vulpinebox.sh` before `docker compose up -d` to verify Docker,
 the access key, and the required Linux browser artifact are ready.
 If you want the full deployment notes, including required browser artifacts under
-`dist/camoufox-linux/`, persistent volumes, and optional TLS, see
+`dist/vulpine-linux/`, persistent volumes, and optional TLS, see
 [docs.vulpineos.com/docker](https://docs.vulpineos.com/docker).
 
 ## Release notes

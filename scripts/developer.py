@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-GUI for managing Camoufox patches.
+GUI for managing Vulpine browser patches.
 """
 import os
 import re
@@ -199,7 +199,7 @@ def handle_choice(choice):
                 run('make dir')
                 run('make first-checkpoint')
             easygui.msgbox(
-                "Created new patch workspace. You can test Camoufox with 'make run'.\n\n"
+                "Created new patch workspace. You can test Vulpine with 'make run'.\n\n"
                 "When you are finished, write your workspace back to a new patch.",
                 "New Patch Workspace",
             )
@@ -358,5 +358,5 @@ def handle_choice(choice):
 if __name__ == "__main__":
     into_camoufox_dir()
 
-    while choice := easygui.choicebox("Select an option:", "Camoufox Dev Tools", choices):
+    while choice := easygui.choicebox("Select an option:", "Vulpine Browser Dev Tools", choices):
         handle_choice(choice)

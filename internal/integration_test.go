@@ -17,13 +17,19 @@ import (
 	"vulpineos/internal/mcp"
 )
 
-// findCamoufox locates the Camoufox binary for integration tests.
-func findCamoufox() string {
+// findBrowser locates the Vulpine browser binary for integration tests.
+func findBrowser() string {
+	if binary := strings.TrimSpace(os.Getenv("VULPINE_BROWSER_BINARY")); binary != "" {
+		return binary
+	}
 	if binary := strings.TrimSpace(os.Getenv("CAMOUFOX_BINARY")); binary != "" {
 		return binary
 	}
 	home, _ := os.UserHomeDir()
 	candidates := []string{
+		filepath.Join(home, "Downloads", "Vulpine.app", "Contents", "MacOS", "vulpine"),
+		filepath.Join(home, ".vulpineos", "browser", "vulpine"),
+		"/usr/local/bin/vulpine",
 		filepath.Join(home, "Downloads", "Camoufox.app", "Contents", "MacOS", "camoufox"),
 		filepath.Join(home, ".camoufox", "camoufox"),
 		"/usr/local/bin/camoufox",
@@ -37,11 +43,11 @@ func findCamoufox() string {
 	return binary
 }
 
-// skipIfNoBrowser skips the test if Camoufox is not available.
+// skipIfNoBrowser skips the test if Vulpine is not available.
 func skipIfNoBrowser(t *testing.T) string {
-	binary := findCamoufox()
+	binary := findBrowser()
 	if binary == "" {
-		t.Skip("Camoufox binary not found — skipping integration test")
+		t.Skip("Vulpine browser binary not found — skipping integration test")
 	}
 	return binary
 }

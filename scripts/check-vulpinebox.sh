@@ -74,7 +74,17 @@ else
   fail "VULPINE_API_KEY is not set"
 fi
 
-browser_artifact="dist/camoufox-linux/camoufox"
+browser_artifact=""
+for candidate in \
+  "dist/vulpine-linux/vulpine" \
+  "dist/vulpine-linux/vulpine-bin" \
+  "dist/vulpine-linux/camoufox" \
+  "dist/vulpine-linux/camoufox-bin"; do
+  if [ -x "$candidate" ]; then
+    browser_artifact="$candidate"
+    break
+  fi
+done
 if [ -x "$browser_artifact" ]; then
   if command -v file >/dev/null 2>&1; then
     artifact_type="$(file -b "$browser_artifact" || true)"
@@ -89,7 +99,7 @@ if [ -x "$browser_artifact" ]; then
 elif [ -e "$browser_artifact" ]; then
   fail "$browser_artifact exists but is not executable"
 else
-  fail "Linux browser artifact missing at $browser_artifact"
+  fail "Linux browser artifact missing at dist/vulpine-linux/vulpine, vulpine-bin, camoufox, or camoufox-bin"
 fi
 
 if [ -f "Dockerfile.vulpinebox" ]; then
@@ -116,8 +126,8 @@ Vulpine-Box preflight failed.
 
 Expected setup:
   export VULPINE_API_KEY=$(openssl rand -hex 32)
-  # place the Linux Camoufox artifact at:
-  # dist/camoufox-linux/camoufox
+  # place the Linux Vulpine artifact at:
+  # dist/vulpine-linux/vulpine
   # start Docker Desktop or your Docker daemon
 
 Then rerun:

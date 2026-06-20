@@ -10,14 +10,17 @@ import (
 
 // TestLive_WindowHideShow verifies the browser window auto-hides on launch and
 // that Show/Hide toggle it (Linux/X11 via WSLg, or macOS). Gated by
-// VULPINEOS_RUN_LIVE=1 + CAMOUFOX_BINARY.
+// VULPINEOS_RUN_LIVE=1 + VULPINE_BROWSER_BINARY.
 func TestLive_WindowHideShow(t *testing.T) {
 	if os.Getenv("VULPINEOS_RUN_LIVE") == "" {
 		t.Skip("set VULPINEOS_RUN_LIVE=1 to run the live window test")
 	}
-	binary := strings.TrimSpace(os.Getenv("CAMOUFOX_BINARY"))
+	binary := strings.TrimSpace(os.Getenv("VULPINE_BROWSER_BINARY"))
 	if binary == "" {
-		t.Skip("set CAMOUFOX_BINARY to the camoufox-bin path")
+		binary = strings.TrimSpace(os.Getenv("CAMOUFOX_BINARY"))
+	}
+	if binary == "" {
+		t.Skip("set VULPINE_BROWSER_BINARY to the Vulpine browser path")
 	}
 
 	k := New()

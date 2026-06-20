@@ -28,8 +28,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /opt/vulpineos
 
-# Copy pre-built Camoufox distribution (must be in dist/camoufox-linux/)
-COPY dist/camoufox-linux/ ./browser/
+# Copy pre-built Vulpine distribution (must be in dist/vulpine-linux/)
+COPY dist/vulpine-linux/ ./browser/
 # Copy Go binary
 COPY --from=go-builder /vulpineos ./vulpineos
 # Copy settings

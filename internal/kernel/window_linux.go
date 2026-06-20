@@ -35,7 +35,7 @@ func isBrowserClass(cls *icccm.WmClass) bool {
 	}
 	for _, s := range []string{cls.Instance, cls.Class} {
 		l := strings.ToLower(s)
-		if strings.Contains(l, "camoufox") || strings.Contains(l, "firefox") || strings.Contains(l, "navigator") {
+		if strings.Contains(l, "vulpine") || strings.Contains(l, "camoufox") || strings.Contains(l, "firefox") || strings.Contains(l, "navigator") {
 			return true
 		}
 	}

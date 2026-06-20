@@ -55,7 +55,7 @@ jobs:
           path: dist/${{ matrix.asset }}
 
   browser:
-    name: Camoufox (${{ matrix.target }}-${{ matrix.arch }})
+    name: Vulpine Browser (${{ matrix.target }}-${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -78,7 +78,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Get latest Camoufox release info
+      - name: Get latest upstream browser release info
         id: camrel
         run: |
           API="https://api.github.com/repos/${{ env.CAMOUFOX_REPO }}/releases/latest"
@@ -87,7 +87,7 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "version=$VNUM" >> $GITHUB_OUTPUT
 
-      - name: Download Camoufox binary
+      - name: Download upstream browser binary
         run: |
           PATTERN="camoufox-*-${{ matrix.plat }}.${{ matrix.arch }}.zip"
           API="https://api.github.com/repos/${{ env.CAMOUFOX_REPO }}/releases/tags/${{ steps.camrel.outputs.tag }}"
@@ -113,8 +113,32 @@ jobs:
 
           # Determine extraction layout
           if [ "${{ matrix.target }}" = "macos" ]; then
-            # macOS: Camoufox.app bundle
-            RES="tmp-extract/Camoufox.app/Contents/Resources"
+            # macOS: Vulpine.app bundle, with fallback for upstream Camoufox archives.
+            if [ -d "tmp-extract/Vulpine.app" ]; then
+              APP="tmp-extract/Vulpine.app"
+            else
+              mv "tmp-extract/Camoufox.app" "tmp-extract/Vulpine.app"
+              APP="tmp-extract/Vulpine.app"
+            fi
+            if [ -f "$APP/Contents/MacOS/camoufox" ] && [ ! -f "$APP/Contents/MacOS/vulpine" ]; then
+              mv "$APP/Contents/MacOS/camoufox" "$APP/Contents/MacOS/vulpine"
+            fi
+            python3 - "$APP/Contents/Info.plist" "$APP/Contents/MacOS/vulpine" <<'PY'
+import plistlib
+import os
+import sys
+
+path, vulpine_binary = sys.argv[1:]
+with open(path, "rb") as f:
+    plist = plistlib.load(f)
+if os.path.exists(vulpine_binary):
+    plist["CFBundleExecutable"] = "vulpine"
+plist["CFBundleName"] = "Vulpine"
+plist["CFBundleDisplayName"] = "Vulpine"
+with open(path, "wb") as f:
+    plistlib.dump(plist, f)
+PY
+            RES="$APP/Contents/Resources"
             cp -v settings/camoufox.cfg "$RES/camoufox.cfg"
             cp -v settings/chrome.css "$RES/chrome.css"
             cp -v settings/properties.json "$RES/properties.json"
@@ -124,6 +148,12 @@ jobs:
             cp -v settings/defaults/pref/local-settings.js "$RES/defaults/pref/local-settings.js"
           else
             # Linux: flat extraction
+            if [ -f "tmp-extract/camoufox" ] && [ ! -f "tmp-extract/vulpine" ]; then
+              cp -p "tmp-extract/camoufox" "tmp-extract/vulpine"
+            fi
+            if [ -f "tmp-extract/camoufox-bin" ] && [ ! -f "tmp-extract/vulpine-bin" ]; then
+              cp -p "tmp-extract/camoufox-bin" "tmp-extract/vulpine-bin"
+            fi
             cp -v settings/camoufox.cfg "tmp-extract/camoufox.cfg"
             cp -v settings/chrome.css "tmp-extract/chrome.css"
             cp -v settings/properties.json "tmp-extract/properties.json"
@@ -136,7 +166,7 @@ jobs:
       - name: Repackage
         run: |
           VERSION="${{ steps.camrel.outputs.version }}"
-          ASSET_NAME="camoufox-$VERSION-${{ matrix.plat }}.${{ matrix.arch }}"
+          ASSET_NAME="vulpine-$VERSION-${{ matrix.plat }}.${{ matrix.arch }}"
           cd tmp-extract
           zip -r "../dist/$ASSET_NAME.zip" .
           cd ..
@@ -145,7 +175,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: CamoufoxBuilds-${{ matrix.target }}-${{ matrix.arch }}
+          name: VulpineBrowser-${{ matrix.target }}-${{ matrix.arch }}
           path: dist/*
 
   release:

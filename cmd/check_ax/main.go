@@ -12,8 +12,7 @@ import (
 func main() {
 	k := kernel.New()
 	err := k.Start(kernel.Config{
-		BinaryPath: "/Users/rowan/.vulpineos/browser/Camoufox.app/Contents/MacOS/camoufox",
-		Headless:   true,
+		Headless: true,
 	})
 	if err != nil {
 		fmt.Println("FAIL start:", err)

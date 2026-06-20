@@ -5,10 +5,12 @@ add_includes_to_package() {
     echo "Adding includes to package: $1"
     temp_dir=$(mktemp -d)
     7z x "$1" "-o$temp_dir"
-    if [ -d "$temp_dir/camoufox" ]; then
-        mv "$temp_dir/camoufox"/* "$temp_dir/"
-        rmdir "$temp_dir/camoufox"
-    fi
+    for browser_dir in vulpine camoufox; do
+        if [ -d "$temp_dir/$browser_dir" ]; then
+            mv "$temp_dir/$browser_dir"/* "$temp_dir/"
+            rmdir "$temp_dir/$browser_dir"
+        fi
+    done
     for include in "${@:2}"; do
         if [ -e "$include" ]; then
             cp -r "$include" "$temp_dir/"

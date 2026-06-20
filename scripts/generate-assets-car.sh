@@ -1,5 +1,5 @@
 #!/bin/bash
-# Generates Assets.car for macOS builds from the camoufox branding icons
+# Generates Assets.car for macOS builds from the Vulpine branding icons
 # This script must be run on macOS (requires actool from Xcode)
 
 set -e
@@ -37,7 +37,7 @@ fi
 
 ACTOOL=$(xcrun --find actool 2>/dev/null || echo "actool")
 
-echo "Generating Assets.car from camoufox branding icons..."
+echo "Generating Assets.car from Vulpine branding icons..."
 
 # Create xcassets structure
 mkdir -p "$APPICONSET_DIR"

@@ -5,7 +5,7 @@
 # Note: MOZ_APP_VENDOR and MOZ_APP_PROFILE must be set via imply_option() in browser/moz.configure
 # See patches/librewolf/disable-data-reporting-at-compile-time.patch
 
-MOZ_APP_NAME=camoufox
+MOZ_APP_NAME=vulpine
 MOZ_APP_BASENAME=Vulpine
 MOZ_APP_DISPLAYNAME=Vulpine
-MOZ_APP_REMOTINGNAME=camoufox
+MOZ_APP_REMOTINGNAME=vulpine

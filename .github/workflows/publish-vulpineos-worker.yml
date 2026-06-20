@@ -8,7 +8,7 @@ on:
         required: false
         type: string
       vulpineos_release_tag:
-        description: VulpineOS release tag containing camoufox-*-lin.x86_64.zip. Leave blank for latest.
+        description: VulpineOS release tag containing vulpine-*-lin.x86_64.zip. Leave blank for latest.
         required: false
         type: string
       publish_latest:

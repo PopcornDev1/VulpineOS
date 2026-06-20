@@ -26,7 +26,7 @@ type agentStore interface {
 
 // Manager is the native, in-process agent runtime. It implements the method
 // surface the orchestrator, TUI, and remote API use for agent execution, while
-// running the model<->tool loop in-process and driving the host Camoufox
+// running the model<->tool loop in-process and driving the host Vulpine browser
 // directly through the MCP/Juggler tools.
 //
 // It emits the existing agentmsg.ConversationMsg / agentmsg.AgentStatus value

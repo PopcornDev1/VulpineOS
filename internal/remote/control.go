@@ -762,7 +762,7 @@ func (api *ControlAPI) browserRoute() (string, string) {
 	case api.Kernel == nil:
 		return "disabled", "server"
 	case api.activeFoxbridgeCDPURL() != "":
-		return "camoufox", "runtime"
+		return "vulpine", "runtime"
 	case api.Kernel != nil && api.Kernel.IsHeadless():
 		return "headless", "kernel"
 	default:

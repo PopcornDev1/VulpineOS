@@ -20,7 +20,7 @@ func TestKernelStatusViewOmitsModeRouteAndWindow(t *testing.T) {
 		PID:           1234,
 		Uptime:        2 * time.Minute,
 		Headless:      false,
-		BrowserRoute:  "CAMOUFOX",
+		BrowserRoute:  "VULPINE",
 		BrowserWindow: "HIDDEN",
 	})
 
@@ -64,7 +64,7 @@ func TestDefaultHeightShowsContextStatsAndOmitsPool(t *testing.T) {
 		PID:           1234,
 		Uptime:        2 * time.Minute,
 		Headless:      false,
-		BrowserRoute:  "CAMOUFOX",
+		BrowserRoute:  "VULPINE",
 		BrowserWindow: "VISIBLE",
 	})
 	updated.SetBrowserCounts(4, 7)
@@ -87,7 +87,7 @@ func TestDefaultHeightShowsRecentRuntimeEvent(t *testing.T) {
 		PID:           1234,
 		Uptime:        2 * time.Minute,
 		Headless:      false,
-		BrowserRoute:  "CAMOUFOX",
+		BrowserRoute:  "VULPINE",
 		BrowserWindow: "VISIBLE",
 	})
 	updated, _ = updated.Update(shared.PoolStatsMsg{Available: 3, Active: 2, Total: 5})

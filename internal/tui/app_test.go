@@ -3594,7 +3594,7 @@ func TestRemoteStatusUpdatesSystemPanel(t *testing.T) {
 			"kernel_running":  true,
 			"kernel_pid":      1234,
 			"kernel_headless": true,
-			"browser_route":   "camoufox",
+			"browser_route":   "vulpine",
 			"browser_window":  "headless",
 			"active_contexts": 4,
 			"active_pages":    7,

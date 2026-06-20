@@ -18,21 +18,21 @@ pacman := python python-pip p7zip go msitools wget aria2 sqlite
 help:
 	@echo "Available targets:"
 	@echo "  fetch           - Fetch the Firefox source code"
-	@echo "  setup           - Setup Camoufox & local git repo for development"
+	@echo "  setup           - Setup Vulpine browser source & local git repo for development"
 	@echo "  bootstrap       - Set up build environment"
 	@echo "  mozbootstrap    - Sets up mach"
-	@echo "  dir             - Prepare Camoufox source directory with BUILD_TARGET"
+	@echo "  dir             - Prepare Vulpine browser source directory with BUILD_TARGET"
 	@echo "  revert          - Kill all working changes"
-	@echo "  edits           - Camoufox developer UI"
+	@echo "  edits           - Vulpine browser developer UI"
 	@echo "  build-launcher  - Build launcher"
 	@echo "  clean           - Remove build artifacts"
 	@echo "  distclean       - Remove everything including downloads"
-	@echo "  build           - Build Camoufox"
+	@echo "  build           - Build Vulpine browser"
 	@echo "  set-target      - Change the build target with BUILD_TARGET"
-	@echo "  package-linux   - Package Camoufox for Linux"
-	@echo "  package-macos   - Package Camoufox for macOS"
-	@echo "  package-windows - Package Camoufox for Windows"
-	@echo "  run             - Run Camoufox"
+	@echo "  package-linux   - Package Vulpine for Linux"
+	@echo "  package-macos   - Package Vulpine for macOS"
+	@echo "  package-windows - Package Vulpine for Windows"
+	@echo "  run             - Run Vulpine"
 	@echo "  edit-cfg        - Edit camoufox.cfg"
 	@echo "  ff-dbg          - Setup vanilla Firefox with minimal patches"
 	@echo "  patch           - Apply a patch"
@@ -187,7 +187,7 @@ run-pw:
 
 run:
 	cd $(cf_source_dir) \
-	&& rm -rf ~/.camoufox obj-x86_64-pc-linux-gnu/tmp/profile-default \
+	&& rm -rf ~/.vulpine ~/.camoufox obj-x86_64-pc-linux-gnu/tmp/profile-default \
 	&& CAMOU_CONFIG=$${CAMOU_CONFIG:-'{}'} \
 	&& CAMOU_CONFIG="$${CAMOU_CONFIG%?}, \"debug\": true}" ./mach run $(args)
 
@@ -229,16 +229,18 @@ workspace:
 tests:
 	cd ./tests && \
 	bash run-tests.sh \
-		--executable-path ../$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
+		--executable-path ../$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/vulpine-bin \
 		$(if $(filter true,$(headful)),--headful,)
 
 unbusy:
-	rm -rf $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
+	rm -rf $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/vulpine-bin \
+		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/vulpine \
+		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
 		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox \
 		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/launch
 
 path:
-	@realpath $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin
+	@realpath $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/vulpine-bin
 
 update-ubo-assets:
 	bash ./scripts/update-ubo-assets.sh

@@ -61,7 +61,7 @@ type Kernel struct {
 
 // Config holds the kernel launch configuration.
 type Config struct {
-	// Path to the VulpineOS/Camoufox binary. If empty, auto-detected.
+	// Path to the Vulpine browser binary. If empty, auto-detected.
 	BinaryPath string
 	// Extra Firefox arguments.
 	ExtraArgs []string
@@ -72,7 +72,7 @@ type Config struct {
 }
 
 // BinaryWarning describes a selected browser binary that appears older than a
-// newer repo-local Camoufox build on disk.
+// newer repo-local Vulpine browser build on disk.
 type BinaryWarning struct {
 	SelectedPath  string
 	PreferredPath string
@@ -119,7 +119,7 @@ func ResolveBinaryPath(requested string) (string, error) {
 }
 
 // DetectStaleBinary returns a warning when the selected browser path is older
-// than a newer repo-local Camoufox build.
+// than a newer repo-local Vulpine browser build.
 func DetectStaleBinary(selected string) *BinaryWarning {
 	locator, err := newBinaryLocator()
 	if err != nil {
@@ -326,7 +326,7 @@ func (l binaryLocator) Resolve(requested string) (string, error) {
 		if resolved := l.resolveDirectory(requested); resolved != "" {
 			return resolved, nil
 		}
-		return "", fmt.Errorf("VulpineOS binary not found at %s (expected an executable, a Camoufox.app bundle, a browser dist directory, or a repo-local camoufox-*/obj-*/dist build)", requested)
+		return "", fmt.Errorf("VulpineOS browser not found at %s (expected an executable, a Vulpine.app/Camoufox.app bundle, a browser dist directory, or a repo-local camoufox-*/obj-*/dist build)", requested)
 	}
 
 	if resolved := l.firstExisting(l.packagedCandidates()); resolved != "" {
@@ -339,7 +339,7 @@ func (l binaryLocator) Resolve(requested string) (string, error) {
 		return resolved, nil
 	}
 
-	for _, name := range []string{"camoufox", "camoufox-bin"} {
+	for _, name := range []string{"vulpine", "vulpine-bin", "camoufox", "camoufox-bin"} {
 		if l.lookPath == nil {
 			break
 		}
@@ -388,14 +388,22 @@ func (l binaryLocator) DetectDrift(selected string) *BinaryWarning {
 func (l binaryLocator) packagedCandidates() []string {
 	execDir := filepath.Dir(l.execPath)
 	candidates := []string{
+		filepath.Join(execDir, "vulpine"),
+		filepath.Join(execDir, "vulpine-bin"),
 		filepath.Join(execDir, "camoufox"),
 		filepath.Join(execDir, "camoufox-bin"),
 	}
 	if l.goos == "darwin" {
-		candidates = append(candidates, filepath.Join(execDir, "../MacOS/camoufox"))
+		candidates = append(candidates,
+			filepath.Join(execDir, "../MacOS/vulpine"),
+			filepath.Join(execDir, "../MacOS/camoufox"),
+		)
 	}
 	if l.goos == "windows" {
-		candidates = []string{filepath.Join(execDir, "camoufox.exe")}
+		candidates = []string{
+			filepath.Join(execDir, "vulpine.exe"),
+			filepath.Join(execDir, "camoufox.exe"),
+		}
 	}
 	return candidates
 }
@@ -405,16 +413,22 @@ func (l binaryLocator) installedCandidates() []string {
 	switch l.goos {
 	case "darwin":
 		candidates = append(candidates,
+			filepath.Join(l.home, "Downloads", "Vulpine.app", "Contents", "MacOS", "vulpine"),
+			"/Applications/Vulpine.app/Contents/MacOS/vulpine",
+			"/Applications/vulpine.app/Contents/MacOS/vulpine",
 			filepath.Join(l.home, "Downloads", "Camoufox.app", "Contents", "MacOS", "camoufox"),
 			"/Applications/Camoufox.app/Contents/MacOS/camoufox",
 			"/Applications/camoufox.app/Contents/MacOS/camoufox",
 		)
 	case "windows":
 		candidates = append(candidates,
+			filepath.Join(l.home, "Downloads", "Vulpine", "vulpine.exe"),
 			filepath.Join(l.home, "Downloads", "Camoufox", "camoufox.exe"),
 		)
 	default:
 		candidates = append(candidates,
+			filepath.Join(l.home, ".vulpineos", "browser", "vulpine"),
+			"/usr/local/bin/vulpine",
 			filepath.Join(l.home, ".camoufox", "camoufox"),
 			"/usr/local/bin/camoufox",
 		)
@@ -431,10 +445,14 @@ func (l binaryLocator) repoLocalBuildInRoots(roots []string) string {
 	var fallback []string
 	seen := map[string]struct{}{}
 	patterns := []string{
+		filepath.Join("camoufox-*", "obj-*", "dist", "bin", "vulpine"),
 		filepath.Join("camoufox-*", "obj-*", "dist", "bin", "camoufox"),
 	}
 	if l.goos == "darwin" {
-		patterns = append(patterns, filepath.Join("camoufox-*", "obj-*", "dist", "Camoufox.app", "Contents", "MacOS", "camoufox"))
+		patterns = append(patterns,
+			filepath.Join("camoufox-*", "obj-*", "dist", "Vulpine.app", "Contents", "MacOS", "vulpine"),
+			filepath.Join("camoufox-*", "obj-*", "dist", "Camoufox.app", "Contents", "MacOS", "camoufox"),
+		)
 	}
 	for _, root := range roots {
 		for _, pattern := range patterns {
@@ -446,7 +464,7 @@ func (l binaryLocator) repoLocalBuildInRoots(roots []string) string {
 						continue
 					}
 					seen[normalized] = struct{}{}
-					if l.goos == "darwin" && strings.Contains(normalized, ".app/Contents/MacOS/camoufox") {
+					if l.goos == "darwin" && isMacAppBrowserExecutable(normalized) {
 						preferred = append(preferred, normalized)
 					} else {
 						fallback = append(fallback, normalized)
@@ -474,21 +492,32 @@ func (l binaryLocator) resolveDirectory(path string) string {
 	var candidates []string
 	switch l.goos {
 	case "windows":
-		candidates = append(candidates, filepath.Join(cleaned, "camoufox.exe"))
+		candidates = append(candidates,
+			filepath.Join(cleaned, "vulpine.exe"),
+			filepath.Join(cleaned, "camoufox.exe"),
+		)
 	default:
 		candidates = append(candidates,
+			filepath.Join(cleaned, "vulpine"),
+			filepath.Join(cleaned, "vulpine-bin"),
 			filepath.Join(cleaned, "camoufox"),
 			filepath.Join(cleaned, "camoufox-bin"),
+			filepath.Join(cleaned, "bin", "vulpine"),
 			filepath.Join(cleaned, "bin", "camoufox"),
 		)
 	}
 	if l.goos == "darwin" {
 		candidates = append(candidates,
+			filepath.Join(cleaned, "Vulpine.app", "Contents", "MacOS", "vulpine"),
+			filepath.Join(cleaned, "vulpine.app", "Contents", "MacOS", "vulpine"),
 			filepath.Join(cleaned, "Camoufox.app", "Contents", "MacOS", "camoufox"),
 			filepath.Join(cleaned, "camoufox.app", "Contents", "MacOS", "camoufox"),
 		)
 		if strings.HasSuffix(cleaned, ".app") {
-			candidates = append(candidates, filepath.Join(cleaned, "Contents", "MacOS", "camoufox"))
+			candidates = append(candidates,
+				filepath.Join(cleaned, "Contents", "MacOS", "vulpine"),
+				filepath.Join(cleaned, "Contents", "MacOS", "camoufox"),
+			)
 		}
 	}
 	if resolved := l.firstExisting(candidates); resolved != "" {
@@ -553,6 +582,12 @@ func (l binaryLocator) normalizeIfRunnable(path string) string {
 		return ""
 	}
 	return cleaned
+}
+
+func isMacAppBrowserExecutable(path string) bool {
+	normalized := filepath.ToSlash(path)
+	return strings.Contains(normalized, ".app/Contents/MacOS/vulpine") ||
+		strings.Contains(normalized, ".app/Contents/MacOS/camoufox")
 }
 
 func newestExisting(paths []string) string {
@@ -698,7 +733,7 @@ func (k *Kernel) Wait() error {
 	return err
 }
 
-// findBinary locates the VulpineOS/Camoufox binary.
+// findBinary locates the Vulpine browser binary.
 func findBinary() (string, error) {
 	return ResolveBinaryPath("")
 }

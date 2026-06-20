@@ -1,5 +1,5 @@
 // Package agentcore implements VulpineOS's native, in-process agent runtime:
-// a streaming model loop that drives the host Camoufox browser through the
+// a streaming model loop that drives the host Vulpine browser through the
 // existing MCP/Juggler tools. It avoids per-agent containers for VulpineOS's
 // narrow use case (one task -> one agent -> LLM + browser tools -> reply),
 // eliminating container cold-starts, image builds, daemon/gateway processes,

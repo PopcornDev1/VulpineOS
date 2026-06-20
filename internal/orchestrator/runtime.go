@@ -8,7 +8,7 @@ import (
 
 // AgentRuntime is the agent-execution backend the orchestrator drives. The sole
 // implementation is *agentcore.Manager — the native in-process runtime that runs
-// the model<->tool loop and drives the host Camoufox directly through the
+// the model<->tool loop and drives the host Vulpine browser directly through the
 // MCP/Juggler tools. The interface is retained so the orchestrator depends on a
 // behavioral contract rather than a concrete type (and so tests can substitute a
 // fake). It emits agentmsg.ConversationMsg / agentmsg.AgentStatus value types so

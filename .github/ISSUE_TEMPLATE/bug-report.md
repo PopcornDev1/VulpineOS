@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report an issue in Camoufox
+about: Report an issue in VulpineOS or the Vulpine browser
 title: ''
 labels: bug
 assignees: ''
@@ -21,4 +21,4 @@ Provide steps or a code snippet that reproduces the bug.
 
 ### Version:
 
-Run `python -m camoufox version` in your terminal and paste the output here.
+Run `vulpineos --version` and include the browser bundle version or release asset name you installed.

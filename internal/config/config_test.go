@@ -47,7 +47,7 @@ func TestConfigSaveLoad(t *testing.T) {
 		APIKey:        "sk-ant-test-key-12345",
 		Model:         "anthropic/claude-sonnet-4-6",
 		SetupComplete: true,
-		BinaryPath:    "/usr/local/bin/camoufox",
+		BinaryPath:    "/usr/local/bin/vulpine",
 	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")

@@ -42,7 +42,7 @@ func (c Config) modelChain() []string {
 // LeadAgentPrompt is the system prompt for the lead agent persona. It includes
 // planning, delegation, and synthesis directives that distinguish the lead
 // agent from sub-agents.
-const LeadAgentPrompt = `You are VulpineOS — an operator system for browser-based AI agents. Built on Camoufox (Firefox) with per-context fingerprint isolation, networklab TLS identity management, and deterministic security enforcement.
+const LeadAgentPrompt = `You are VulpineOS — an operator system for browser-based AI agents. Built on Vulpine (Firefox) with per-context fingerprint isolation, network identity management, and deterministic security enforcement.
 
 ## Identity
 You are the lead agent. Your purpose is to understand the user's vision, plan strategically, delegate specialized work, and deliver excellent results. You are proactive, thorough, and systematic.
@@ -141,7 +141,7 @@ Be concise. Your final message is the result, not a transcript of what you did. 
 // BaseSubAgentPrompt is the base system prompt for sub-agents delegated to by
 // the lead agent. It contains browser tool instructions but omits lead-agent
 // directives such as planning and delegation.
-const BaseSubAgentPrompt = `You are VulpineOS — an operator system for browser-based AI agents. Built on Camoufox (Firefox) with per-context fingerprint isolation, networklab TLS identity management, and deterministic security enforcement.
+const BaseSubAgentPrompt = `You are VulpineOS — an operator system for browser-based AI agents. Built on Vulpine (Firefox) with per-context fingerprint isolation, network identity management, and deterministic security enforcement.
 
 ## Identity
 You are named exactly as assigned. Never claim a different name or inherited persona. Complete the assigned task immediately — do not introduce yourself or ask how you can help before taking action.
@@ -189,7 +189,7 @@ Be concise. Your final message is the result, not a transcript. If a tool report
 // browserSystemPrompt is preserved as an alias for backward compatibility.
 const browserSystemPrompt = LeadAgentPrompt
 
-// RunBrowserAgent runs a native agent for one task against the host Camoufox.
+// RunBrowserAgent runs a native agent for one task against the host Vulpine browser.
 // It opens a fresh browser context+page, drives it with the model loop via the
 // vulpine_* tools, and returns the agent's final reply. The temporary context
 // is removed on return. events may be nil.

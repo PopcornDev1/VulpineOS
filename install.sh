@@ -124,7 +124,7 @@ resolve_release_assets() {
         printf 'VULPINEOS_RELEASE_TAG=%q\n' "${VULPINEOS_RELEASE_TAG:-manual}"
         printf 'VULPINEOS_CLI_URL=%q\n' "${VULPINEOS_CLI_URL}"
         printf 'VULPINEOS_BROWSER_URL=%q\n' "${VULPINEOS_BROWSER_URL}"
-        printf 'VULPINEOS_BROWSER_ASSET=%q\n' "${VULPINEOS_BROWSER_ASSET:-manual-camoufox.zip}"
+        printf 'VULPINEOS_BROWSER_ASSET=%q\n' "${VULPINEOS_BROWSER_ASSET:-manual-vulpine.zip}"
         return 0
     fi
 
@@ -171,22 +171,32 @@ browser_suffix = f"-{browser_os}.{browser_arch}.zip"
 
 cli_asset = None
 browser_asset = None
+legacy_browser_asset = None
 for asset in assets:
     name = asset.get("name", "")
     if cli_asset is None and name in cli_names:
         cli_asset = asset
-    if browser_asset is None and name.startswith("camoufox-") and name.endswith(browser_suffix):
+    if browser_asset is None and name.startswith("vulpine-") and name.endswith(browser_suffix):
         browser_asset = asset
+    if legacy_browser_asset is None and name.startswith("camoufox-") and name.endswith(browser_suffix):
+        legacy_browser_asset = asset
+if browser_asset is None:
+    browser_asset = legacy_browser_asset
 
-# If Camoufox not in latest release, try the fallback browser release
+# If the browser is not in latest release, try the fallback browser release
 if browser_asset is None and browser_fallback:
     fb = fetch_release(browser_fallback)
     if fb:
+        legacy_browser_asset = None
         for asset in fb.get("assets") or []:
             name = asset.get("name", "")
-            if browser_asset is None and name.startswith("camoufox-") and name.endswith(browser_suffix):
+            if browser_asset is None and name.startswith("vulpine-") and name.endswith(browser_suffix):
                 browser_asset = asset
                 break
+            if legacy_browser_asset is None and name.startswith("camoufox-") and name.endswith(browser_suffix):
+                legacy_browser_asset = asset
+        if browser_asset is None:
+            browser_asset = legacy_browser_asset
 
 # If CLI not in latest release, try the fallback browser release
 if cli_asset is None and browser_fallback:
@@ -202,7 +212,7 @@ missing = []
 if cli_asset is None:
     missing.append(" or ".join(cli_names))
 if browser_asset is None:
-    missing.append(f"camoufox-*{browser_suffix}")
+    missing.append(f"vulpine-*{browser_suffix} or camoufox-*{browser_suffix}")
 if missing:
     tag = release.get("tag_name", "latest")
     sys.stderr.write(f"Release {tag} is missing required installer asset(s): {', '.join(missing)}\n")
@@ -219,9 +229,15 @@ for key, value in values.items():
 PY
 }
 
-resolve_camoufox_binary() {
+resolve_browser_binary() {
     local root="$1"
     local candidates=(
+        "${root}/vulpine-bin"
+        "${root}/vulpine/vulpine-bin"
+        "${root}/vulpine"
+        "${root}/vulpine/vulpine"
+        "${root}/Vulpine.app/Contents/MacOS/vulpine"
+        "${root}/vulpine/Vulpine.app/Contents/MacOS/vulpine"
         "${root}/camoufox-bin"
         "${root}/camoufox/camoufox-bin"
         "${root}/camoufox"
@@ -270,27 +286,30 @@ os.chmod(config_path, 0o600)
 PY
 }
 
-install_camoufox_launcher() {
+install_browser_launchers() {
     local browser_bin="$1"
     local bin_dir="$2"
-    local launcher="${bin_dir}/camoufox"
+    local primary_launcher="${bin_dir}/vulpine"
+    local legacy_launcher="${bin_dir}/camoufox"
 
     if [ "$(detect_goos)" = "darwin" ]; then
-        python3 - "${launcher}" "${browser_bin}" <<'PY'
+        python3 - "${primary_launcher}" "${legacy_launcher}" "${browser_bin}" <<'PY'
 import os
 import shlex
 import sys
 
-launcher, browser_bin = sys.argv[1:]
-with open(launcher, "w", encoding="utf-8") as f:
-    f.write("#!/bin/sh\n")
-    f.write("exec " + shlex.quote(browser_bin) + ' "$@"\n')
-os.chmod(launcher, 0o755)
+primary_launcher, legacy_launcher, browser_bin = sys.argv[1:]
+script = "#!/bin/sh\n" + "exec " + shlex.quote(browser_bin) + ' "$@"\n'
+for launcher in (primary_launcher, legacy_launcher):
+    with open(launcher, "w", encoding="utf-8") as f:
+        f.write(script)
+    os.chmod(launcher, 0o755)
 PY
     else
         local target="${browser_bin}"
-        ln -sf "${target}" "${launcher}" || true
-        chmod 0755 "${launcher}" >/dev/null 2>&1 || true
+        ln -sf "${target}" "${primary_launcher}" || true
+        ln -sf "${target}" "${legacy_launcher}" || true
+        chmod 0755 "${primary_launcher}" "${legacy_launcher}" >/dev/null 2>&1 || true
     fi
 }
 
@@ -299,7 +318,7 @@ install_browser() {
     local zip_path="${VULPINEOS_HOME}/${VULPINEOS_BROWSER_ASSET}.tmp.$$"
     local extract_dir="${VULPINEOS_BROWSER_DIR}.tmp.$$"
 
-    log "Downloading VulpineOS Camoufox bundle (${VULPINEOS_BROWSER_ASSET})..."
+    log "Downloading Vulpine browser bundle (${VULPINEOS_BROWSER_ASSET})..."
     rm -f "${zip_path}"
     rm -rf "${extract_dir}"
     download_to "${VULPINEOS_BROWSER_URL}" "${zip_path}"
@@ -308,9 +327,9 @@ install_browser() {
     rm -f "${zip_path}"
 
     local tmp_browser_bin
-    tmp_browser_bin="$(resolve_camoufox_binary "${extract_dir}")" || {
+    tmp_browser_bin="$(resolve_browser_binary "${extract_dir}")" || {
         rm -rf "${extract_dir}"
-        fatal "Camoufox bundle did not contain a supported executable."
+        fatal "Vulpine browser bundle did not contain a supported executable."
     }
 
     rm -rf "${VULPINEOS_BROWSER_DIR}"
@@ -322,8 +341,8 @@ install_browser() {
     fi
 
     write_browser_config "${browser_bin}"
-    install_camoufox_launcher "${browser_bin}" "${bin_dir}"
-    log "Installed Camoufox: ${browser_bin}"
+    install_browser_launchers "${browser_bin}" "${bin_dir}"
+    log "Installed Vulpine browser: ${browser_bin}"
 }
 
 build_cli_from_source() {
@@ -385,11 +404,11 @@ install_cli_from_release() {
 main() {
     log "Installing VulpineOS..."
     have python3 || fatal "python3 is required to resolve release assets and update local config."
-    have unzip || fatal "unzip is required to extract the Camoufox browser bundle."
+    have unzip || fatal "unzip is required to extract the Vulpine browser bundle."
     have curl || have wget || fatal "curl or wget is required to download release assets."
 
-    # Fallback release for Camoufox browser assets (CLI may come from a newer
-    # release that only has the Go binary). Override via VULPINEOS_BROWSER_RELEASE.
+    # Fallback release for browser assets (CLI may come from a newer release
+    # that only has the Go binary). Override via VULPINEOS_BROWSER_RELEASE.
     : "${VULPINEOS_BROWSER_RELEASE:=v0.1.4}"
 
     local goos goarch browser_os browser_arch bin_dir asset_env
@@ -401,7 +420,7 @@ main() {
 
     mkdir -p "${VULPINEOS_HOME}" "${bin_dir}"
 
-    # Resolve release assets (needed for Camoufox browser, optionally for CLI fallback)
+    # Resolve release assets (needed for the browser, optionally for CLI fallback)
     asset_env="$(resolve_release_assets "${goos}" "${goarch}" "${browser_os}" "${browser_arch}")"
     eval "${asset_env}"
 

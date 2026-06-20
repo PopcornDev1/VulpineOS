@@ -16,10 +16,16 @@ import (
 )
 
 func camoufoxBinary() string {
+	if b := os.Getenv("VULPINE_BROWSER_BINARY"); b != "" {
+		return b
+	}
 	if b := os.Getenv("CAMOUFOX_BINARY"); b != "" {
 		return b
 	}
 	candidates := []string{
+		filepath.Join(os.Getenv("HOME"), "Downloads", "Vulpine.app", "Contents", "MacOS", "vulpine"),
+		"/Applications/Vulpine.app/Contents/MacOS/vulpine",
+		"/Applications/vulpine.app/Contents/MacOS/vulpine",
 		filepath.Join(os.Getenv("HOME"), "Downloads", "Camoufox.app", "Contents", "MacOS", "camoufox"),
 		"/Applications/Camoufox.app/Contents/MacOS/camoufox",
 		"/Applications/camoufox.app/Contents/MacOS/camoufox",
@@ -42,7 +48,7 @@ func requireLiveKernelBinary(t *testing.T) string {
 	}
 	bin := camoufoxBinary()
 	if bin == "" {
-		t.Skip("camoufox binary not found")
+		t.Skip("Vulpine browser binary not found")
 	}
 	return bin
 }
@@ -70,6 +76,34 @@ func TestBinaryLocatorPrefersRepoLocalBuild(t *testing.T) {
 	mustWriteExecutable(t, repoBinary)
 	mustWriteExecutable(t, repoFallbackBinary)
 	mustWriteExecutable(t, downloadsBinary)
+
+	locator := binaryLocator{
+		execPath: execPath,
+		cwd:      root,
+		home:     home,
+		goos:     "darwin",
+		lookPath: func(string) (string, error) { return "", os.ErrNotExist },
+	}
+
+	resolved, err := locator.Resolve("")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved != repoBinary {
+		t.Fatalf("Resolve = %q, want %q", resolved, repoBinary)
+	}
+}
+
+func TestBinaryLocatorPrefersRepoLocalVulpineAppBuild(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	execPath := filepath.Join(root, "bin", "vulpineos")
+	repoBinary := filepath.Join(root, "camoufox-146.0.1-beta.25", "obj-aarch64-apple-darwin", "dist", "Vulpine.app", "Contents", "MacOS", "vulpine")
+	repoFallbackBinary := filepath.Join(root, "camoufox-146.0.1-beta.25", "obj-aarch64-apple-darwin", "dist", "bin", "vulpine")
+
+	mustWriteExecutable(t, execPath)
+	mustWriteExecutable(t, repoBinary)
+	mustWriteExecutable(t, repoFallbackBinary)
 
 	locator := binaryLocator{
 		execPath: execPath,
@@ -166,6 +200,64 @@ func TestBinaryLocatorResolvesRequestedAppBundleDirectory(t *testing.T) {
 	}
 	if resolved != appBinary {
 		t.Fatalf("Resolve(%q) = %q, want %q", appBundle, resolved, appBinary)
+	}
+}
+
+func TestBinaryLocatorResolvesRequestedVulpineAppBundleDirectory(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	execPath := filepath.Join(root, "bin", "vulpineos")
+	appBundle := filepath.Join(root, "Vulpine.app")
+	appBinary := filepath.Join(appBundle, "Contents", "MacOS", "vulpine")
+
+	mustWriteExecutable(t, execPath)
+	mustWriteExecutable(t, appBinary)
+
+	locator := binaryLocator{
+		execPath: execPath,
+		cwd:      root,
+		home:     home,
+		goos:     "darwin",
+		lookPath: func(string) (string, error) { return "", os.ErrNotExist },
+	}
+
+	resolved, err := locator.Resolve(appBundle)
+	if err != nil {
+		t.Fatalf("Resolve(%q): %v", appBundle, err)
+	}
+	if resolved != appBinary {
+		t.Fatalf("Resolve(%q) = %q, want %q", appBundle, resolved, appBinary)
+	}
+}
+
+func TestBinaryLocatorResolvesVulpineOnPath(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	execPath := filepath.Join(root, "bin", "vulpineos")
+	pathBinary := filepath.Join(root, "path", "vulpine")
+
+	mustWriteExecutable(t, execPath)
+	mustWriteExecutable(t, pathBinary)
+
+	locator := binaryLocator{
+		execPath: execPath,
+		cwd:      filepath.Join(root, "empty"),
+		home:     home,
+		goos:     "linux",
+		lookPath: func(name string) (string, error) {
+			if name == "vulpine" {
+				return pathBinary, nil
+			}
+			return "", os.ErrNotExist
+		},
+	}
+
+	resolved, err := locator.Resolve("")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved != pathBinary {
+		t.Fatalf("Resolve = %q, want %q", resolved, pathBinary)
 	}
 }
 

@@ -1,5 +1,5 @@
 ---
-name: Camoufox compatibility issue
+name: Vulpine browser compatibility issue
 about: Report a website compatibility issue
 title: ''
 labels: compatibility
@@ -17,7 +17,7 @@ If applicable, add screenshots to help explain your problem.
 
 ### To Reproduce:
 
-Send a testing site that reproduces the issue, and a snippet of your script. Provide your `Camoufox()` or `AsyncCamoufox()` initialization.
+Send a testing site that reproduces the issue, plus the VulpineOS command or browser-launch configuration you used.
 
 ### Other questions:
 
@@ -41,4 +41,4 @@ These questions will help me diagnose the issue:
 
 ### Version:
 
-Run `python -m camoufox version` in your terminal and paste the output here.
+Run `vulpineos --version` and include the browser bundle version or release asset name you installed.
