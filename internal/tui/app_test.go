@@ -3524,6 +3524,32 @@ func TestEventNoticeRearmsEventPump(t *testing.T) {
 	}
 }
 
+func TestEventNoticeUsesAgentNameInsteadOfID(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, nil, nil)
+	defer app.stopForwarders()
+	app.eventCh <- shared.TickMsg{}
+	app.agentList.SetAgents([]vault.Agent{{
+		ID:   "agent-123456",
+		Name: "Researcher",
+	}})
+
+	model, cmd := app.Update(eventNotice{
+		text:    "WARNING rate_limit: retry storm on agent agent-123456",
+		agentID: "agent-123456",
+	})
+	app = model.(App)
+
+	if strings.Contains(app.notice, "agent-123456") {
+		t.Fatalf("notice = %q, want agent name instead of raw ID", app.notice)
+	}
+	if !strings.Contains(app.notice, "Researcher") {
+		t.Fatalf("notice = %q, want agent name", app.notice)
+	}
+	if cmd == nil {
+		t.Fatal("event notice did not return a wait command")
+	}
+}
+
 func TestTrustWarmMsgShowsNoticeAndRearmsEventPump(t *testing.T) {
 	app := NewApp(nil, nil, nil, nil, nil, nil)
 	defer app.stopForwarders()

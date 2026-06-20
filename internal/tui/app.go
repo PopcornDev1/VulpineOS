@@ -97,7 +97,8 @@ type browserAllWindow interface {
 // eventNotice is delivered through the event channel and must re-arm
 // waitForEvent after it is displayed.
 type eventNotice struct {
-	text string
+	text    string
+	agentID string
 }
 
 type remoteStatusMsg struct {
@@ -532,18 +533,18 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 					if !ok {
 						return
 					}
-				emitEvent(shared.AgentStatusMsg{
-					AgentID:      status.AgentID,
-					ParentID:     status.ParentID,
-					ContextID:    status.ContextID,
-					Status:       status.Status,
-					Objective:    status.Objective,
-					Tokens:       status.Tokens,
-					Phase:        status.Phase,
-					Turn:         status.Turn,
-					MaxTurns:     status.MaxTurns,
-					LastActivity: status.LastActivity,
-				})
+					emitEvent(shared.AgentStatusMsg{
+						AgentID:      status.AgentID,
+						ParentID:     status.ParentID,
+						ContextID:    status.ContextID,
+						Status:       status.Status,
+						Objective:    status.Objective,
+						Tokens:       status.Tokens,
+						Phase:        status.Phase,
+						Turn:         status.Turn,
+						MaxTurns:     status.MaxTurns,
+						LastActivity: status.LastActivity,
+					})
 				}
 			}
 		}()
@@ -583,7 +584,10 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 				if !ok {
 					return
 				}
-				emitEvent(eventNotice{text: fmt.Sprintf("WARNING %s: %s on agent %s", alert.Type, alert.Details, alert.AgentID)})
+				emitEvent(eventNotice{
+					text:    fmt.Sprintf("WARNING %s: %s on agent %s", alert.Type, alert.Details, alert.AgentID),
+					agentID: alert.AgentID,
+				})
 			}
 		}
 	}()
@@ -1160,7 +1164,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.waitForEvent())
 
 	case eventNotice:
-		a.notice = msg.text
+		a.notice = a.noticeTextWithAgentName(msg.text, msg.agentID)
 		a.noticeTTL = 3
 		cmds = append(cmds, a.waitForEvent())
 
@@ -1640,6 +1644,30 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a, tea.Batch(cmds...)
+}
+
+func (a App) noticeTextWithAgentName(text, agentID string) string {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return text
+	}
+	display := a.agentDisplayName(agentID)
+	if display == "" || display == agentID {
+		return text
+	}
+	return strings.ReplaceAll(text, agentID, display)
+}
+
+func (a App) agentDisplayName(agentID string) string {
+	if item, ok := a.agentList.Agent(agentID); ok && strings.TrimSpace(item.Name) != "" {
+		return strings.TrimSpace(item.Name)
+	}
+	if a.vault != nil {
+		if agent, err := a.vault.GetAgent(agentID); err == nil && agent != nil && strings.TrimSpace(agent.Name) != "" {
+			return strings.TrimSpace(agent.Name)
+		}
+	}
+	return agentID
 }
 
 // updateNameInput handles keystrokes in "new-agent-name" mode.
