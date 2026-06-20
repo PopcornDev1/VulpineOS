@@ -1000,11 +1000,7 @@ func (m Model) getDisplayLines() []string {
 				}
 			}
 		case "assistant":
-			// Agent messages: colored marker based on content type
-			marker := shared.RunningStyle.Render("◆ ") // green for normal
-			if isBrowserAction(e.Content) {
-				marker = shared.WarmingStyle.Render("◆ ") // amber for browser actions
-			}
+			marker := shared.RunningStyle.Render("◆ ")
 			for j, line := range lines {
 				if j == 0 {
 					rendered = append(rendered, marker+line)
@@ -1054,23 +1050,6 @@ func (m Model) getDisplayLines() []string {
 		rendered = append(rendered, shared.MutedStyle.Render("No action trace yet."))
 	}
 	return rendered
-}
-
-// isBrowserAction checks if a message describes a browser action.
-func isBrowserAction(content string) bool {
-	lower := strings.ToLower(content)
-	actions := []string{
-		"navigat", "click", "screenshot", "scroll",
-		"typing", "type ", "typed", "browser",
-		"page.goto", "page.click", "vulpine_",
-		"opening", "loading", "visited",
-	}
-	for _, a := range actions {
-		if strings.Contains(lower, a) {
-			return true
-		}
-	}
-	return false
 }
 
 // renderLines returns display lines (for scroll calculation).

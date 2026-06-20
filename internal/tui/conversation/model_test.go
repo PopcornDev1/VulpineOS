@@ -98,6 +98,25 @@ func TestTraceOnlyShowsPlaceholderWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestAssistantCapabilityTextUsesNormalReplyMarker(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	m := New()
+	m.SetSize(80, 20)
+	m.SetAgentID("agent-1")
+	m.SetAwake(true)
+	m.AddEntry("assistant", "I can browse websites, click buttons, scroll pages, and use browser tools.")
+
+	lines := strings.Join(m.getDisplayLines(), "\n")
+	if strings.Contains(lines, "245;158;11") {
+		t.Fatalf("assistant capability text should not use amber browser-action marker:\n%q", lines)
+	}
+	if !strings.Contains(lines, "16;185;129") {
+		t.Fatalf("assistant capability text should use green normal reply marker:\n%q", lines)
+	}
+}
+
 func TestNoAgentViewDoesNotShowCreateInstructions(t *testing.T) {
 	m := New()
 	m.SetSize(80, 20)
