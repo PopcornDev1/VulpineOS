@@ -98,6 +98,13 @@ func TestBrowserBuildConfigUsesVulpineExecutableName(t *testing.T) {
 	if !strings.Contains(compilePatch, `imply_option("MOZ_APP_PROFILE", "vulpine")`) {
 		t.Fatal("compile-time browser profile name should be vulpine")
 	}
+	mozconfig := readRepoFile(t, "assets/base.mozconfig")
+	if !strings.Contains(mozconfig, "ac_add_options --with-app-name=vulpine") {
+		t.Fatal("base mozconfig should build the browser executable as vulpine")
+	}
+	if strings.Contains(mozconfig, "ac_add_options --with-app-name=camoufox") {
+		t.Fatal("base mozconfig still forces the legacy camoufox executable name")
+	}
 }
 
 func TestRootPackageDeclaresBenchmarkAndHelperScripts(t *testing.T) {
