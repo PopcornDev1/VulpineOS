@@ -450,12 +450,7 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 	var lastResourceCount string
 	var networkIdleCount int
 	var domStableCount int
-	var lastState struct {
-		ReadyState    string `json:"readyState"`
-		BodyLen       int    `json:"bodyLen"`
-		ResourceCount int    `json:"resourceCount"`
-		URL           string `json:"url"`
-	}
+	var lastState navigationPageState
 	var sawUsable bool
 	var firstUsableAt time.Time
 	var usablePolls int
@@ -468,7 +463,9 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 				readyState: document.readyState,
 				bodyLen: document.body ? document.body.innerHTML.length : 0,
 				resourceCount: rc,
-				url: window.location.href
+				url: window.location.href,
+				title: document.title || "",
+				bodyText: document.body ? (document.body.innerText || document.body.textContent || "").slice(0, 1000) : ""
 			});
 		})()`
 		result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
@@ -477,14 +474,12 @@ func handlePageSettled(client *juggler.Client, tracker *ContextTracker, args jso
 			continue
 		}
 
-		var state struct {
-			ReadyState    string `json:"readyState"`
-			BodyLen       int    `json:"bodyLen"`
-			ResourceCount int    `json:"resourceCount"`
-			URL           string `json:"url"`
-		}
+		var state navigationPageState
 		json.Unmarshal([]byte(result), &state)
 		lastState = state
+		if msg := browserErrorPageMessage(state); msg != "" {
+			return errorResult(fmt.Errorf("%s", msg)), nil
+		}
 
 		usable := (state.ReadyState == "complete" || state.ReadyState == "interactive") && state.BodyLen > 0
 		if !usable {
@@ -666,11 +661,25 @@ func handleGetPageInfo(client *juggler.Client, tracker *ContextTracker, args jso
 		focusedTag: document.activeElement ? document.activeElement.tagName.toLowerCase() : null,
 		focusedType: document.activeElement ? document.activeElement.type : null,
 		alerts: 0,
+		bodyText: document.body ? (document.body.innerText || document.body.textContent || "").slice(0, 1000) : ""
 	})`
 
 	result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 	if err != nil {
 		return errorResult(err), nil
+	}
+	var state navigationPageState
+	if err := json.Unmarshal([]byte(result), &state); err == nil {
+		if msg := browserErrorPageMessage(state); msg != "" {
+			return errorResult(fmt.Errorf("%s", msg)), nil
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(result), &payload); err == nil {
+			delete(payload, "bodyText")
+			if sanitized, err := json.Marshal(payload); err == nil {
+				result = string(sanitized)
+			}
+		}
 	}
 
 	return textResult(result), nil

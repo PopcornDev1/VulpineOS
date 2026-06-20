@@ -647,6 +647,8 @@ type navigationPageState struct {
 	BodyLen       int    `json:"bodyLen"`
 	ResourceCount int    `json:"resourceCount"`
 	URL           string `json:"url"`
+	Title         string `json:"title"`
+	BodyText      string `json:"bodyText"`
 }
 
 func isAllowedSpecialNavigationURL(normalizedURL string) bool {
@@ -668,6 +670,13 @@ func waitForNavigationUsable(client *juggler.Client, tracker *ContextTracker, se
 		if err == nil {
 			lastState = state
 			haveState = true
+			if msg := browserErrorPageMessage(state); msg != "" {
+				if navigationStateURLMatchesTarget(state.URL, targetURL) {
+					return fmt.Errorf("%s", msg)
+				}
+				time.Sleep(navigateVerificationPollInterval)
+				continue
+			}
 			if navigationPageStateUsable(state) {
 				return nil
 			}
@@ -699,7 +708,9 @@ func currentNavigationPageState(client *juggler.Client, tracker *ContextTracker,
 			readyState: document.readyState,
 			bodyLen: document.body ? document.body.innerHTML.length : 0,
 			resourceCount: rc,
-			url: window.location.href
+			url: window.location.href,
+			title: document.title || "",
+			bodyText: document.body ? (document.body.innerText || document.body.textContent || "").slice(0, 1000) : ""
 		});
 	})()`
 	var (
@@ -743,10 +754,79 @@ func navigationPageStateUsable(state navigationPageState) bool {
 	if state.URL == "" || strings.EqualFold(state.URL, "about:blank") {
 		return false
 	}
+	if browserErrorPageMessage(state) != "" {
+		return false
+	}
 	if state.ReadyState != "complete" && state.ReadyState != "interactive" {
 		return false
 	}
 	return state.BodyLen > 0
+}
+
+func browserErrorPageMessage(state navigationPageState) string {
+	lowerURL := strings.ToLower(state.URL)
+	lowerTitle := strings.ToLower(strings.TrimSpace(state.Title))
+	body := strings.TrimSpace(state.BodyText)
+	lowerBody := strings.ToLower(body)
+
+	isErrorPage := strings.Contains(lowerURL, "about:neterror") ||
+		strings.Contains(lowerURL, "about:certerror") ||
+		lowerTitle == "problem loading page" ||
+		strings.Contains(lowerBody, "secure connection failed") ||
+		strings.Contains(lowerBody, "server not found") ||
+		strings.Contains(lowerBody, "unable to connect") ||
+		strings.Contains(lowerBody, "connection timed out")
+	if !isErrorPage {
+		return ""
+	}
+
+	code := firefoxErrorCode(body)
+	detail := fmt.Sprintf("browser error page loaded for %s", state.URL)
+	if state.Title != "" {
+		detail += fmt.Sprintf(" (title=%q", state.Title)
+		if code != "" {
+			detail += fmt.Sprintf(", code=%s", code)
+		}
+		detail += ")"
+	} else if code != "" {
+		detail += fmt.Sprintf(" (code=%s)", code)
+	}
+	return detail
+}
+
+func navigationStateURLMatchesTarget(stateURL, targetURL string) bool {
+	stateURL = strings.TrimRight(strings.ToLower(strings.TrimSpace(stateURL)), "/")
+	targetURL = strings.TrimRight(strings.ToLower(strings.TrimSpace(targetURL)), "/")
+	if stateURL == "" || targetURL == "" {
+		return false
+	}
+	return stateURL == targetURL
+}
+
+func firefoxErrorCode(text string) string {
+	upper := strings.ToUpper(text)
+	for _, code := range []string{
+		"PR_CONNECT_RESET_ERROR",
+		"PR_END_OF_FILE_ERROR",
+		"SSL_ERROR",
+		"SEC_ERROR",
+		"MOZILLA_PKIX_ERROR",
+		"NS_ERROR",
+	} {
+		if idx := strings.Index(upper, code); idx >= 0 {
+			end := idx + len(code)
+			for end < len(upper) {
+				ch := upper[end]
+				if (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' {
+					end++
+					continue
+				}
+				break
+			}
+			return upper[idx:end]
+		}
+	}
+	return ""
 }
 
 func isFrameIDRequiredError(err error) bool {

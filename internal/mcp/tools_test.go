@@ -184,6 +184,103 @@ func TestHandleSnapshotFallsBackToAXOnOptimizedDOMProtocolError(t *testing.T) {
 	}
 }
 
+func TestHandleNavigateRejectsFirefoxNetworkErrorPage(t *testing.T) {
+	oldTimeout := navigateVerificationTimeout
+	oldPoll := navigateVerificationPollInterval
+	navigateVerificationTimeout = 50 * time.Millisecond
+	navigateVerificationPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		navigateVerificationTimeout = oldTimeout
+		navigateVerificationPollInterval = oldPoll
+	})
+
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Page.navigate", map[string]any{"navigationId": "nav-1"})
+	transport.RespondFunc("Runtime.evaluate", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		state := `{"readyState":"complete","bodyLen":5821,"resourceCount":0,"url":"https://overpoweredjs.com/","title":"Problem loading page","bodyText":"Secure Connection Failed PR_CONNECT_RESET_ERROR"}`
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": state},
+		})
+		if err != nil {
+			t.Fatalf("marshal eval result: %v", err)
+		}
+		return data, nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+	tracker.mu.Lock()
+	tracker.contexts["session-neterror"] = &SessionContext{
+		ExecutionContextID: "exec-neterror",
+		FrameID:            "frame-neterror",
+	}
+	tracker.mu.Unlock()
+
+	result, err := handleNavigate(client, tracker, json.RawMessage(`{"sessionId":"session-neterror","url":"https://overpoweredjs.com/"}`))
+	if err != nil {
+		t.Fatalf("handleNavigate returned dispatch error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("Firefox network error page should be a tool error, got %#v", result)
+	}
+	if got := result.Content[0].Text; !strings.Contains(got, "browser error page") || !strings.Contains(got, "PR_CONNECT_RESET_ERROR") {
+		t.Fatalf("navigate error = %q, want browser error with code", got)
+	}
+}
+
+func TestHandleNavigateIgnoresStaleNetworkErrorFromPreviousURL(t *testing.T) {
+	oldTimeout := navigateVerificationTimeout
+	oldPoll := navigateVerificationPollInterval
+	navigateVerificationTimeout = 200 * time.Millisecond
+	navigateVerificationPollInterval = time.Millisecond
+	t.Cleanup(func() {
+		navigateVerificationTimeout = oldTimeout
+		navigateVerificationPollInterval = oldPoll
+	})
+
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Page.navigate", map[string]any{"navigationId": "nav-1"})
+	evalCalls := 0
+	transport.RespondFunc("Runtime.evaluate", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		evalCalls++
+		state := `{"readyState":"complete","bodyLen":5821,"resourceCount":0,"url":"https://overpoweredjs.com/","title":"Problem loading page","bodyText":"Secure Connection Failed PR_CONNECT_RESET_ERROR"}`
+		if evalCalls > 2 {
+			state = `{"readyState":"complete","bodyLen":1200,"resourceCount":3,"url":"https://bot.sannysoft.com/","title":"Antibot","bodyText":"Intoli.com tests + additions"}`
+		}
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": state},
+		})
+		if err != nil {
+			t.Fatalf("marshal eval result: %v", err)
+		}
+		return data, nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+	tracker.mu.Lock()
+	tracker.contexts["session-stale-neterror"] = &SessionContext{
+		ExecutionContextID: "exec-stale",
+		FrameID:            "frame-stale",
+	}
+	tracker.mu.Unlock()
+
+	result, err := handleNavigate(client, tracker, json.RawMessage(`{"sessionId":"session-stale-neterror","url":"https://bot.sannysoft.com/"}`))
+	if err != nil {
+		t.Fatalf("handleNavigate returned dispatch error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("stale previous network error should not fail new navigation, got %#v", result)
+	}
+	if got := result.Content[0].Text; !strings.Contains(got, "Navigated to https://bot.sannysoft.com/") {
+		t.Fatalf("navigate text = %q", got)
+	}
+}
+
 func TestToolSchemaRefTools(t *testing.T) {
 	toolList := tools()
 	toolMap := make(map[string]ToolDefinition)

@@ -361,3 +361,63 @@ func TestHandlePageSettledIgnoresResourceChurnWhenDOMStable(t *testing.T) {
 		t.Fatalf("page_settled text = %q, want settled", got)
 	}
 }
+
+func TestHandlePageSettledRejectsFirefoxNetworkErrorPage(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondFunc("Runtime.evaluate", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		state := `{"readyState":"complete","bodyLen":5821,"resourceCount":0,"url":"https://overpoweredjs.com/","title":"Problem loading page","bodyText":"Secure Connection Failed PR_CONNECT_RESET_ERROR"}`
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": state},
+		})
+		if err != nil {
+			t.Fatalf("marshal eval result: %v", err)
+		}
+		return data, nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handlePageSettled(client, tracker, json.RawMessage(`{"sessionId":"session-neterror","timeout":1}`))
+	if err != nil {
+		t.Fatalf("handlePageSettled returned dispatch error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("Firefox network error page should be a tool error, got %#v", result)
+	}
+	if got := result.Content[0].Text; !strings.Contains(got, "browser error page") || !strings.Contains(got, "PR_CONNECT_RESET_ERROR") {
+		t.Fatalf("page_settled error = %q, want browser error with code", got)
+	}
+}
+
+func TestHandlePageInfoRejectsFirefoxNetworkErrorPage(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondFunc("Runtime.evaluate", func(*juggler.Message) (json.RawMessage, *juggler.Error) {
+		state := `{"url":"https://overpoweredjs.com/","title":"Problem loading page","readyState":"complete","bodyLen":5821,"bodyText":"Secure Connection Failed PR_CONNECT_RESET_ERROR","scrollY":0}`
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": state},
+		})
+		if err != nil {
+			t.Fatalf("marshal eval result: %v", err)
+		}
+		return data, nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleGetPageInfo(client, tracker, json.RawMessage(`{"sessionId":"session-neterror"}`))
+	if err != nil {
+		t.Fatalf("handleGetPageInfo returned dispatch error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("Firefox network error page should be a page_info tool error, got %#v", result)
+	}
+	if got := result.Content[0].Text; !strings.Contains(got, "browser error page") || !strings.Contains(got, "PR_CONNECT_RESET_ERROR") {
+		t.Fatalf("page_info error = %q, want browser error with code", got)
+	}
+}
