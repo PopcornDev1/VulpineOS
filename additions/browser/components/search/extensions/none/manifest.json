@@ -1,6 +1,6 @@
 {
   "name": "None",
-  "description": "Camoufox is not designed for manual use.",
+  "description": "Vulpine is designed for VulpineOS agent runtime use.",
   "manifest_version": 2,
   "version": "1",
   "browser_specific_settings": {

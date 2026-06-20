@@ -49,6 +49,29 @@ func TestShortInstallURLDocumented(t *testing.T) {
 	}
 }
 
+func TestBrowserVisibleBrandingUsesVulpine(t *testing.T) {
+	userFacingBrandFiles := []string{
+		"additions/browser/branding/camoufox/configure.sh",
+		"additions/browser/branding/camoufox/locales/en-US/brand.ftl",
+		"additions/browser/branding/camoufox/locales/en-US/brand.properties",
+		"additions/browser/branding/camoufox/locales/en-US/brand.dtd",
+		"additions/browser/base/content/aboutDialog.xhtml",
+		"additions/browser/locales/en-US/chrome/overrides/appstrings.properties",
+		"additions/browser/components/search/extensions/none/manifest.json",
+		"patches/librewolf/disable-data-reporting-at-compile-time.patch",
+		"patches/windows-theming-bug-modified.patch",
+	}
+	for _, name := range userFacingBrandFiles {
+		content := readRepoFile(t, name)
+		if !strings.Contains(content, "Vulpine") {
+			t.Fatalf("%s should use the Vulpine browser brand", name)
+		}
+		if strings.Contains(content, "Camoufox") {
+			t.Fatalf("%s still exposes the old Camoufox user-facing brand", name)
+		}
+	}
+}
+
 func TestRootPackageDeclaresBenchmarkAndHelperScripts(t *testing.T) {
 	var pkg struct {
 		Scripts         map[string]string `json:"scripts"`

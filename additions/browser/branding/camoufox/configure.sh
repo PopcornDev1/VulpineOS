@@ -6,6 +6,6 @@
 # See patches/librewolf/disable-data-reporting-at-compile-time.patch
 
 MOZ_APP_NAME=camoufox
-MOZ_APP_BASENAME=Camoufox
-MOZ_APP_DISPLAYNAME=Camoufox
+MOZ_APP_BASENAME=Vulpine
+MOZ_APP_DISPLAYNAME=Vulpine
 MOZ_APP_REMOTINGNAME=camoufox

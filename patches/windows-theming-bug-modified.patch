@@ -29,11 +29,11 @@ index 995b2fc869..4a03da3064 100644
          version="1.0.0.0"
          processorArchitecture="*"
 -        name="Firefox"
-+        name="Camoufox"
++        name="Vulpine"
          type="win32"
  />
 -<description>Firefox</description>
-+<description>Camoufox</description>
++<description>Vulpine</description>
  <dependency>
          <dependentAssembly>
                  <assemblyIdentity
