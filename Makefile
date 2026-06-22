@@ -237,7 +237,9 @@ unbusy:
 		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/vulpine \
 		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
 		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox \
-		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/launch
+		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/launch \
+		"$(cf_source_dir)/obj-aarch64-apple-darwin/dist/Vulpine.app/Contents/MacOS/gpu-helper.app/Contents/MacOS/Camoufox GPU Helper" \
+		"$(cf_source_dir)/obj-aarch64-apple-darwin/dist/Vulpine.app/Contents/MacOS/media-plugin-helper.app/Contents/MacOS/Camoufox Media Plugin Helper"
 
 path:
 	@realpath $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/vulpine-bin

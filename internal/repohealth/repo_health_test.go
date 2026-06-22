@@ -107,6 +107,23 @@ func TestBrowserBuildConfigUsesVulpineExecutableName(t *testing.T) {
 	}
 }
 
+func TestMacPackagingStripsLegacyHelperExecutables(t *testing.T) {
+	packageScript := readRepoFile(t, "scripts/package.py")
+	for _, want := range []string{
+		"MACOS_HELPER_EXECUTABLES",
+		"Camoufox GPU Helper",
+		"Vulpine GPU Helper",
+		"Camoufox Media Plugin Helper",
+		"Vulpine Media Plugin Helper",
+		"os.remove(old_helper)",
+		"helper_plist['CFBundleExecutable'] = new_name",
+	} {
+		if !strings.Contains(packageScript, want) {
+			t.Fatalf("scripts/package.py missing mac helper packaging contract %q", want)
+		}
+	}
+}
+
 func TestRootPackageDeclaresBenchmarkAndHelperScripts(t *testing.T) {
 	var pkg struct {
 		Scripts         map[string]string `json:"scripts"`

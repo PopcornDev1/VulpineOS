@@ -15,6 +15,10 @@ from _mixin import find_src_dir, get_moz_target, list_files, run, temp_cd
 UNNEEDED_PATHS = {'uninstall', 'pingsender.exe', 'pingsender', 'vaapitest', 'glxtest'}
 APP_BUNDLE_NAMES = ('Vulpine.app', 'Camoufox.app')
 BROWSER_PACKAGE_PREFIXES = ('vulpine', 'camoufox')
+MACOS_HELPER_EXECUTABLES = (
+    ('gpu-helper.app', 'Camoufox GPU Helper', 'Vulpine GPU Helper'),
+    ('media-plugin-helper.app', 'Camoufox Media Plugin Helper', 'Vulpine Media Plugin Helper'),
+)
 
 
 def extract_macos_dmg(package_file, temp_dir):
@@ -67,6 +71,24 @@ def normalize_macos_app_bundle(app_path):
         plist['CFBundleDisplayName'] = 'Vulpine'
         with open(plist_path, 'wb') as f:
             plistlib.dump(plist, f)
+
+    for helper_bundle, old_name, new_name in MACOS_HELPER_EXECUTABLES:
+        helper_macos_dir = os.path.join(macos_dir, helper_bundle, 'Contents', 'MacOS')
+        old_helper = os.path.join(helper_macos_dir, old_name)
+        new_helper = os.path.join(helper_macos_dir, new_name)
+        if os.path.exists(old_helper) and not os.path.exists(new_helper):
+            os.rename(old_helper, new_helper)
+        elif os.path.exists(old_helper):
+            os.remove(old_helper)
+
+        helper_plist_path = os.path.join(macos_dir, helper_bundle, 'Contents', 'Info.plist')
+        if os.path.exists(helper_plist_path):
+            with open(helper_plist_path, 'rb') as f:
+                helper_plist = plistlib.load(f)
+            if os.path.exists(new_helper):
+                helper_plist['CFBundleExecutable'] = new_name
+            with open(helper_plist_path, 'wb') as f:
+                plistlib.dump(helper_plist, f)
 
 
 def normalize_flat_browser_names(target_dir):
