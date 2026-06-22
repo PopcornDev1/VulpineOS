@@ -12,25 +12,46 @@ index e5bda9f62c..f8988a4430 100644
        queryContext.searchString.length > UrlbarUtils.MAX_TEXT_LENGTH ||
        lazy.UrlUtils.REGEXP_LIKE_PROTOCOL.test(queryContext.searchString) ||
 diff --git a/toolkit/components/search/SearchEngineSelector.sys.mjs b/toolkit/components/search/SearchEngineSelector.sys.mjs
-index 85c9d83282..15cfeac054 100644
+index 85c9d83282..c67dc08866 100644
 --- a/toolkit/components/search/SearchEngineSelector.sys.mjs
 +++ b/toolkit/components/search/SearchEngineSelector.sys.mjs
-@@ -331,6 +331,21 @@ export class SearchEngineSelector {
+@@ -331,6 +331,42 @@ export class SearchEngineSelector {
     *   could be obtained.
     */
    async #getConfiguration(firstTime = true) {
 +    if (true) {
 +      return [
 +        {
-+          "appliesTo": [{
-+            "default": "yes",
-+            "included": {
-+              "everywhere": true
++          id: "vulpine-none-engine",
++          recordType: "engine",
++          identifier: "none",
++          base: {
++            classification: "unknown",
++            name: "None",
++            urls: {
++              search: {
++                base: "http://127.0.0.1/",
++                searchTermParamName: "q",
++              },
 +            },
-+            "webExtension": {
-+              "id": "none@mozilla.org"
-+            }
-+          }],
++          },
++          variants: [{ environment: { allRegionsAndLocales: true } }],
++        },
++        {
++          id: "vulpine-default-engines",
++          recordType: "defaultEngines",
++          globalDefault: "none",
++          specificDefaults: [],
++        },
++        {
++          id: "vulpine-engine-orders",
++          recordType: "engineOrders",
++          orders: [],
++        },
++        {
++          id: "vulpine-available-locales",
++          recordType: "availableLocales",
++          locales: ["en-US"],
 +        },
 +      ];
 +    }

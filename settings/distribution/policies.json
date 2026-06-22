@@ -67,17 +67,7 @@
         "Twitter",
         "Wikipedia (en)"
       ],
-      "Default": "None",
-      "Add": [
-        {
-          "Name": "None",
-          "Description": "None",
-          "Alias": "",
-          "Method": "POST",
-          "URLTemplate": "http://127.0.0.1",
-          "PostData": ""
-        }
-      ]
+      "Default": "None"
     }
   }
 }

@@ -124,6 +124,45 @@ func TestMacPackagingStripsLegacyHelperExecutables(t *testing.T) {
 	}
 }
 
+func TestNoSearchEnginesPatchUsesSearchConfigV2Records(t *testing.T) {
+	patch := readRepoFile(t, "patches/no-search-engines.patch")
+	for _, want := range []string{
+		`recordType: "engine"`,
+		`identifier: "none"`,
+		`recordType: "defaultEngines"`,
+		`globalDefault: "none"`,
+		`recordType: "engineOrders"`,
+		`recordType: "availableLocales"`,
+	} {
+		if !strings.Contains(patch, want) {
+			t.Fatalf("patches/no-search-engines.patch missing search-config-v2 contract %q", want)
+		}
+	}
+	for _, legacy := range []string{`"appliesTo"`, `none@mozilla.org`} {
+		if strings.Contains(patch, legacy) {
+			t.Fatalf("patches/no-search-engines.patch still contains legacy invalid search config shape %q", legacy)
+		}
+	}
+}
+
+func TestDistributionPolicyDoesNotDuplicateNoneSearchEngine(t *testing.T) {
+	var policy struct {
+		Policies struct {
+			SearchEngines map[string]any `json:"SearchEngines"`
+		} `json:"policies"`
+	}
+	if err := json.Unmarshal([]byte(readRepoFile(t, "settings/distribution/policies.json")), &policy); err != nil {
+		t.Fatalf("parse settings/distribution/policies.json: %v", err)
+	}
+	searchEngines := policy.Policies.SearchEngines
+	if searchEngines["Default"] != "None" {
+		t.Fatalf("SearchEngines.Default should remain None, got %#v", searchEngines["Default"])
+	}
+	if _, ok := searchEngines["Add"]; ok {
+		t.Fatal("SearchEngines.Add must not add a duplicate None engine; the no-search patch supplies the inert v2 engine")
+	}
+}
+
 func TestRootPackageDeclaresBenchmarkAndHelperScripts(t *testing.T) {
 	var pkg struct {
 		Scripts         map[string]string `json:"scripts"`
