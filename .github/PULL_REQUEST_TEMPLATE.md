@@ -33,5 +33,5 @@ Please submit a report from both the service tester and build tester.
 - [ ] I have linked a related issue above
 - [ ] My changes are focused on a single logical change
 - [ ] I have added testing instructions which include the desired result
-- [ ] I have included a fingerprint report from https://camoufox-tester.vercel.app/
-- [ ] Service tests pass (`bash service-tester/run_tests.sh`)
+- [ ] I have included build-tester/service-tester output when changing browser or fingerprint behavior
+- [ ] Service tests pass (`bash service-tester/run_tests.sh`) when the Python/browser package path is changed

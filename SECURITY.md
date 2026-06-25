@@ -26,7 +26,6 @@ current public key.
 - The companion repositories: `VulpineOS/foxbridge`, `VulpineOS/vulpine-mark`,
   `VulpineOS/mobilebridge`, `VulpineOS/vulpineos-docs`.
 - The web surfaces: `vulpineos.com`, `auth.vulpineos.com`, `admin.vulpineos.com`.
-- The Vulpine RenderLab consent + diagnostics flow.
 
 ## Out of scope
 
@@ -73,4 +72,4 @@ escalation paths.
 
 We support the **latest published release** on the `main` branch. Older
 tagged releases do not receive security backports unless an issue is
-deemed critical and the upstream Camoufox / Firefox fix is available.
+deemed critical and the upstream Vulpine browser / Firefox fix is available.

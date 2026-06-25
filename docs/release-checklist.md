@@ -27,6 +27,8 @@ candidates.
 
    - [README.md](../README.md)
    - [docs/release-hygiene.md](release-hygiene.md)
+   - `VulpineOS/vulpineos-docs`
+   - `VulpineOS/.github` organization profile README
    - any public docs pages or examples changed by the release
 
 ## Verification

@@ -131,7 +131,7 @@ Recommended flow:
 6. Validate locally against the produced browser binary with:
 
 ```bash
-CAMOUFOX_BINARY=/absolute/path/to/camoufox VULPINEOS_RUN_LIVE=1 go test ./internal -run TestIntegration_AnnotatedScreenshotReturnsClickableObject -count=1 -v
+VULPINE_BROWSER_BINARY=/absolute/path/to/vulpine VULPINEOS_RUN_LIVE=1 go test ./internal -run TestIntegration_AnnotatedScreenshotReturnsClickableObject -count=1 -v
 ```
 
 7. Record the builder host, git SHA, artifact path, and validation result in the

@@ -1,6 +1,6 @@
-# Firefox 146 Build and Runtime Testing
+# Firefox 146 Vulpine Browser Build and Runtime Testing
 
-VulpineOS is based on Firefox 146.0.1 with Camoufox patches. Use this guide to rebuild the browser, point the Go runtime at the rebuilt binary, and package the current launch artifact.
+VulpineOS is based on Firefox 146.0.1 with Vulpine browser patches inherited from the Camoufox line. Use this guide to rebuild the browser, point the Go runtime at the rebuilt binary, and package the current launch artifact.
 
 ## Build From Source
 
@@ -24,7 +24,7 @@ Use the target that matches the machine doing the build:
 Build artifacts are written under the extracted Firefox source tree, for example:
 
 ```text
-camoufox-146.0.1-beta.25/obj-aarch64-apple-darwin/dist/Camoufox.app/Contents/MacOS/camoufox
+camoufox-146.0.1-beta.25/obj-aarch64-apple-darwin/dist/Vulpine.app/Contents/MacOS/vulpine
 ```
 
 ## Runtime Smoke Test
@@ -33,18 +33,18 @@ Build the VulpineOS runtime and pass the browser binary explicitly:
 
 ```bash
 go build -o vulpineos ./cmd/vulpineos
-./vulpineos --binary /path/to/camoufox
+./vulpineos --binary /path/to/vulpine
 ```
 
 Useful local commands:
 
 ```bash
-./vulpineos --listen --port 8443 --api-key devtest --binary /path/to/camoufox
-./vulpineos serve --no-tls --port 8443 --api-key devtest --binary /path/to/camoufox
+./vulpineos --listen --port 8443 --api-key devtest --binary /path/to/vulpine
+./vulpineos serve --no-tls --port 8443 --api-key devtest --binary /path/to/vulpine
 ./vulpineos remote --url http://127.0.0.1:8443 --api-key devtest
 ```
 
-When no `--binary` flag is provided, VulpineOS prefers a repo-local `camoufox-*/obj-*/dist` build before falling back to configured or installed browser paths. Passing `--binary` is still recommended for launch validation because it removes ambiguity.
+When no `--binary` flag is provided, VulpineOS prefers a repo-local `camoufox-*/obj-*/dist` source build before falling back to configured or installed browser paths. The extracted source directory still uses the upstream Camoufox naming convention, but packaged executables are branded as Vulpine. Passing `--binary` is still recommended for launch validation because it removes ambiguity.
 
 ## Packaging
 
@@ -59,17 +59,17 @@ The macOS package step uses native `hdiutil`/`ditto` on macOS and falls back to 
 For Vulpine-Box Docker builds, provide a Linux browser artifact before building the container:
 
 ```text
-dist/camoufox-linux/camoufox
+dist/vulpine-linux/vulpine
 ```
 
 The stock container launches:
 
 ```bash
-vulpineos serve --binary ./browser/camoufox --port 8443 --no-tls
+vulpineos serve --binary ./browser/vulpine --port 8443 --no-tls
 ```
 
 Set `VULPINE_API_KEY` before using `docker compose up -d`.
 
 ## Do Not Replace Python Cache Binaries
 
-Older Camoufox testing docs described replacing binaries inside the Python package cache. For VulpineOS validation, do not mutate the cache. Pass the exact browser path to `vulpineos --binary`, or place the Linux artifact in `dist/camoufox-linux/` for Docker packaging.
+Older Camoufox testing docs described replacing binaries inside the Python package cache. For VulpineOS validation, do not mutate the cache. Pass the exact browser path to `vulpineos --binary`, or place the Linux artifact in `dist/vulpine-linux/` for Docker packaging.
