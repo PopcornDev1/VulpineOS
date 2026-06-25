@@ -35,6 +35,7 @@ set -e
 
 FINISHED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
+set +e
 python3 - "${LOG_FILE}" "${JSON_FILE}" "${ITERATIONS}" "${STARTED_AT}" "${FINISHED_AT}" "${START_EPOCH}" "${TEST_EXIT}" <<'PY'
 import json
 import pathlib
@@ -71,14 +72,22 @@ artifact = {
     "duration_seconds": round(time.time() - start_epoch, 3),
     "iterations_requested": iterations,
     "iterations_completed": len(results),
-    "status": "passed" if exit_code == 0 else "failed",
+    "status": "passed" if exit_code == 0 and len(results) == iterations else "failed",
     "exit_code": exit_code,
     "log_file": str(log_path),
     "results": results,
 }
 
 json_path.write_text(json.dumps(artifact, indent=2) + "\n")
+if artifact["status"] != "passed":
+    sys.exit(1)
 PY
+ARTIFACT_EXIT="$?"
+set -e
 
 echo "Wrote soak artifact to ${JSON_FILE}"
+if [[ "${ARTIFACT_EXIT}" -ne 0 && "${TEST_EXIT}" -eq 0 ]]; then
+  echo "Soak artifact validation failed: expected ${ITERATIONS} result lines"
+  exit "${ARTIFACT_EXIT}"
+fi
 exit "${TEST_EXIT}"

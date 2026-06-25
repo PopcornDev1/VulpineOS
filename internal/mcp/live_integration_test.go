@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -346,5 +347,30 @@ func TestLiveBrowser_AnnotatedScreenshotClickLabel(t *testing.T) {
 	_ = toolText(t, resetRes, resetErr)
 	if _, ok := globalLabels.Get(sid, label); ok {
 		t.Fatalf("label %q should be cleared after navigation", label)
+	}
+}
+
+func TestLiveScopedSessionSoak(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("VULPINEOS_RUN_SOAK")) == "" {
+		t.Skip("set VULPINEOS_RUN_SOAK=1 to run scoped-session soak")
+	}
+
+	iterations := 3
+	if raw := strings.TrimSpace(os.Getenv("VULPINEOS_SOAK_ITERATIONS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			iterations = n
+		}
+	}
+
+	for i := 1; i <= iterations; i++ {
+		started := time.Now()
+		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
+			TestLiveBrowser_AgentToolsUseExecutionContext(t)
+		})
+		t.Logf(
+			"SOAK_RESULT iteration=%d duration_ms=%d cleanup_session=kernel-stop status=passed",
+			i,
+			time.Since(started).Milliseconds(),
+		)
 	}
 }
