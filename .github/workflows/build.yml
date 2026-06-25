@@ -6,9 +6,6 @@ on:
     tags:
       - "*"
 
-env:
-  CAMOUFOX_REPO: daijro/camoufox
-
 jobs:
   cli:
     name: VulpineOS CLI (${{ matrix.goos }}-${{ matrix.goarch }})
@@ -54,132 +51,8 @@ jobs:
           name: VulpineOSCLI-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/${{ matrix.asset }}
 
-  browser:
-    name: Vulpine Browser (${{ matrix.target }}-${{ matrix.arch }})
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - target: linux
-            arch: x86_64
-            plat: lin
-          - target: linux
-            arch: arm64
-            plat: lin
-          - target: macos
-            arch: x86_64
-            plat: mac
-          - target: macos
-            arch: arm64
-            plat: mac
-
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
-
-      - name: Get latest upstream browser release info
-        id: camrel
-        run: |
-          API="https://api.github.com/repos/${{ env.CAMOUFOX_REPO }}/releases/latest"
-          TAG=$(curl -s "$API" | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
-          VNUM="${TAG#v}"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "version=$VNUM" >> $GITHUB_OUTPUT
-
-      - name: Download upstream browser binary
-        run: |
-          PATTERN="camoufox-*-${{ matrix.plat }}.${{ matrix.arch }}.zip"
-          API="https://api.github.com/repos/${{ env.CAMOUFOX_REPO }}/releases/tags/${{ steps.camrel.outputs.tag }}"
-          URL=$(curl -s "$API" | python3 -c "
-          import sys, json, fnmatch
-          data = json.load(sys.stdin)
-          for a in data.get('assets', []):
-              if fnmatch.fnmatch(a['name'], '$PATTERN'):
-                  print(a['browser_download_url'])
-                  break
-          ")
-          if [ -z "$URL" ]; then
-            echo "ERROR: No asset matching '$PATTERN' found in ${{ steps.camrel.outputs.tag }}"
-            exit 1
-          fi
-          echo "Downloading $URL"
-          curl -sL -o camoufox.zip "$URL"
-
-      - name: Extract and apply VulpineOS additions
-        run: |
-          mkdir -p dist tmp-extract
-          unzip -q camoufox.zip -d tmp-extract
-
-          # Determine extraction layout
-          if [ "${{ matrix.target }}" = "macos" ]; then
-            # macOS: Vulpine.app bundle, with fallback for upstream Camoufox archives.
-            if [ -d "tmp-extract/Vulpine.app" ]; then
-              APP="tmp-extract/Vulpine.app"
-            else
-              mv "tmp-extract/Camoufox.app" "tmp-extract/Vulpine.app"
-              APP="tmp-extract/Vulpine.app"
-            fi
-            if [ -f "$APP/Contents/MacOS/camoufox" ] && [ ! -f "$APP/Contents/MacOS/vulpine" ]; then
-              mv "$APP/Contents/MacOS/camoufox" "$APP/Contents/MacOS/vulpine"
-            fi
-            python3 - "$APP/Contents/Info.plist" "$APP/Contents/MacOS/vulpine" <<'PY'
-import plistlib
-import os
-import sys
-
-path, vulpine_binary = sys.argv[1:]
-with open(path, "rb") as f:
-    plist = plistlib.load(f)
-if os.path.exists(vulpine_binary):
-    plist["CFBundleExecutable"] = "vulpine"
-plist["CFBundleName"] = "Vulpine"
-plist["CFBundleDisplayName"] = "Vulpine"
-with open(path, "wb") as f:
-    plistlib.dump(plist, f)
-PY
-            RES="$APP/Contents/Resources"
-            cp -v settings/camoufox.cfg "$RES/camoufox.cfg"
-            cp -v settings/chrome.css "$RES/chrome.css"
-            cp -v settings/properties.json "$RES/properties.json"
-            mkdir -p "$RES/distribution"
-            cp -v settings/distribution/policies.json "$RES/distribution/policies.json"
-            mkdir -p "$RES/defaults/pref"
-            cp -v settings/defaults/pref/local-settings.js "$RES/defaults/pref/local-settings.js"
-          else
-            # Linux: flat extraction
-            if [ -f "tmp-extract/camoufox" ] && [ ! -f "tmp-extract/vulpine" ]; then
-              cp -p "tmp-extract/camoufox" "tmp-extract/vulpine"
-            fi
-            if [ -f "tmp-extract/camoufox-bin" ] && [ ! -f "tmp-extract/vulpine-bin" ]; then
-              cp -p "tmp-extract/camoufox-bin" "tmp-extract/vulpine-bin"
-            fi
-            cp -v settings/camoufox.cfg "tmp-extract/camoufox.cfg"
-            cp -v settings/chrome.css "tmp-extract/chrome.css"
-            cp -v settings/properties.json "tmp-extract/properties.json"
-            mkdir -p "tmp-extract/distribution"
-            cp -v settings/distribution/policies.json "tmp-extract/distribution/policies.json"
-            mkdir -p "tmp-extract/defaults/pref"
-            cp -v settings/defaults/pref/local-settings.js "tmp-extract/defaults/pref/local-settings.js"
-          fi
-
-      - name: Repackage
-        run: |
-          VERSION="${{ steps.camrel.outputs.version }}"
-          ASSET_NAME="vulpine-$VERSION-${{ matrix.plat }}.${{ matrix.arch }}"
-          cd tmp-extract
-          zip -r "../dist/$ASSET_NAME.zip" .
-          cd ..
-          ls -lh "dist/$ASSET_NAME.zip"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: VulpineBrowser-${{ matrix.target }}-${{ matrix.arch }}
-          path: dist/*
-
   release:
-    needs: [cli, browser]
+    needs: [cli]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -206,12 +79,23 @@ PY
           (root / "SHA256SUMS").write_text("\n".join(entries) + "\n")
           PY
 
+      - name: Browser artifact gate
+        run: |
+          echo "Trusted browser artifacts are uploaded manually before publishing."
+          echo "This workflow does not build or rewrap browser packages."
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: artifacts/**/*
           generate_release_notes: true
+          body: |
+            Trusted browser artifacts are uploaded manually before publishing.
+
+            Do not publish this draft until the Vulpine browser packages built
+            from this repository's trusted builder path have been attached and
+            SHA256SUMS has been refreshed to cover every shipped file.
           draft: true
           prerelease: false
         env:

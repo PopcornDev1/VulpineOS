@@ -103,9 +103,15 @@ Record each expected artifact before drafting a public release:
 URL `https://vulpineos.com/install` should serve or redirect to this script. It
 requires the CLI asset name `vulpineos-<goos>-<goarch>` and a browser asset matching
 `vulpine-*-<lin|mac>.<x86_64|arm64>.zip` for the installer's current platform.
-The `Build and Release` workflow builds the CLI matrix, uploads the browser
-packages from `multibuild.py`, creates `SHA256SUMS`, and drafts the tagged
-GitHub release with all installer assets attached.
+The `Build and Release` workflow builds the CLI matrix, creates checksums for
+those CLI assets, and drafts the tagged GitHub release. The workflow does not build or rewrap browser packages.
+
+Upload trusted browser artifacts manually before publishing the draft release.
+Those artifacts must come from `make package-*`, `multibuild.py`, or the EC2 Mac
+builder path documented above, not from renamed upstream browser archives. After
+uploading the browser zips, refresh `SHA256SUMS` so it covers every shipped file.
+Do not publish the draft release until the full asset matrix and checksums are
+present.
 
 ## Packaging
 

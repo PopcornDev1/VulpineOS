@@ -33,7 +33,7 @@ help:
 	@echo "  package-macos   - Package Vulpine for macOS"
 	@echo "  package-windows - Package Vulpine for Windows"
 	@echo "  run             - Run Vulpine"
-	@echo "  edit-cfg        - Edit camoufox.cfg"
+	@echo "  edit-cfg        - Edit vulpine.cfg"
 	@echo "  ff-dbg          - Setup vanilla Firefox with minimal patches"
 	@echo "  patch           - Apply a patch"
 	@echo "  unpatch         - Remove a patch"
@@ -192,11 +192,11 @@ run:
 	&& CAMOU_CONFIG="$${CAMOU_CONFIG%?}, \"debug\": true}" ./mach run $(args)
 
 edit-cfg:
-	@if [ ! -f $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox.cfg ]; then \
-		echo "Error: camoufox.cfg not found. Apply config.patch first."; \
+	@if [ ! -f $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/vulpine.cfg ]; then \
+		echo "Error: vulpine.cfg not found. Apply config.patch first."; \
 		exit 1; \
 	fi
-	$(EDITOR) $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox.cfg
+	$(EDITOR) $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/vulpine.cfg
 
 check-arg:
 	@if [ -z "$(_ARGS)" ]; then \

@@ -24,6 +24,7 @@ EXCLUDE_SPECS = [
     ":(exclude)scripts/public-boundary-audit.sh",
     ":(exclude)scripts/public-history-audit.py",
     ":(glob,exclude)**/node_modules/**",
+    ":(glob,exclude)**/vendor/**",
     ":(glob,exclude)**/dist/**",
     ":(glob,exclude)**/build/**",
     ":(glob,exclude)**/.next/**",
@@ -77,6 +78,99 @@ DIFF_PATTERNS = [
     ),
 ]
 
+KNOWN_DIFF_HISTORY_FINDINGS = {
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "4fa51e3107bae4fab9c6e0339c445043f3536545",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "8348293b4c9b0221e129b2d7e9258787f1856ba0",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "22398d3476c796d91260fc6588c0c2a5ec942dc9",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "33c0a7b51a105a5c868adfab037f0a2908b1a915",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "c2aa90fa985f0c79f812062bea018d2542feb435",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "e5d8b934c8461b8298020a648bd919eeb66fe035",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "4c541522a749ba0f723be55cbce6400192ba8981",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "2fc4c4f105fe22d32045907a8716f687cb320e2a",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "88743c0b5f166def7554d3c8a6767e4d4b701f91",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "f38e5eceb446fbee36d04dc4a258ffbebabb8633",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "f2eed2a5946b68c63cfd3e681a3a71cfc3864a6a",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "36212ffa5488fbb87eacc2c9eba4d3f74bc7e1a7",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "3092fd279bd96043c072e4178e9e51b3fd1dbf15",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "727f69480d2063d8b1b42d54518b261f03c0085d",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "macOS absolute path",
+        "2f669b136646ae17ba398d53cab4fcb698213e5c",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "Linux absolute path",
+        "6f56cebe42820e3ac7182357c00283f83066d107",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "Linux absolute path",
+        "261bedd0eab892e351cb033714dc40042eab9c30",
+    ): "reviewed historical absolute path removal",
+    (
+        "VulpineOS",
+        "Linux absolute path",
+        "2c9d59f8e0564022d79fdea34e86403d26f547a9",
+    ): "reviewed historical absolute path removal",
+}
+
 
 def run(repo: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -91,6 +185,10 @@ def print_fail(message: str, details: str | None = None) -> None:
     print(f"FAIL: {message}")
     if details:
         print(details.rstrip())
+
+
+def known_diff_history_finding(name: str, description: str, commit: str) -> str | None:
+    return KNOWN_DIFF_HISTORY_FINDINGS.get((name, description, commit))
 
 
 def audit_commit_messages(name: str, repo: Path) -> int:
@@ -176,9 +274,12 @@ def audit_diff_history(name: str, repo: Path) -> int:
                 break
             if not strict_regex.search(show_proc.stdout):
                 continue
+            if reason := known_diff_history_finding(name, description, commit):
+                print(f"INFO: {name}: allowing {description} in {commit} ({reason})")
+                continue
             print_fail(f"{name}: diff history matched {description}", commit)
             failures += 1
-            break
+            continue
     return failures
 
 

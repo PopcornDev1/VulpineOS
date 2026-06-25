@@ -100,6 +100,20 @@ def normalize_flat_browser_names(target_dir):
             shutil.copy2(old_path, new_path)
 
 
+def cleanup_stale_browser_packages(dist_dir, version, release, file_ext):
+    """Remove previous package outputs so a fresh run cannot pick a stale archive."""
+    patterns = [
+        f'vulpine-{version}-{release}.*.{file_ext}',
+        f'camoufox-{version}-{release}.*.{file_ext}',
+    ]
+    for pattern in patterns:
+        for path in glob.glob(os.path.join(dist_dir, pattern)):
+            if 'xpt_artifacts' in path or 'update_framework_artifacts' in path:
+                continue
+            print(f'Removing stale package: {path}')
+            os.remove(path)
+
+
 def add_includes_to_package(package_file, includes, fonts, new_file, target):
     new_file = os.path.abspath(new_file)
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -247,6 +261,8 @@ def main():
     src_dir = find_src_dir('.', args.version, args.release)
     moz_target = get_moz_target(target=args.os, arch=args.arch)
     with temp_cd(src_dir):
+        dist_dir = os.path.abspath(f'obj-{moz_target}/dist')
+        cleanup_stale_browser_packages(dist_dir, args.version, args.release, file_ext)
         # Create package files
         run('./mach package')
         # Find package files

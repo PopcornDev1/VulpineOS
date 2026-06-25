@@ -25,6 +25,7 @@ public_repo_names=(
 exclude_specs=(
   ":(exclude)go.sum"
   ":(glob,exclude)**/node_modules/**"
+  ":(glob,exclude)**/vendor/**"
   ":(glob,exclude)**/dist/**"
   ":(glob,exclude)**/build/**"
   ":(glob,exclude)**/.next/**"

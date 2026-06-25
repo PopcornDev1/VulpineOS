@@ -107,6 +107,26 @@ func TestBrowserBuildConfigUsesVulpineExecutableName(t *testing.T) {
 	}
 }
 
+func TestBrowserAutoconfigResourceUsesVulpineName(t *testing.T) {
+	localSettings := readRepoFile(t, "settings/defaults/pref/local-settings.js")
+	if !strings.Contains(localSettings, `pref("general.config.filename", "vulpine.cfg");`) {
+		t.Fatal("browser autoconfig should load vulpine.cfg")
+	}
+
+	for _, name := range []string{
+		"patches/config.patch",
+		"scripts/copy-additions.sh",
+	} {
+		content := readRepoFile(t, name)
+		if !strings.Contains(content, "vulpine.cfg") {
+			t.Fatalf("%s should package vulpine.cfg", name)
+		}
+		if strings.Contains(content, "camoufox.cfg") {
+			t.Fatalf("%s should not package the legacy camoufox.cfg resource name", name)
+		}
+	}
+}
+
 func TestMacPackagingStripsLegacyHelperExecutables(t *testing.T) {
 	packageScript := readRepoFile(t, "scripts/package.py")
 	for _, want := range []string{
@@ -120,6 +140,20 @@ func TestMacPackagingStripsLegacyHelperExecutables(t *testing.T) {
 	} {
 		if !strings.Contains(packageScript, want) {
 			t.Fatalf("scripts/package.py missing mac helper packaging contract %q", want)
+		}
+	}
+}
+
+func TestPackagingCleansStaleLegacyBrowserPackages(t *testing.T) {
+	packageScript := readRepoFile(t, "scripts/package.py")
+	for _, want := range []string{
+		"cleanup_stale_browser_packages",
+		"glob.glob(os.path.join(dist_dir, pattern))",
+		"os.remove(path)",
+		"camoufox-{version}-{release}",
+	} {
+		if !strings.Contains(packageScript, want) {
+			t.Fatalf("scripts/package.py missing stale package cleanup contract %q", want)
 		}
 	}
 }
@@ -160,6 +194,62 @@ func TestDistributionPolicyDoesNotDuplicateNoneSearchEngine(t *testing.T) {
 	}
 	if _, ok := searchEngines["Add"]; ok {
 		t.Fatal("SearchEngines.Add must not add a duplicate None engine; the no-search patch supplies the inert v2 engine")
+	}
+}
+
+func TestReleaseWorkflowDoesNotRewrapUpstreamBrowser(t *testing.T) {
+	workflow := readRepoFile(t, ".github/workflows/build.yml")
+	for _, forbidden := range []string{
+		"CAMOUFOX_REPO",
+		"daijro/camoufox",
+		"Download upstream browser binary",
+		"camoufox.zip",
+		"camoufox-*-${{ matrix.plat }}.${{ matrix.arch }}.zip",
+	} {
+		if strings.Contains(workflow, forbidden) {
+			t.Fatalf("release workflow must not rewrap upstream browser assets; found %q", forbidden)
+		}
+	}
+	for _, want := range []string{
+		"VulpineOS CLI",
+		"Upload CLI artifact",
+		"Create checksums",
+		"Trusted browser artifacts are uploaded manually before publishing",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("release workflow missing trusted release contract %q", want)
+		}
+	}
+}
+
+func TestReleaseChecklistMatchesTrustedBrowserArtifactFlow(t *testing.T) {
+	checklist := readRepoFile(t, "docs/release-checklist.md")
+	for _, want := range []string{
+		"does not build or rewrap browser packages",
+		"Upload trusted browser artifacts manually",
+		"Do not publish the draft release until",
+	} {
+		if !strings.Contains(checklist, want) {
+			t.Fatalf("release checklist missing browser artifact gate %q", want)
+		}
+	}
+}
+
+func TestPublicHistoryAuditAllowlistsReviewedHistoricalPaths(t *testing.T) {
+	audit := readRepoFile(t, "scripts/public-history-audit.py")
+	for _, want := range []string{
+		"KNOWN_DIFF_HISTORY_FINDINGS",
+		`":(glob,exclude)**/vendor/**"`,
+		"36212ffa5488fbb87eacc2c9eba4d3f74bc7e1a7",
+		"3092fd279bd96043c072e4178e9e51b3fd1dbf15",
+		"6f56cebe42820e3ac7182357c00283f83066d107",
+		"2f669b136646ae17ba398d53cab4fcb698213e5c",
+		"2c9d59f8e0564022d79fdea34e86403d26f547a9",
+		"reviewed historical absolute path removal",
+	} {
+		if !strings.Contains(audit, want) {
+			t.Fatalf("public history audit missing reviewed finding contract %q", want)
+		}
 	}
 }
 
