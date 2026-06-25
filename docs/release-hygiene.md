@@ -20,7 +20,7 @@ The audit scans the tracked files in these public repos:
 It checks for:
 
 - references to `.claude/private-docs`
-- references to private repos (`vulpine-private`, `vulpine-api`)
+- references to internal/private repo names
 - real local absolute paths
 - high-confidence secret tokens
 - unsafe `upstream` push configuration

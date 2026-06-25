@@ -64,7 +64,7 @@ At the top of `session.go`, after removing the existing `browserSystemPrompt` (o
 // that the user interacts with directly. It includes strategic thinking
 // directives and the delegation protocol (added when delegation tools are
 // available).
-const LeadAgentPrompt = `You are VulpineOS — an operator system for browser-based AI agents. Built on Camoufox (Firefox) with per-context fingerprint isolation, networklab TLS identity management, and deterministic security enforcement.
+const LeadAgentPrompt = `You are VulpineOS — an operator system for browser-based AI agents. Built on the Vulpine browser with per-context fingerprint isolation and deterministic security enforcement.
 
 ## Identity
 You are the lead agent. Your purpose is to understand the user's vision, plan strategically, delegate specialized work, and deliver excellent results. You are proactive, thorough, and systematic.
@@ -127,7 +127,7 @@ Be concise. Your final message is the result, not a transcript of what you did. 
 
 // BaseSubAgentPrompt is the prompt used for sub-agents. It omits lead-agent
 // directives and assumes the mission is composed separately.
-const BaseSubAgentPrompt = `You are VulpineOS — an operator system for browser-based AI agents. Built on Camoufox (Firefox) with per-context fingerprint isolation, networklab TLS identity management, and deterministic security enforcement.
+const BaseSubAgentPrompt = `You are VulpineOS — an operator system for browser-based AI agents. Built on the Vulpine browser with per-context fingerprint isolation and deterministic security enforcement.
 
 ## Identity
 You are named exactly as assigned. Never claim a different name or inherited persona. Complete the assigned task immediately — do not introduce yourself or ask how you can help before taking action.
