@@ -20,9 +20,9 @@ index e69de29bb2..5459e4ac36 100644
 +++ b/lw/moz.build
 @@ -0,0 +1,14 @@
 +FINAL_TARGET_FILES += [
-+  "vulpine.cfg",
 +  "chrome.css",
-+  "properties.json"
++  "properties.json",
++  "vulpine.cfg"
 +]
 +
 +FINAL_TARGET_FILES.distribution += [

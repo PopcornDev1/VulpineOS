@@ -127,6 +127,48 @@ func TestBrowserAutoconfigResourceUsesVulpineName(t *testing.T) {
 	}
 }
 
+func TestBrowserConfigPatchKeepsFinalTargetFilesSorted(t *testing.T) {
+	patch := readRepoFile(t, "patches/config.patch")
+	want := `+FINAL_TARGET_FILES += [
++  "chrome.css",
++  "properties.json",
++  "vulpine.cfg"
++]`
+	if !strings.Contains(patch, want) {
+		t.Fatal("patches/config.patch should add sorted FINAL_TARGET_FILES entries for lw/moz.build")
+	}
+}
+
+func TestSecureInputWebIDLPatchAnchorsInChromeExtensionBlock(t *testing.T) {
+	patch := readRepoFile(t, "patches/local_secure_input.patch")
+	if !strings.Contains(patch, "@@ -191,7 +191,11 @@") {
+		t.Fatal("secure input WebIDL patch should have hunk counts that include the following context line")
+	}
+	want := `readonly attribute DOMString lastInteractiveValue;
++
++  // VulpineOS: Secure value injection for browser chrome.
++  [ChromeOnly]
++  undefined secureSetValue(DOMString value);`
+	if !strings.Contains(patch, want) {
+		t.Fatal("secure input WebIDL patch should anchor secureSetValue in the ChromeOnly HTMLInputElement extension block")
+	}
+	if strings.Contains(patch, `Func="Document::IsCallerChromeOrAddon"`) {
+		t.Fatal("secureSetValue should be ChromeOnly, not add-on callable")
+	}
+}
+
+func TestPatchScriptFailsOnNonZeroPatchExit(t *testing.T) {
+	script := readRepoFile(t, "scripts/patch.py")
+	for _, want := range []string{
+		"result.returncode != 0",
+		"patch command exited with status",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("scripts/patch.py should fail closed when patch exits nonzero; missing %q", want)
+		}
+	}
+}
+
 func TestMacPackagingStripsLegacyHelperExecutables(t *testing.T) {
 	packageScript := readRepoFile(t, "scripts/package.py")
 	for _, want := range []string{
