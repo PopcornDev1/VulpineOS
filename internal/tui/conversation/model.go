@@ -1566,9 +1566,6 @@ var (
 		"#7C3AED", // medium purple
 		"#5B21B6", // dark purple
 	}
-	reBold           = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	reItalic         = regexp.MustCompile(`\*(.+?)\*`)
-	reCode           = regexp.MustCompile("`([^`]+)`")
 	reTaskList       = regexp.MustCompile(`^\s*[-*]\s+\[([ xX])\]\s+(.+)$`)
 	reBullet         = regexp.MustCompile(`^\s*[-*]\s+(.+)$`)
 	reNumbered       = regexp.MustCompile(`^\s*(\d+)[.)]\s+(.+)$`)
@@ -1626,9 +1623,7 @@ func renderMarkdownLine(line string, maxWidth int) []string {
 	}
 
 	var out []string
-	for _, wrapped := range wordWrap(line, maxWidth) {
-		out = append(out, applyInlineMarkdown(wrapped))
-	}
+	out = append(out, renderInlineMarkdownWrapped(line, maxWidth)...)
 	return out
 }
 
@@ -1640,14 +1635,14 @@ func renderPrefixedMarkdown(text string, maxWidth int, firstPrefix, nextPrefix s
 	if width < 1 {
 		width = 1
 	}
-	wrapped := wordWrap(text, width)
+	wrapped := renderInlineMarkdownWrapped(text, width)
 	out := make([]string, 0, len(wrapped))
 	for i, wrappedLine := range wrapped {
 		prefix := nextPrefix
 		if i == 0 {
 			prefix = firstPrefix
 		}
-		out = append(out, shared.MutedStyle.Render(prefix)+applyInlineMarkdown(wrappedLine))
+		out = append(out, shared.MutedStyle.Render(prefix)+wrappedLine)
 	}
 	return out
 }
@@ -1829,23 +1824,186 @@ func renderTableSeparator(widths []int) string {
 }
 
 func applyInlineMarkdown(line string) string {
-	boldStyle := lipgloss.NewStyle().Bold(true)
-	italicStyle := lipgloss.NewStyle().Italic(true)
-	codeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA"))
+	return renderInlineCells(parseInlineMarkdownCells(line))
+}
 
-	styled := reBold.ReplaceAllStringFunc(line, func(m string) string {
-		inner := m[2 : len(m)-2]
-		return boldStyle.Render(inner)
-	})
-	styled = reCode.ReplaceAllStringFunc(styled, func(m string) string {
-		inner := m[1 : len(m)-1]
-		return codeStyle.Render(inner)
-	})
-	styled = reItalic.ReplaceAllStringFunc(styled, func(m string) string {
-		inner := m[1 : len(m)-1]
-		return italicStyle.Render(inner)
-	})
-	return styled
+type inlineStyleKind int
+
+const (
+	inlineStylePlain inlineStyleKind = iota
+	inlineStyleBold
+	inlineStyleItalic
+	inlineStyleCode
+)
+
+type inlineCell struct {
+	r     rune
+	style inlineStyleKind
+}
+
+func renderInlineMarkdownWrapped(text string, maxWidth int) []string {
+	wrapped := wrapInlineCells(parseInlineMarkdownCells(text), maxWidth)
+	out := make([]string, 0, len(wrapped))
+	for _, line := range wrapped {
+		out = append(out, renderInlineCells(line))
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
+}
+
+func parseInlineMarkdownCells(line string) []inlineCell {
+	cells := make([]inlineCell, 0, utf8.RuneCountInString(line))
+	for i := 0; i < len(line); {
+		if strings.HasPrefix(line[i:], "`") {
+			if end := strings.Index(line[i+1:], "`"); end >= 0 {
+				cells = appendInlineCells(cells, line[i+1:i+1+end], inlineStyleCode)
+				i += end + 2
+				continue
+			}
+		}
+		if strings.HasPrefix(line[i:], "**") {
+			if end := strings.Index(line[i+2:], "**"); end >= 0 {
+				cells = appendInlineCells(cells, line[i+2:i+2+end], inlineStyleBold)
+				i += end + 4
+				continue
+			}
+		}
+		if line[i] == '*' {
+			if end := closingItalicMarker(line, i+1); end >= 0 {
+				cells = appendInlineCells(cells, line[i+1:end], inlineStyleItalic)
+				i = end + 1
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		cells = append(cells, inlineCell{r: r})
+		i += size
+	}
+	return cells
+}
+
+func closingItalicMarker(line string, start int) int {
+	for i := start; i < len(line); i++ {
+		if line[i] != '*' {
+			continue
+		}
+		prevIsStar := i > 0 && line[i-1] == '*'
+		nextIsStar := i+1 < len(line) && line[i+1] == '*'
+		if !prevIsStar && !nextIsStar {
+			return i
+		}
+	}
+	return -1
+}
+
+func appendInlineCells(cells []inlineCell, text string, style inlineStyleKind) []inlineCell {
+	for _, r := range text {
+		cells = append(cells, inlineCell{r: r, style: style})
+	}
+	return cells
+}
+
+func wrapInlineCells(cells []inlineCell, maxWidth int) [][]inlineCell {
+	if maxWidth <= 0 {
+		return [][]inlineCell{cells}
+	}
+	if len(cells) == 0 {
+		return [][]inlineCell{{}}
+	}
+
+	var lines [][]inlineCell
+	var current []inlineCell
+	currentWidth := 0
+	for len(cells) > 0 {
+		cell := cells[0]
+		cellWidth := inlineCellWidth(cell)
+		if currentWidth+cellWidth > maxWidth && len(current) > 0 {
+			if split := lastInlineBreakSpace(current); split >= 0 {
+				lines = append(lines, current[:split])
+				current = trimLeadingInlineSpaces(current[split+1:])
+				currentWidth = inlineCellsWidth(current)
+				continue
+			}
+			lines = append(lines, current)
+			current = nil
+			currentWidth = 0
+			continue
+		}
+		current = append(current, cell)
+		currentWidth += cellWidth
+		cells = cells[1:]
+	}
+	lines = append(lines, current)
+	return lines
+}
+
+func inlineCellWidth(cell inlineCell) int {
+	width := runewidth.RuneWidth(cell.r)
+	if width < 0 {
+		return 0
+	}
+	return width
+}
+
+func inlineCellsWidth(cells []inlineCell) int {
+	width := 0
+	for _, cell := range cells {
+		width += inlineCellWidth(cell)
+	}
+	return width
+}
+
+func lastInlineBreakSpace(cells []inlineCell) int {
+	for i := len(cells) - 1; i >= 0; i-- {
+		if cells[i].r == ' ' {
+			return i
+		}
+	}
+	return -1
+}
+
+func trimLeadingInlineSpaces(cells []inlineCell) []inlineCell {
+	for len(cells) > 0 && cells[0].r == ' ' {
+		cells = cells[1:]
+	}
+	return cells
+}
+
+func renderInlineCells(cells []inlineCell) string {
+	var b strings.Builder
+	var plain strings.Builder
+	current := inlineStylePlain
+	flush := func() {
+		if plain.Len() == 0 {
+			return
+		}
+		b.WriteString(renderInlineText(plain.String(), current))
+		plain.Reset()
+	}
+	for _, cell := range cells {
+		if cell.style != current {
+			flush()
+			current = cell.style
+		}
+		plain.WriteRune(cell.r)
+	}
+	flush()
+	return b.String()
+}
+
+func renderInlineText(text string, style inlineStyleKind) string {
+	switch style {
+	case inlineStyleBold:
+		return lipgloss.NewStyle().Bold(true).Render(text)
+	case inlineStyleItalic:
+		return lipgloss.NewStyle().Italic(true).Render(text)
+	case inlineStyleCode:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA")).Render(text)
+	default:
+		return text
+	}
 }
 
 // ansiVisualWidth returns the visual width of a string, ignoring ANSI escape codes.

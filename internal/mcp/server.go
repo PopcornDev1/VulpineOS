@@ -61,13 +61,7 @@ func (s *Server) Close() {
 }
 
 func (s *Server) cleanupSession(sessionID string) {
-	if s.screenshots != nil {
-		s.screenshots.Delete(sessionID)
-	}
-	resetSnapshotProfile(sessionID)
-	if s.tracker != nil {
-		s.tracker.RemoveSession(sessionID)
-	}
+	cleanupToolSession(s.tracker, s.screenshots, sessionID)
 }
 
 // Run starts the MCP server loop, reading from stdin and writing to stdout.

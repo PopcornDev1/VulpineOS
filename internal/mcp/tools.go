@@ -130,7 +130,7 @@ func baseTools() []ToolDefinition {
 				Type: "object",
 				Properties: map[string]Property{
 					"sessionId": {Type: "string", Description: "Target page session ID"},
-					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7:0\", \"@7:1\")"},
+					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7\")"},
 				},
 				Required: []string{"sessionId", "ref"},
 			},
@@ -167,12 +167,12 @@ func baseTools() []ToolDefinition {
 		},
 		{
 			Name:        "vulpine_click_ref",
-			Description: "Click an element by its snapshot-scoped ref from the optimized DOM snapshot (e.g. @7:0, @7:1). Use vulpine_snapshot first to get refs. When verify is true, checks that the element is actually at the target coordinates before clicking.",
+			Description: "Click an element by its snapshot-scoped ref from the optimized DOM snapshot (e.g. @7). Use vulpine_snapshot first to get refs. When verify is true, checks that the element is actually at the target coordinates before clicking.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
 					"sessionId": {Type: "string", Description: "Target page session ID"},
-					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7:0\", \"@7:1\")"},
+					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7\")"},
 					"verify":    {Type: "boolean", Description: "If true, verify the element is actually at the resolved coordinates using elementFromPoint before clicking. Recommended for dynamic pages."},
 				},
 				Required: []string{"sessionId", "ref"},
@@ -185,7 +185,7 @@ func baseTools() []ToolDefinition {
 				Type: "object",
 				Properties: map[string]Property{
 					"sessionId": {Type: "string", Description: "Target page session ID"},
-					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7:0\", \"@7:1\")"},
+					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7\")"},
 					"text":      {Type: "string", Description: "Text to type into the element"},
 				},
 				Required: []string{"sessionId", "ref", "text"},
@@ -198,7 +198,7 @@ func baseTools() []ToolDefinition {
 				Type: "object",
 				Properties: map[string]Property{
 					"sessionId": {Type: "string", Description: "Target page session ID"},
-					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7:0\", \"@7:1\")"},
+					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7\")"},
 				},
 				Required: []string{"sessionId", "ref"},
 			},
@@ -210,7 +210,7 @@ func baseTools() []ToolDefinition {
 				Type: "object",
 				Properties: map[string]Property{
 					"sessionId": {Type: "string", Description: "Target page session ID"},
-					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7:0\", \"@7:1\")"},
+					"ref":       {Type: "string", Description: "Snapshot-scoped element reference from snapshot (e.g. \"@7\")"},
 				},
 				Required: []string{"sessionId", "ref"},
 			},
@@ -433,9 +433,16 @@ func (e *ToolExecutor) Call(ctx context.Context, name string, args json.RawMessa
 	return handleToolCallFull(ctx, e.client, e.tracker, e.screenshots, name, args)
 }
 
+func (e *ToolExecutor) CleanupSession(sessionID string) {
+	cleanupToolSession(e.tracker, e.screenshots, sessionID)
+}
+
 // Close releases the executor's tracker subscriptions.
 func (e *ToolExecutor) Close() {
 	if e.tracker != nil {
+		for _, sessionID := range e.tracker.Sessions() {
+			e.CleanupSession(sessionID)
+		}
 		e.tracker.Close()
 	}
 }
@@ -457,6 +464,21 @@ func (e *ToolExecutor) WaitForTrackerInit(sessionID string) error {
 // Tracker exposes the tracker for direct use by agentcore session setup.
 func (e *ToolExecutor) Tracker() *ContextTracker {
 	return e.tracker
+}
+
+func cleanupToolSession(tracker *ContextTracker, screenshots *ScreenshotTracker, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	if screenshots != nil {
+		screenshots.Delete(sessionID)
+	}
+	globalLabels.Clear(sessionID)
+	resetSnapshotProfile(sessionID)
+	clearSnapshotRefSummaries(sessionID)
+	if tracker != nil {
+		tracker.RemoveSession(sessionID)
+	}
 }
 
 // HandleToolCallDirect dispatches a tool call directly (for testing).
@@ -623,6 +645,7 @@ func handleNavigate(client *juggler.Client, tracker *ContextTracker, args json.R
 	// session so vulpine_click_label fails fast instead of clicking a
 	// stale handle that now points nowhere.
 	globalLabels.Clear(p.SessionID)
+	clearSnapshotRefSummaries(p.SessionID)
 	resetSnapshotProfile(p.SessionID)
 
 	if err := waitForNavigationUsable(client, tracker, p.SessionID, p.URL); err != nil {
@@ -908,7 +931,7 @@ func handleSnapshot(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 			}
 			return errorResult(fmt.Errorf("optimized DOM failed: %v; AX fallback failed: %w", err, axErr)), nil
 		}
-		return textResult(string(axResult)), nil
+		return snapshotTextResult(p.SessionID, axResult), nil
 	}
 
 	annotated, truncated, err := annotateSnapshotPayload(result, reportedProfile)
@@ -926,19 +949,19 @@ func handleSnapshot(client *juggler.Client, args json.RawMessage) (*ToolCallResu
 			if snapshot, ok := payload["snapshot"].(map[string]interface{}); ok {
 				nodes, ok := snapshot["nodes"].([]interface{})
 				if !ok {
-					return textResult(string(result)), nil
+					return snapshotTextResult(p.SessionID, result), nil
 				}
 				pruner := tokenopt.NewViewportPruner(1280, 720)
 				snapshot["nodes"] = pruner.Prune(nodes)
 				if pruned, err := json.Marshal(payload); err == nil {
-					return textResult(string(pruned)), nil
+					return snapshotTextResult(p.SessionID, pruned), nil
 				}
 			}
 		}
 		// Fall through to raw result if parsing/pruning fails
 	}
 
-	return textResult(string(result)), nil
+	return snapshotTextResult(p.SessionID, result), nil
 }
 
 func handleClick(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
@@ -1244,8 +1267,12 @@ func handleScrollIntoView(client *juggler.Client, tracker *ContextTracker, args 
 		containerInfo += "#" + res.ContainerID
 	}
 
-	return textResult(fmt.Sprintf("Scrolled ref %s into view at (%d, %d) via <%s> (scroll ΔY=%d, ΔX=%d)",
-		p.Ref, res.X, res.Y, containerInfo, res.ScrollDeltaY, res.ScrollDeltaX)), nil
+	target := snapshotRefActionTarget(p.SessionID, p.Ref)
+	if target == p.Ref {
+		target = "ref " + p.Ref
+	}
+	return textResult(fmt.Sprintf("Scrolled %s into view at (%d, %d) via <%s> (scroll ΔY=%d, ΔX=%d)",
+		target, res.X, res.Y, containerInfo, res.ScrollDeltaY, res.ScrollDeltaX)), nil
 }
 
 func handleNewContext(client *juggler.Client, args json.RawMessage) (*ToolCallResult, error) {
@@ -1341,11 +1368,7 @@ func handleCloseContext(client *juggler.Client, tracker *ContextTracker, screens
 
 	if tracker != nil {
 		for _, sessionID := range tracker.SessionsForContext(p.ContextID) {
-			tracker.RemoveSession(sessionID)
-			resetSnapshotProfile(sessionID)
-			if screenshots != nil {
-				screenshots.Delete(sessionID)
-			}
+			cleanupToolSession(tracker, screenshots, sessionID)
 		}
 	}
 
@@ -1600,7 +1623,7 @@ func handleClickRef(client *juggler.Client, tracker *ContextTracker, args json.R
 		return errorResult(err), nil
 	}
 
-	return textResult(fmt.Sprintf("Clicked %s at (%v, %v)", p.Ref, x, y)), nil
+	return textResult(fmt.Sprintf("Clicked %s at (%v, %v)", snapshotRefActionTarget(p.SessionID, p.Ref), x, y)), nil
 }
 
 func handleTypeRef(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
@@ -1644,7 +1667,7 @@ func handleTypeRef(client *juggler.Client, tracker *ContextTracker, args json.Ra
 		return errorResult(err), nil
 	}
 
-	return textResult(fmt.Sprintf("Typed %d characters into %s", len(p.Text), p.Ref)), nil
+	return textResult(fmt.Sprintf("Typed %d characters into %s", len(p.Text), snapshotRefActionTarget(p.SessionID, p.Ref))), nil
 }
 
 func handleHoverRef(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {
@@ -1673,7 +1696,7 @@ func handleHoverRef(client *juggler.Client, tracker *ContextTracker, args json.R
 		return errorResult(err), nil
 	}
 
-	return textResult(fmt.Sprintf("Hovered %s at (%v, %v)", p.Ref, x, y)), nil
+	return textResult(fmt.Sprintf("Hovered %s at (%v, %v)", snapshotRefActionTarget(p.SessionID, p.Ref), x, y)), nil
 }
 
 func handleElementStatus(client *juggler.Client, tracker *ContextTracker, args json.RawMessage) (*ToolCallResult, error) {

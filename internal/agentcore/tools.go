@@ -312,6 +312,7 @@ func (t *BrowserToolset) CloseExtraTabs() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_, err := t.client.CallWithContext(ctx, sid, "Page.close", map[string]interface{}{"runBeforeUnload": false})
 		cancel()
+		t.executor.CleanupSession(sid)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", sid, err))
 		}
@@ -955,6 +956,7 @@ func (t *BrowserToolset) closeTab(ctx context.Context, rawArgs string) (string, 
 	t.mu.Unlock()
 
 	_, _ = t.client.Call(sid, "Page.close", map[string]interface{}{"runBeforeUnload": false})
+	t.executor.CleanupSession(sid)
 	return fmt.Sprintf("Closed tab %d; %d tab(s) remain (active: tab %d)", idx+1, total, activeIdx), false, nil
 }
 

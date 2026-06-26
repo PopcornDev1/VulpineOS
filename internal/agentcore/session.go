@@ -95,7 +95,7 @@ A page is already open for you; you do not create or manage browser contexts. Th
 
 1. **Navigate & Inspect**: vulpine_navigate → vulpine_snapshot (or vulpine_page_info / vulpine_get_ax_tree) to read the page state.
 2. **Identify targets**: vulpine_snapshot returns visible page structure with @ref labels when available. Use vulpine_find to locate elements by selector or text.
-3. **Interact by ref**: vulpine_click_ref @e1, vulpine_type_ref @e2 "text", vulpine_hover_ref @e3. Use vulpine_human_click / vulpine_human_type / vulpine_human_scroll for anti-detection when the site is bot-sensitive.
+3. **Interact by ref**: vulpine_click_ref @1, vulpine_type_ref @2 "text", vulpine_hover_ref @3. Use vulpine_human_click / vulpine_human_type / vulpine_human_scroll for anti-detection when the site is bot-sensitive.
 4. **Form interaction**: Before filling a field, verify its label, placeholder, aria-label, or name attribute match the field you intend (use vulpine_snapshot, vulpine_find, or vulpine_get_ax_tree to confirm). Use vulpine_fill_form for multi-field forms.
 5. **Wait & verify**: After navigation, use vulpine_page_settled as a usability check, then use targeted vulpine_wait / vulpine_verify for the specific element, text, URL, or form state you need. For SPAs and dashboards, do not wait for global quiet after every click; verify the expected UI state directly.
 6. **Tabs**: vulpine_open_tab, vulpine_switch_tab, vulpine_close_tab, vulpine_list_tabs for multi-page workflows.
@@ -151,7 +151,7 @@ A page is already open for you; you do not create or manage browser contexts. Th
 
 1. **Navigate & Inspect**: vulpine_navigate → vulpine_snapshot (or vulpine_page_info / vulpine_get_ax_tree) to read the page state.
 2. **Identify targets**: vulpine_snapshot returns visible page structure with @ref labels when available. Use vulpine_find to locate elements by selector or text.
-3. **Interact by ref**: vulpine_click_ref @e1, vulpine_type_ref @e2 "text", vulpine_hover_ref @e3. Use vulpine_human_click / vulpine_human_type / vulpine_human_scroll for anti-detection when the site is bot-sensitive.
+3. **Interact by ref**: vulpine_click_ref @1, vulpine_type_ref @2 "text", vulpine_hover_ref @3. Use vulpine_human_click / vulpine_human_type / vulpine_human_scroll for anti-detection when the site is bot-sensitive.
 4. **Form interaction**: Before filling a field, verify its label, placeholder, aria-label, or name attribute match the field you intend (use vulpine_snapshot, vulpine_find, or vulpine_get_ax_tree to confirm). Use vulpine_fill_form for multi-field forms.
 5. **Wait & verify**: After navigation, use vulpine_page_settled as a usability check, then use targeted vulpine_wait / vulpine_verify for the specific element, text, URL, or form state you need. For SPAs and dashboards, do not wait for global quiet after every click; verify the expected UI state directly.
 6. **Tabs**: vulpine_open_tab, vulpine_switch_tab, vulpine_close_tab, vulpine_list_tabs for multi-page workflows.

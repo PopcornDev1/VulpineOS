@@ -700,6 +700,39 @@ func TestRenderMarkdownDoesNotSplitStyledANSI(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownWrappedBoldDoesNotLeakMarkers(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	lines := renderMarkdown("I **can't truthfully confirm** whether it appeared.", 20)
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "**") {
+		t.Fatalf("wrapped bold markers leaked into rendered text: %#v", lines)
+	}
+	if !strings.Contains(joined, "\x1b[1m") {
+		t.Fatalf("wrapped bold text should retain bold ANSI style: %#v", lines)
+	}
+	for _, line := range lines {
+		if hasUnclosedSGR(line) {
+			t.Fatalf("line has unclosed ANSI style: %q\nall lines: %#v", line, lines)
+		}
+	}
+}
+
+func TestRenderMarkdownPrefixedCodeDoesNotDoubleParse(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	lines := renderMarkdown("- Keep `*literal*` as code", 80)
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "*literal*") {
+		t.Fatalf("prefixed code text missing literal asterisks: %#v", lines)
+	}
+	if strings.Contains(joined, "\x1b[3m") {
+		t.Fatalf("prefixed code should not be reparsed as italic: %#v", lines)
+	}
+}
+
 func TestRenderMarkdownLeavesHeadingsPlain(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })

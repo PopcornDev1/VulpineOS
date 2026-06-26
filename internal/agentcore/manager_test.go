@@ -90,6 +90,41 @@ func TestManagerEventsLogToolActivity(t *testing.T) {
 	}
 }
 
+func TestToolCompletionSummaryKeepsRefActionDetail(t *testing.T) {
+	got := toolCompletionSummary("vulpine_click_ref", `Clicked @50 button "Reject all" at (12, 34)`)
+	if !strings.Contains(got, `Clicked @50 button "Reject all"`) {
+		t.Fatalf("ref completion summary = %q, want action detail", got)
+	}
+
+	got = toolCompletionSummary("vulpine_snapshot", `{"snapshot":{"nodes":[]}}`)
+	if got != "Tool completed: vulpine_snapshot" {
+		t.Fatalf("snapshot completion summary = %q, want generic completion", got)
+	}
+}
+
+func TestToolCallSummaryRedactsSensitiveArgs(t *testing.T) {
+	got := toolCallSummary("vulpine_type_ref", `{"ref":"@2","text":"hunter2-password"}`)
+	if !strings.Contains(got, `"ref":"@2"`) {
+		t.Fatalf("type_ref summary = %q, want ref", got)
+	}
+	if strings.Contains(got, "hunter2") || strings.Contains(got, "password") {
+		t.Fatalf("type_ref summary leaked typed text: %q", got)
+	}
+
+	got = toolCallSummary("vulpine_navigate", `{"url":"https://user:pass@example.test/path?token=secret&ok=1"}`)
+	if strings.Contains(got, "user:pass") || strings.Contains(got, "secret") {
+		t.Fatalf("navigate summary leaked secret URL parts: %q", got)
+	}
+	if !strings.Contains(got, "example.test") {
+		t.Fatalf("navigate summary = %q, want redacted host context", got)
+	}
+
+	got = traceSnippet(`Authorization: Bearer abc123 token=rawsecret`)
+	if strings.Contains(got, "abc123") || strings.Contains(got, "rawsecret") {
+		t.Fatalf("trace snippet leaked secret-bearing text: %q", got)
+	}
+}
+
 func openManagerTestVault(t *testing.T) *vault.DB {
 	t.Helper()
 	db, err := vault.OpenPath(filepath.Join(t.TempDir(), "vault.db"))

@@ -2,9 +2,12 @@ package agentcore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -890,7 +893,7 @@ func (e *managerEvents) OnAssistant(text string) {
 func (e *managerEvents) OnToolCall(name, args string) {
 	e.m.emitConversation(e.agentID, "system", "Running tool: "+toolCallSummary(name, args))
 	metadata := map[string]string{"agent_id": e.agentID, "tool": name}
-	if args = traceSnippet(args); args != "" {
+	if args = safeToolCallArgsSummary(name, args); args != "" {
 		metadata["args"] = args
 	}
 	e.m.logRuntimeEvent("info", "native_agent_tool_call", "tool call: "+name, metadata)
@@ -905,7 +908,7 @@ func (e *managerEvents) OnToolResult(name, result string, isErr bool) {
 		})
 		return
 	}
-	e.m.emitConversation(e.agentID, "system", fmt.Sprintf("Tool completed: %s", name))
+	e.m.emitConversation(e.agentID, "system", toolCompletionSummary(name, result))
 	e.m.logRuntimeEvent("info", "native_agent_tool_completed", "tool completed: "+name, map[string]string{
 		"agent_id": e.agentID,
 		"tool":     name,
@@ -939,15 +942,131 @@ func toolCallSummary(name, args string) string {
 	if args == "" || args == "{}" || args == "null" {
 		return name
 	}
-	return name + " " + traceSnippet(args)
+	summary := safeToolCallArgsSummary(name, args)
+	if summary == "" {
+		return name
+	}
+	return name + " " + summary
+}
+
+func toolCompletionSummary(name, result string) string {
+	result = traceSnippet(result)
+	switch name {
+	case "vulpine_click_ref", "vulpine_type_ref", "vulpine_hover_ref", "vulpine_scroll_into_view", "vulpine_click_label":
+		if result != "" {
+			return fmt.Sprintf("Tool completed: %s - %s", name, result)
+		}
+	}
+	return fmt.Sprintf("Tool completed: %s", name)
 }
 
 // traceSnippet collapses a value to a single short line for operator trace rows.
 func traceSnippet(s string) string {
+	s = redactTraceText(s)
 	s = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", " "))
 	const max = 160
 	if len(s) > max {
 		return s[:max] + "..."
 	}
 	return s
+}
+
+func safeToolCallArgsSummary(name, args string) string {
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(args), &raw); err != nil {
+		return ""
+	}
+	out := map[string]interface{}{}
+	copyStringArg := func(key string) {
+		if v, ok := raw[key].(string); ok && strings.TrimSpace(v) != "" {
+			out[key] = traceSnippet(v)
+		}
+	}
+	copyNumberArg := func(key string) {
+		switch v := raw[key].(type) {
+		case float64, int, int64:
+			out[key] = v
+		}
+	}
+
+	switch name {
+	case "vulpine_navigate":
+		if v, ok := raw["url"].(string); ok && strings.TrimSpace(v) != "" {
+			out["url"] = redactTraceURL(v)
+		}
+	case "vulpine_click_ref", "vulpine_type_ref", "vulpine_hover_ref", "vulpine_scroll_into_view", "vulpine_element_status":
+		copyStringArg("ref")
+	case "vulpine_click_label":
+		copyStringArg("label")
+	case "vulpine_click":
+		copyNumberArg("x")
+		copyNumberArg("y")
+	case "vulpine_scroll", "vulpine_human_scroll":
+		copyNumberArg("deltaY")
+	case "vulpine_wait":
+		copyStringArg("condition")
+		copyStringArg("ref")
+	case "vulpine_page_settled":
+		copyNumberArg("timeout")
+	default:
+		return ""
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func redactTraceURL(raw string) string {
+	raw = strings.TrimSpace(redactTraceText(raw))
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" {
+		return traceSnippet(raw)
+	}
+	if parsed.User != nil {
+		parsed.User = url.UserPassword("redacted", "redacted")
+	}
+	query := parsed.Query()
+	redacted := false
+	for key := range query {
+		if sensitiveTraceKey(key) {
+			query.Set(key, "[redacted]")
+			redacted = true
+		}
+	}
+	if redacted {
+		parsed.RawQuery = query.Encode()
+	}
+	return traceSnippet(parsed.String())
+}
+
+var traceRedactors = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@`), `${1}redacted:redacted@`},
+	{regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+`), `${1}[redacted]`},
+	{regexp.MustCompile(`(?i)([?&][^=\s&]*(?:api[_-]?key|apikey|token|secret|password|passwd|credential|authorization|cookie|session)[^=\s&]*=)[^&\s]+`), `${1}[redacted]`},
+	{regexp.MustCompile(`(?i)(\b(?:api[_-]?key|apikey|token|secret|password|passwd|credential|authorization|cookie|session)\b\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,}]+)`), `${1}[redacted]`},
+}
+
+func redactTraceText(value string) string {
+	for _, redactor := range traceRedactors {
+		value = redactor.re.ReplaceAllString(value, redactor.repl)
+	}
+	return value
+}
+
+func sensitiveTraceKey(key string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"))
+	for _, marker := range []string{"api_key", "apikey", "token", "secret", "password", "passwd", "credential", "authorization", "cookie", "session"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }

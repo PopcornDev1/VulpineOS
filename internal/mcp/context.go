@@ -146,9 +146,7 @@ func NewContextTracker(client *juggler.Client) *ContextTracker {
 		}
 		json.Unmarshal(params, &ev)
 		if ev.SessionID != "" {
-			ct.mu.Lock()
-			delete(ct.contexts, ev.SessionID)
-			ct.mu.Unlock()
+			ct.RemoveSession(ev.SessionID)
 		}
 	})
 
@@ -164,10 +162,17 @@ func (ct *ContextTracker) subscribe(event string, handler juggler.EventHandler) 
 func (ct *ContextTracker) Close() {
 	ct.mu.Lock()
 	cancels := append([]func(){}, ct.cancels...)
+	sessions := make([]string, 0, len(ct.contexts))
+	for sessionID := range ct.contexts {
+		sessions = append(sessions, sessionID)
+	}
 	ct.cancels = nil
 	ct.contexts = make(map[string]*SessionContext)
 	ct.mu.Unlock()
 
+	for _, sessionID := range sessions {
+		clearSnapshotRefSummaries(sessionID)
+	}
 	for _, cancel := range cancels {
 		cancel()
 	}
@@ -194,8 +199,19 @@ func (ct *ContextTracker) SessionsForContext(contextID string) []string {
 
 func (ct *ContextTracker) RemoveSession(sessionID string) {
 	ct.mu.Lock()
-	defer ct.mu.Unlock()
 	delete(ct.contexts, sessionID)
+	ct.mu.Unlock()
+	clearSnapshotRefSummaries(sessionID)
+}
+
+func (ct *ContextTracker) Sessions() []string {
+	ct.mu.RLock()
+	defer ct.mu.RUnlock()
+	sessions := make([]string, 0, len(ct.contexts))
+	for sessionID := range ct.contexts {
+		sessions = append(sessions, sessionID)
+	}
+	return sessions
 }
 
 // InvalidateExecutionContext forces the next Resolve call for the

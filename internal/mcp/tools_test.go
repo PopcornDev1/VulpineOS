@@ -184,6 +184,49 @@ func TestHandleSnapshotFallsBackToAXOnOptimizedDOMProtocolError(t *testing.T) {
 	}
 }
 
+func TestClickRefResultIncludesLastSnapshotLabel(t *testing.T) {
+	const sessionID = "session-ref-label"
+	clearSnapshotRefSummaries(sessionID)
+	t.Cleanup(func() { clearSnapshotRefSummaries(sessionID) })
+
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Page.getOptimizedDOM", map[string]any{
+		"snapshot": map[string]any{
+			"v":     1,
+			"title": "YouTube",
+			"url":   "https://www.youtube.com/",
+			"nodes": []any{
+				[]any{1, "btn", "Reject all", nil, "@50"},
+			},
+		},
+		"truncated": false,
+	})
+	transport.RespondJSON("Page.resolveRef", map[string]any{"x": 12, "y": 34, "found": true})
+	transport.RespondJSON("Page.dispatchMouseEvent", map[string]any{})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	if result, err := handleSnapshot(client, json.RawMessage(fmt.Sprintf(`{"sessionId":%q}`, sessionID))); err != nil {
+		t.Fatalf("snapshot returned error: %v", err)
+	} else if result == nil || result.IsError {
+		t.Fatalf("snapshot should succeed, got %#v", result)
+	}
+
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+	result, err := handleToolCall(context.Background(), client, tracker, "vulpine_click_ref", json.RawMessage(fmt.Sprintf(`{"sessionId":%q,"ref":"@50"}`, sessionID)))
+	if err != nil {
+		t.Fatalf("click_ref returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("click_ref should succeed, got %#v", result)
+	}
+	got := result.Content[0].Text
+	if !strings.Contains(got, `Clicked @50 button "Reject all"`) {
+		t.Fatalf("click_ref result = %q, want remembered ref label", got)
+	}
+}
+
 func TestHandleNavigateRejectsFirefoxNetworkErrorPage(t *testing.T) {
 	oldTimeout := navigateVerificationTimeout
 	oldPoll := navigateVerificationPollInterval
