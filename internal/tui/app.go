@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -178,6 +180,8 @@ const (
 )
 
 type selectionAutoScrollMsg struct{}
+
+var hostGOOS = runtime.GOOS
 
 // App is the root Bubbletea model for the 3-column agent workbench.
 type App struct {
@@ -968,11 +972,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && isLeakedTerminalMouseReportKey(key) {
 		return a, nil
 	}
-	if key, ok := msg.(tea.KeyMsg); ok && isCopySelectionKey(key) {
+	if isCopySelectionMsg(msg) {
 		return a.handleCopySelection()
 	}
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" {
-		if strings.TrimSpace(a.conversation.SelectedText()) != "" {
+		if hostGOOS != "darwin" && strings.TrimSpace(a.conversation.SelectedText()) != "" {
 			return a.handleCopySelection()
 		}
 		return a.handleCtrlC()
@@ -1758,19 +1762,99 @@ func isGlobalLifecycleKey(msg tea.KeyMsg) bool {
 	}
 }
 
+func isCopySelectionMsg(msg tea.Msg) bool {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		return isCopySelectionKey(msg)
+	case fmt.Stringer:
+		return hostGOOS == "darwin" && isMacCommandCSequence(msg.String())
+	default:
+		return false
+	}
+}
+
 func isCopySelectionKey(msg tea.KeyMsg) bool {
 	if msg.Paste {
+		return false
+	}
+	if hostGOOS != "darwin" {
 		return false
 	}
 	switch msg.String() {
 	case "cmd+c", "super+c", "meta+c":
 		return true
 	}
-	if msg.Type != tea.KeyRunes {
+	return msg.Type == tea.KeyRunes && isMacCommandCSequence(string(msg.Runes))
+}
+
+func isMacCommandCSequence(raw string) bool {
+	if decoded, ok := decodeBubbleTeaUnknownCSI(raw); ok {
+		raw = decoded
+	}
+	raw = strings.TrimPrefix(raw, "\x1b")
+	raw = strings.TrimPrefix(raw, "[")
+	if raw == "" {
 		return false
 	}
-	raw := string(msg.Runes)
-	return raw == "\x1b[99;9u" || raw == "[99;9u" || raw == "\x1b[67;10u" || raw == "[67;10u"
+	final := raw[len(raw)-1]
+	if final != 'u' && final != '~' {
+		return false
+	}
+	body := raw[:len(raw)-1]
+	parts := strings.Split(body, ";")
+	if len(parts) >= 3 && parts[0] == "27" {
+		modifier, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return false
+		}
+		keyCode, err := strconv.Atoi(parts[2])
+		if err != nil {
+			return false
+		}
+		return isCKeyCode(keyCode) && modifierHasSuper(modifier)
+	}
+	if len(parts) >= 2 {
+		keyCode, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return false
+		}
+		modifier, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return false
+		}
+		return isCKeyCode(keyCode) && modifierHasSuper(modifier)
+	}
+	return false
+}
+
+func decodeBubbleTeaUnknownCSI(raw string) (string, bool) {
+	const prefix = "?CSI["
+	const suffix = "]?"
+	if !strings.HasPrefix(raw, prefix) || !strings.HasSuffix(raw, suffix) {
+		return "", false
+	}
+	fields := strings.Fields(strings.TrimSuffix(strings.TrimPrefix(raw, prefix), suffix))
+	if len(fields) == 0 {
+		return "", false
+	}
+	var b strings.Builder
+	for _, field := range fields {
+		value, err := strconv.Atoi(field)
+		if err != nil || value < 0 || value > 255 {
+			return "", false
+		}
+		b.WriteByte(byte(value))
+	}
+	return b.String(), true
+}
+
+func isCKeyCode(code int) bool {
+	return code == 'c' || code == 'C'
+}
+
+func modifierHasSuper(modifier int) bool {
+	const superBit = 8
+	return modifier > 1 && (modifier-1)&superBit != 0
 }
 
 func isLeakedTerminalMouseReportKey(msg tea.KeyMsg) bool {

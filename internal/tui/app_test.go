@@ -1016,6 +1016,10 @@ func TestMouseWheelScrollsAgentList(t *testing.T) {
 }
 
 func TestMouseSelectsChatRowsAndCmdCCopiesSelection(t *testing.T) {
+	oldGOOS := hostGOOS
+	hostGOOS = "darwin"
+	t.Cleanup(func() { hostGOOS = oldGOOS })
+
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.width = 100
@@ -1116,7 +1120,72 @@ func TestMouseSelectsChatRowsAndCmdCCopiesSelection(t *testing.T) {
 	}
 }
 
-func TestCtrlCWithChatSelectionCopiesSelectedText(t *testing.T) {
+type fakeCSISequenceMsg string
+
+func (m fakeCSISequenceMsg) String() string { return string(m) }
+
+func TestMouseSelectsChatRowsAndUnknownCSICmdCCopiesSelectionOnMac(t *testing.T) {
+	oldGOOS := hostGOOS
+	hostGOOS = "darwin"
+	t.Cleanup(func() { hostGOOS = oldGOOS })
+
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 24
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.selectedAgentID = "agent-1"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Agent 1")
+	app.conversation.SetAwake(true)
+	app.conversation.AddEntry("assistant", "copy this selected line")
+	app.updatePanelSizes()
+
+	copied := ""
+	app.clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	view := app.conversation.View()
+	lines := strings.Split(view, "\n")
+	row, col := findChatCell(t, lines, "copy")
+	rx, ry, _, _ := app.conversationContentRect()
+
+	model, _ := app.Update(tea.MouseMsg{X: rx + col, Y: ry + row, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + col + lipgloss.Width("copy this"), Y: ry + row, Type: tea.MouseMotion, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + col + lipgloss.Width("copy this"), Y: ry + row, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	app = model.(App)
+
+	if !app.conversation.HasSelection() {
+		t.Fatal("conversation should have a selected chat range after mouse drag")
+	}
+
+	model, cmd := app.Update(fakeCSISequenceMsg("?CSI[57 57 59 57 117]?"))
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("unknown CSI cmd+c with chat selection returned no copy command")
+	}
+	msg := cmd()
+	if notice, ok := msg.(statusNotice); !ok || notice.text != "Copied selected chat text" {
+		t.Fatalf("copy command returned %#v, want selected chat copy notice", msg)
+	}
+	if copied != "copy this" {
+		t.Fatalf("copied = %q, want selected chat text", copied)
+	}
+	if app.conversation.HasSelection() {
+		t.Fatal("selection should clear after cmd+c copy")
+	}
+}
+
+func TestCtrlCWithChatSelectionCopiesSelectedTextOnNonMac(t *testing.T) {
+	oldGOOS := hostGOOS
+	hostGOOS = "linux"
+	t.Cleanup(func() { hostGOOS = oldGOOS })
+
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.width = 100
@@ -1166,6 +1235,62 @@ func TestCtrlCWithChatSelectionCopiesSelectedText(t *testing.T) {
 	}
 	if app.conversation.HasSelection() {
 		t.Fatal("selection should clear after ctrl+c copy")
+	}
+}
+
+func TestCtrlCWithChatSelectionDoesNotCopyOnMac(t *testing.T) {
+	oldGOOS := hostGOOS
+	hostGOOS = "darwin"
+	t.Cleanup(func() { hostGOOS = oldGOOS })
+
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 24
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.selectedAgentID = "agent-1"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Agent 1")
+	app.conversation.SetAwake(true)
+	app.conversation.AddEntry("assistant", "copy this selected line")
+	app.updatePanelSizes()
+
+	copied := ""
+	app.clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	view := app.conversation.View()
+	lines := strings.Split(view, "\n")
+	row, col := findChatCell(t, lines, "copy")
+	rx, ry, _, _ := app.conversationContentRect()
+
+	model, _ := app.Update(tea.MouseMsg{X: rx + col, Y: ry + row, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + col + lipgloss.Width("copy this"), Y: ry + row, Type: tea.MouseMotion, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + col + lipgloss.Width("copy this"), Y: ry + row, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	app = model.(App)
+
+	if !app.conversation.HasSelection() {
+		t.Fatal("conversation should have a selected chat range after mouse drag")
+	}
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app = model.(App)
+	if cmd != nil {
+		t.Fatalf("first mac ctrl+c with selection returned command %#v, want quit confirmation notice only", cmd)
+	}
+	if copied != "" {
+		t.Fatalf("mac ctrl+c copied = %q, want no clipboard write", copied)
+	}
+	if !app.conversation.HasSelection() {
+		t.Fatal("mac ctrl+c should not clear chat selection")
+	}
+	if !strings.Contains(app.notice, "Press Ctrl+Shift+C again") {
+		t.Fatalf("notice = %q, want quit confirmation", app.notice)
 	}
 }
 
