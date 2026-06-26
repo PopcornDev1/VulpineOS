@@ -571,6 +571,34 @@ func (m *Model) ExtendSelectionAtViewCell(row, col int) bool {
 	return true
 }
 
+// ExpandSelectionToViewCell grows the current selected range to include a
+// clicked cell without dropping any text that is already selected.
+func (m *Model) ExpandSelectionToViewCell(row, col int) bool {
+	start, end, ok := m.normalizedSelectionRange()
+	if !ok {
+		return false
+	}
+	idx, ok := m.renderedLineIndexForViewRow(row)
+	if !ok {
+		return false
+	}
+	target := selectionPoint{line: idx, col: m.clampedColumnForRenderedLine(idx, col)}
+	switch {
+	case compareSelectionPoint(target, start) < 0:
+		m.selectionStart = target
+		m.selectionEnd = end
+	case compareSelectionPoint(target, end) > 0:
+		m.selectionStart = start
+		m.selectionEnd = target
+	default:
+		m.selectionStart = start
+		m.selectionEnd = end
+	}
+	m.selecting = false
+	m.selectionActive = !m.selectionStart.equal(m.selectionEnd)
+	return true
+}
+
 // EndSelection stops drag selection while keeping the selected range visible.
 func (m *Model) EndSelection() {
 	if !m.selectionActive {

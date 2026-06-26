@@ -2683,7 +2683,7 @@ func (a *App) handleConversationSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd)
 		}
 		a.stopConversationSelectionAutoScroll()
 		if msg.Shift && a.conversation.HasSelection() {
-			if !a.conversation.ExtendSelectionAtViewCell(msg.Y-ry, msg.X-rx) {
+			if !a.conversation.ExpandSelectionToViewCell(msg.Y-ry, msg.X-rx) {
 				return false, nil
 			}
 			a.quitConfirmArmed = false
