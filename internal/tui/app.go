@@ -953,6 +953,14 @@ func (a App) handleCopySelection() (tea.Model, tea.Cmd) {
 	return a, a.copyTextCommand(selected, "Copied selected chat text")
 }
 
+func (a App) copySelectedChatTextCommand(success string) tea.Cmd {
+	selected := a.conversation.SelectedText()
+	if strings.TrimSpace(selected) == "" {
+		return nil
+	}
+	return a.copyTextCommand(selected, success)
+}
+
 func (a App) copyTextCommand(content, success string) tea.Cmd {
 	return func() tea.Msg {
 		write := a.clipboardWrite
@@ -2687,6 +2695,9 @@ func (a *App) handleConversationSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd)
 				return false, nil
 			}
 			a.quitConfirmArmed = false
+			if hostGOOS == "darwin" {
+				return true, a.copySelectedChatTextCommand("Copied selected chat text")
+			}
 			return true, nil
 		}
 		if !a.conversation.BeginSelectionAtViewCell(msg.Y-ry, msg.X-rx) {
@@ -2723,6 +2734,9 @@ func (a *App) handleConversationSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd)
 			a.extendConversationSelectionAtEdge(1, msg.X-rx)
 		}
 		a.conversation.EndSelection()
+		if hostGOOS == "darwin" {
+			return true, a.copySelectedChatTextCommand("Copied selected chat text")
+		}
 		return true, nil
 	default:
 		return false, nil

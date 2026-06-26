@@ -1120,6 +1120,57 @@ func TestMouseSelectsChatRowsAndCmdCCopiesSelection(t *testing.T) {
 	}
 }
 
+func TestMacMouseSelectionReleaseCopiesSelectedTextWithoutKeyEvent(t *testing.T) {
+	oldGOOS := hostGOOS
+	hostGOOS = "darwin"
+	t.Cleanup(func() { hostGOOS = oldGOOS })
+
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 24
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.selectedAgentID = "agent-1"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Agent 1")
+	app.conversation.SetAwake(true)
+	app.conversation.AddEntry("assistant", "copy this selected line")
+	app.updatePanelSizes()
+
+	copied := ""
+	app.clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	view := app.conversation.View()
+	lines := strings.Split(view, "\n")
+	row, col := findChatCell(t, lines, "copy")
+	rx, ry, _, _ := app.conversationContentRect()
+
+	model, _ := app.Update(tea.MouseMsg{X: rx + col, Y: ry + row, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + col + lipgloss.Width("copy this"), Y: ry + row, Type: tea.MouseMotion, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	app = model.(App)
+	model, cmd := app.Update(tea.MouseMsg{X: rx + col + lipgloss.Width("copy this"), Y: ry + row, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	app = model.(App)
+
+	if cmd == nil {
+		t.Fatal("mac selection release returned no clipboard command")
+	}
+	msg := cmd()
+	if notice, ok := msg.(statusNotice); !ok || notice.text != "Copied selected chat text" {
+		t.Fatalf("selection release command returned %#v, want selected chat copy notice", msg)
+	}
+	if copied != "copy this" {
+		t.Fatalf("copied = %q, want selected text copied without cmd+c key event", copied)
+	}
+	if !app.conversation.HasSelection() {
+		t.Fatal("selection should remain active after automatic mac clipboard copy")
+	}
+}
+
 type fakeCSISequenceMsg string
 
 func (m fakeCSISequenceMsg) String() string { return string(m) }
@@ -1423,6 +1474,75 @@ func TestShiftClickExtendsExistingChatSelection(t *testing.T) {
 	_ = cmd()
 	if !strings.Contains(copied, "start anchor") || !strings.Contains(copied, "finish") {
 		t.Fatalf("copied = %q, want selection extended from anchor through shift-click target", copied)
+	}
+}
+
+func TestMacShiftClickExpansionCopiesExpandedSelectionWithoutKeyEvent(t *testing.T) {
+	oldGOOS := hostGOOS
+	hostGOOS = "darwin"
+	t.Cleanup(func() { hostGOOS = oldGOOS })
+
+	db := openTestVault(t)
+	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
+	app.width = 100
+	app.height = 24
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.selectedAgentID = "agent-1"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Agent 1")
+	app.conversation.SetAwake(true)
+	app.conversation.AddEntry("assistant", "start anchor")
+	app.conversation.AddEntry("assistant", "middle selected")
+	app.conversation.AddEntry("assistant", "finish target")
+	app.updatePanelSizes()
+
+	copied := ""
+	app.clipboardWrite = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	view := app.conversation.View()
+	lines := strings.Split(view, "\n")
+	startRow, startCol := findChatCell(t, lines, "start")
+	middleRow, middleCol := findChatCell(t, lines, "middle")
+	finishRow, finishCol := findChatCell(t, lines, "finish")
+	rx, ry, _, _ := app.conversationContentRect()
+
+	model, _ := app.Update(tea.MouseMsg{X: rx + startCol, Y: ry + startRow, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	app = model.(App)
+	model, _ = app.Update(tea.MouseMsg{X: rx + middleCol + lipgloss.Width("middle selected"), Y: ry + middleRow, Type: tea.MouseMotion, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	app = model.(App)
+	model, cmd := app.Update(tea.MouseMsg{X: rx + middleCol + lipgloss.Width("middle selected"), Y: ry + middleRow, Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	app = model.(App)
+	if cmd != nil {
+		_ = cmd()
+	}
+	copied = ""
+
+	model, cmd = app.Update(tea.MouseMsg{
+		X:      rx + finishCol + lipgloss.Width("finish target"),
+		Y:      ry + finishRow,
+		Shift:  true,
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+	app = model.(App)
+
+	if cmd == nil {
+		t.Fatal("mac shift-click expansion returned no clipboard command")
+	}
+	msg := cmd()
+	if notice, ok := msg.(statusNotice); !ok || notice.text != "Copied selected chat text" {
+		t.Fatalf("shift-click copy command returned %#v, want selected chat copy notice", msg)
+	}
+	if !strings.Contains(copied, "start anchor") || !strings.Contains(copied, "middle selected") || !strings.Contains(copied, "finish target") {
+		t.Fatalf("copied = %q, want expanded selection copied without cmd+c key event", copied)
+	}
+	if !app.conversation.HasSelection() {
+		t.Fatal("selection should remain active after shift-click automatic mac clipboard copy")
 	}
 }
 
