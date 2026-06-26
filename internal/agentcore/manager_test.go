@@ -90,6 +90,55 @@ func TestManagerEventsLogToolActivity(t *testing.T) {
 	}
 }
 
+func TestManagerEventsSurfaceObservationState(t *testing.T) {
+	db := openManagerTestVault(t)
+	m := NewManager(nil, Config{})
+	m.SetRuntimeAudit(runtimeaudit.New(db))
+	defer m.Dispose()
+
+	m.mu.Lock()
+	m.agents["agent-1"] = &nativeAgent{id: "agent-1", contextID: "ctx-1", cancel: func() {}, status: "active", objective: "debug"}
+	m.mu.Unlock()
+	statusCh := m.StatusChan()
+	conversationCh := m.ConversationChan()
+
+	events := &managerEvents{m: m, agentID: "agent-1"}
+	events.OnObservationState(ObservationState{
+		Confidence:          ObservationUnverified,
+		LastObservedTool:    "vulpine_page_info",
+		LastObservedSummary: "vulpine_page_info url=https://www.reddit.com/register forms=1 inputs=2 buttons=1 links=0",
+		LastFailedTool:      "vulpine_click",
+		LastFailure:         "nothing clickable",
+		URL:                 "https://www.reddit.com/register",
+	})
+
+	status := waitForManagerStatusValue(t, statusCh, "agent-1")
+	if status.ObservationConfidence != ObservationUnverified {
+		t.Fatalf("observation confidence = %q, want %q", status.ObservationConfidence, ObservationUnverified)
+	}
+	if status.ObservationURL != "https://www.reddit.com/register" {
+		t.Fatalf("observation URL = %q", status.ObservationURL)
+	}
+	if status.LastFailedTool != "vulpine_click" {
+		t.Fatalf("last failed tool = %q", status.LastFailedTool)
+	}
+
+	conversation := waitForManagerConversation(t, conversationCh, "system")
+	if !strings.Contains(conversation.Content, "Observation warning") ||
+		!strings.Contains(conversation.Content, "vulpine_click") ||
+		!strings.Contains(conversation.Content, "https://www.reddit.com/register") {
+		t.Fatalf("conversation warning = %q", conversation.Content)
+	}
+
+	stored, err := db.ListRuntimeEvents(vault.RuntimeEventFilter{Component: "agentcore", Limit: 10})
+	if err != nil {
+		t.Fatalf("list runtime events: %v", err)
+	}
+	if !hasRuntimeEvent(stored, "browser_observation_unverified") {
+		t.Fatalf("runtime events missing browser_observation_unverified: %#v", stored)
+	}
+}
+
 func TestToolCompletionSummaryKeepsRefActionDetail(t *testing.T) {
 	got := toolCompletionSummary("vulpine_click_ref", `Clicked @50 button "Reject all" at (12, 34)`)
 	if !strings.Contains(got, `Clicked @50 button "Reject all"`) {
@@ -150,6 +199,44 @@ func waitForManagerStatus(t *testing.T, ch <-chan agentmsg.AgentStatus, want str
 			}
 		case <-timer.C:
 			t.Fatalf("timed out waiting for status %q", want)
+		}
+	}
+}
+
+func waitForManagerStatusValue(t *testing.T, ch <-chan agentmsg.AgentStatus, agentID string) agentmsg.AgentStatus {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case status, ok := <-ch:
+			if !ok {
+				t.Fatalf("status channel closed before %q", agentID)
+			}
+			if status.AgentID == agentID {
+				return status
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for status %q", agentID)
+		}
+	}
+}
+
+func waitForManagerConversation(t *testing.T, ch <-chan agentmsg.ConversationMsg, role string) agentmsg.ConversationMsg {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				t.Fatalf("conversation channel closed before %q", role)
+			}
+			if msg.Role == role {
+				return msg
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for conversation role %q", role)
 		}
 	}
 }

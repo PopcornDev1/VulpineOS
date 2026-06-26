@@ -79,7 +79,7 @@ func (m *Manager) SetRetention(limit int) (vault.RuntimeAuditSettings, error) {
 }
 
 // Subscribe returns a live event channel.
-func (m *Manager) Subscribe() <-chan vault.RuntimeEvent {
+func (m *Manager) Subscribe() chan vault.RuntimeEvent {
 	ch := make(chan vault.RuntimeEvent, 32)
 	m.mu.Lock()
 	defer m.mu.Unlock()

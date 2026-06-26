@@ -849,8 +849,10 @@ func startRemoteAccessServer(cfg listenConfig, appCfg *config.Config, k *kernel.
 		Kernel:           k,
 		FoxbridgeRunning: foxbridgeRunning,
 		Client:           client,
+		Audit:            audit,
 	})
 	wireRemoteAgentEvents(orch, v, server, persistAgentEvents)
+	wireRemoteRuntimeEvents(audit, server)
 
 	useTLS := !cfg.NoTLS
 	if useTLS && (cfg.TLSCert == "" || cfg.TLSKey == "") {
@@ -916,6 +918,19 @@ func wireRemoteAgentEvents(orch *orchestrator.Orchestrator, v *vault.DB, server 
 				_ = v.AppendMessage(msg.AgentID, msg.Role, msg.Content, msg.Tokens)
 			}
 			server.BroadcastConversation(msg)
+		}
+	}()
+}
+
+func wireRemoteRuntimeEvents(audit *runtimeaudit.Manager, server *remote.Server) {
+	if audit == nil || server == nil {
+		return
+	}
+	ch := audit.Subscribe()
+	go func() {
+		defer audit.Unsubscribe(ch)
+		for event := range ch {
+			server.BroadcastRuntimeEvent(event)
 		}
 	}()
 }

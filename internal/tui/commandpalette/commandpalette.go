@@ -351,6 +351,8 @@ func defaultCommands() []Command {
 		{Name: "hide", Description: "Hide all browser windows", Section: "View"},
 		{Name: "log", Description: "Open selected session log", Section: "View"},
 		{Name: "trace", Description: "Toggle trace mode", Section: "View"},
+		{Name: "recover", Description: "Recover browser observation", Section: "View"},
+		{Name: "clear-warning", Description: "Clear persistent warning", Section: "View"},
 		{Name: "settings", Description: "Open settings panel", Section: "System"},
 		{Name: "config", Description: "Reconfigure provider/model", Section: "System"},
 		{Name: "model", Description: "Change provider/model", Section: "System"},

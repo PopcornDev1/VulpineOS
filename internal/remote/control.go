@@ -13,6 +13,7 @@ import (
 	"vulpineos/internal/kernel"
 	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/proxy"
+	"vulpineos/internal/runtimeaudit"
 	"vulpineos/internal/vault"
 )
 
@@ -25,6 +26,7 @@ type ControlAPI struct {
 	Kernel           *kernel.Kernel
 	FoxbridgeRunning func() bool
 	Client           *juggler.Client
+	Audit            *runtimeaudit.Manager
 }
 
 func (api *ControlAPI) HandleMessage(method string, params json.RawMessage) (json.RawMessage, error) {
@@ -754,7 +756,62 @@ func (api *ControlAPI) statusGet() (json.RawMessage, error) {
 		out["total_templates"] = status.TotalTemplates
 		out["total_cost_usd"] = status.TotalCostUSD
 	}
+	if observation := api.latestBrowserObservation(); observation != nil {
+		out["browser_observation"] = observation
+	}
 	return json.Marshal(out)
+}
+
+func (api *ControlAPI) latestBrowserObservation() map[string]any {
+	if api.Audit == nil {
+		return nil
+	}
+	events, err := api.Audit.List(vault.RuntimeEventFilter{Component: "agentcore", Limit: 100})
+	if err != nil {
+		return nil
+	}
+	warnings := map[string]vault.RuntimeEvent{}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		key := browserObservationEventKey(event)
+		switch event.Event {
+		case "browser_observation_observed":
+			if key == "" {
+				warnings = map[string]vault.RuntimeEvent{}
+			} else {
+				delete(warnings, key)
+			}
+		case "browser_observation_unverified", "browser_observation_lost":
+			warnings[key] = event
+		}
+	}
+	var latest vault.RuntimeEvent
+	found := false
+	for _, event := range warnings {
+		if !found || event.Timestamp.After(latest.Timestamp) || (event.Timestamp.Equal(latest.Timestamp) && event.ID > latest.ID) {
+			latest = event
+			found = true
+		}
+	}
+	if !found {
+		return nil
+	}
+	return map[string]any{
+		"id":        latest.ID,
+		"component": latest.Component,
+		"event":     latest.Event,
+		"level":     latest.Level,
+		"message":   latest.Message,
+		"metadata":  latest.Metadata,
+		"timestamp": latest.Timestamp,
+	}
+}
+
+func browserObservationEventKey(event vault.RuntimeEvent) string {
+	if agentID := strings.TrimSpace(event.Metadata["agent_id"]); agentID != "" {
+		return agentID
+	}
+	return ""
 }
 
 func (api *ControlAPI) browserRoute() (string, string) {

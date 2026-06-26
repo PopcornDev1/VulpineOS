@@ -32,10 +32,13 @@ func TestBrowserToolsStripSessionIDAndCurate(t *testing.T) {
 		if _, ok := props[sessionIDArg]; ok {
 			t.Errorf("tool %s still exposes %s in properties", td.Function.Name, sessionIDArg)
 		}
+		if _, ok := props["session_id"]; ok {
+			t.Errorf("tool %s still exposes injected session_id in properties", td.Function.Name)
+		}
 		if req, ok := td.Function.Parameters["required"].([]string); ok {
 			for _, r := range req {
-				if r == sessionIDArg {
-					t.Errorf("tool %s still requires %s", td.Function.Name, sessionIDArg)
+				if r == sessionIDArg || r == "session_id" {
+					t.Errorf("tool %s still requires injected session arg %s", td.Function.Name, r)
 				}
 			}
 		}
@@ -61,7 +64,7 @@ func TestBrowserToolsStripSessionIDAndCurate(t *testing.T) {
 		t.Error("vulpine_navigate should still require url")
 	}
 
-	for _, recoveryTool := range []string{"vulpine_scroll_into_view", "vulpine_element_status"} {
+	for _, recoveryTool := range []string{"vulpine_scroll_into_view", "vulpine_element_status", "vulpine_observe"} {
 		if _, ok := byName[recoveryTool]; !ok {
 			t.Errorf("%s missing from exposed tools", recoveryTool)
 		}
@@ -70,8 +73,17 @@ func TestBrowserToolsStripSessionIDAndCurate(t *testing.T) {
 		}
 	}
 
-	// Lifecycle/image/extension tools must be excluded.
-	for _, excluded := range []string{"vulpine_new_context", "vulpine_close_context", "vulpine_screenshot", "vulpine_annotated_screenshot"} {
+	for _, recoveryTool := range []string{"vulpine_annotated_screenshot", "vulpine_click_label"} {
+		if _, ok := byName[recoveryTool]; !ok {
+			t.Errorf("%s missing from exposed recovery tools", recoveryTool)
+		}
+		if !IsBrowserTool(recoveryTool) {
+			t.Errorf("IsBrowserTool(%q) = false, want true", recoveryTool)
+		}
+	}
+
+	// Lifecycle/raw-image tools must be excluded.
+	for _, excluded := range []string{"vulpine_new_context", "vulpine_close_context", "vulpine_screenshot"} {
 		if _, ok := byName[excluded]; ok {
 			t.Errorf("tool %s should be excluded from the native toolset", excluded)
 		}
@@ -79,6 +91,154 @@ func TestBrowserToolsStripSessionIDAndCurate(t *testing.T) {
 
 	if !IsBrowserTool("vulpine_navigate") || IsBrowserTool("vulpine_new_context") {
 		t.Error("IsBrowserTool allow-list mismatch")
+	}
+}
+
+func TestBrowserToolsetDispatchesAnnotatedScreenshotFallback(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Page.getAnnotatedScreenshot", map[string]any{
+		"image": "aGVsbG8=",
+		"elements": []map[string]any{{
+			"label":    "@1",
+			"role":     "button",
+			"name":     "Continue",
+			"objectId": "obj-1",
+			"frameId":  "frame-1",
+		}},
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	ts := NewBrowserToolset(client, "ctx-agent", "session-shot")
+	defer ts.Close()
+
+	result, isErr, err := ts.Dispatch(context.Background(), "vulpine_annotated_screenshot", `{"maxElements":20}`)
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("Dispatch returned tool error: %s", result)
+	}
+	if !strings.Contains(result, "[image captured]") || !strings.Contains(result, `"Continue"`) || strings.Contains(result, "aGVsbG8=") {
+		t.Fatalf("annotated screenshot result = %q", result)
+	}
+	call, ok := transport.LastCall("Page.getAnnotatedScreenshot")
+	if !ok {
+		t.Fatal("Page.getAnnotatedScreenshot was not called")
+	}
+	if call.SessionID != "session-shot" {
+		t.Fatalf("annotated screenshot session = %q, want session-shot", call.SessionID)
+	}
+}
+
+func TestBrowserToolsetDispatchesClickLabelWithInjectedSession(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Page.getAnnotatedScreenshot", map[string]any{
+		"image": "aGVsbG8=",
+		"elements": []map[string]any{{
+			"label":    "@1",
+			"role":     "button",
+			"name":     "Continue",
+			"objectId": "obj-1",
+			"frameId":  "frame-1",
+		}},
+	})
+	transport.RespondJSON("Page.scrollIntoViewIfNeeded", map[string]any{})
+	transport.RespondJSON("Page.getContentQuads", map[string]any{
+		"quads": []map[string]any{{
+			"p1": map[string]any{"x": 10, "y": 20},
+			"p2": map[string]any{"x": 30, "y": 20},
+			"p3": map[string]any{"x": 30, "y": 40},
+			"p4": map[string]any{"x": 10, "y": 40},
+		}},
+	})
+	transport.RespondJSON("Page.dispatchMouseEvent", map[string]any{})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	ts := NewBrowserToolset(client, "ctx-agent", "session-click-label")
+	defer ts.Close()
+
+	if result, isErr, err := ts.Dispatch(context.Background(), "vulpine_annotated_screenshot", `{}`); err != nil || isErr {
+		t.Fatalf("annotated screenshot result=%q isErr=%v err=%v", result, isErr, err)
+	}
+	result, isErr, err := ts.Dispatch(context.Background(), "vulpine_click_label", `{"label":"@1"}`)
+	if err != nil {
+		t.Fatalf("click_label dispatch error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("click_label returned tool error: %s", result)
+	}
+	if !strings.Contains(result, "clicked label @1") {
+		t.Fatalf("click_label result = %q", result)
+	}
+	for _, method := range []string{"Page.scrollIntoViewIfNeeded", "Page.getContentQuads", "Page.dispatchMouseEvent"} {
+		calls := transport.CallsByMethod(method)
+		if len(calls) == 0 {
+			t.Fatalf("%s was not called", method)
+		}
+		for _, call := range calls {
+			if call.SessionID != "session-click-label" {
+				t.Fatalf("%s session = %q, want session-click-label", method, call.SessionID)
+			}
+		}
+	}
+}
+
+func TestBrowserToolsetFindNoElementsIsNotToolFailure(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Runtime.evaluate", map[string]any{
+		"result": map[string]any{"value": `[]`},
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	ts := NewBrowserToolset(client, "ctx-agent", "session-find")
+	defer ts.Close()
+
+	result, isErr, err := ts.Dispatch(context.Background(), "vulpine_find", `{"query":"Definitely Missing"}`)
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if isErr {
+		t.Fatalf("find no-elements isErr = true, result=%q", result)
+	}
+	if !strings.Contains(result, `No elements found matching "Definitely Missing"`) {
+		t.Fatalf("find result = %q", result)
+	}
+}
+
+func TestBrowserToolsetCompactsAnnotatedScreenshotResult(t *testing.T) {
+	elements := make([]map[string]any, 120)
+	for i := range elements {
+		elements[i] = map[string]any{
+			"label":    fmt.Sprintf("@%d", i+1),
+			"role":     "button",
+			"name":     strings.Repeat("Long label ", 30),
+			"objectId": fmt.Sprintf("obj-%d", i+1),
+			"frameId":  "frame-1",
+		}
+	}
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Page.getAnnotatedScreenshot", map[string]any{
+		"image":    "aGVsbG8=",
+		"elements": elements,
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	ts := NewBrowserToolset(client, "ctx-agent", "session-large-shot")
+	defer ts.Close()
+
+	result, isErr, err := ts.Dispatch(context.Background(), "vulpine_annotated_screenshot", `{}`)
+	if err != nil || isErr {
+		t.Fatalf("Dispatch result=%q isErr=%v err=%v", result, isErr, err)
+	}
+	if len(result) > 4200 {
+		t.Fatalf("annotated screenshot result length = %d, want compacted <= 4200", len(result))
+	}
+	if !strings.Contains(result, "[image captured]") || !strings.Contains(result, "@1") {
+		t.Fatalf("compacted result lost useful context: %q", result)
 	}
 }
 

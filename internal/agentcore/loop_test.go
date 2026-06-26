@@ -40,11 +40,15 @@ type fakeDispatcher struct {
 	calls    []string
 	callArgs []string
 	results  map[string]string
+	errors   map[string]string
 }
 
 func (f *fakeDispatcher) Dispatch(_ context.Context, name, rawArgs string) (string, bool, error) {
 	f.calls = append(f.calls, name)
 	f.callArgs = append(f.callArgs, rawArgs)
+	if r, ok := f.errors[name]; ok {
+		return r, true, nil
+	}
 	if r, ok := f.results[name]; ok {
 		return r, false, nil
 	}
@@ -58,6 +62,7 @@ type recordEvents struct {
 	toolRes   []string
 	statuses  []string
 	warnings  []string
+	observed  []ObservationState
 }
 
 func (r *recordEvents) OnTextDelta(d string)               { r.deltas = append(r.deltas, d) }
@@ -69,6 +74,9 @@ func (r *recordEvents) OnUsage(Usage)                      {}
 func (r *recordEvents) OnWarning(w string)                 { r.warnings = append(r.warnings, w) }
 func (r *recordEvents) OnPhase(string)                     {}
 func (r *recordEvents) OnTurn(int)                         {}
+func (r *recordEvents) OnObservationState(s ObservationState) {
+	r.observed = append(r.observed, s)
+}
 
 func toolCallTurn(id, name, args string) Completion {
 	return Completion{
@@ -125,19 +133,30 @@ func (f *failDispatcher) Dispatch(_ context.Context, name, _ string) (string, bo
 	return "ok", false, nil
 }
 
-func TestLoopWarnsOnFalseSuccess(t *testing.T) {
-	// Tool fails, then the model replies as if it succeeded -> expect a warning.
+func TestLoopBlocksFinalReplyAfterFailedTool(t *testing.T) {
+	// Tool fails, then the model replies as if it succeeded. The loop should not
+	// emit the model's unverified final text.
 	model := &scriptedCompleter{turns: []Completion{
 		toolCallTurn("c1", "vulpine_click", `{"ref":"x"}`),
 		{Message: ChatMessage{Role: "assistant", Content: "Done! Clicked it."}, FinishReason: "stop"},
 	}}
 	ev := &recordEvents{}
 	loop := NewLoop(model, &failDispatcher{failTool: "vulpine_click"}, ev, LoopConfig{Models: []string{"m"}})
-	if _, err := loop.Run(context.Background(), "click it", nil); err != nil {
+	final, err := loop.Run(context.Background(), "click it", nil)
+	if err != nil {
 		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(final, "Clicked it") {
+		t.Fatalf("final = %q, want unverified failure response instead of model success text", final)
+	}
+	if !strings.Contains(final, "could not verify") || !strings.Contains(final, "vulpine_click") {
+		t.Fatalf("final = %q, want grounded failed-tool response mentioning failed tool", final)
 	}
 	if len(ev.warnings) != 1 || !strings.Contains(ev.warnings[0], "vulpine_click") {
 		t.Fatalf("warnings = %v, want one mentioning vulpine_click", ev.warnings)
+	}
+	if len(ev.assistant) != 1 || ev.assistant[0] != final {
+		t.Fatalf("assistant events = %#v, want only grounded final response %q", ev.assistant, final)
 	}
 }
 
@@ -155,6 +174,119 @@ func TestLoopNoWarningWhenToolRecovers(t *testing.T) {
 	}
 	if len(ev.warnings) != 0 {
 		t.Fatalf("warnings = %v, want none", ev.warnings)
+	}
+}
+
+func TestLoopTracksObservationStateInFailedToolReply(t *testing.T) {
+	model := &scriptedCompleter{turns: []Completion{
+		toolCallTurn("obs", "vulpine_page_info", `{}`),
+		toolCallTurn("click", "vulpine_click", `{"x":620,"y":351,"verify":true}`),
+		{Message: ChatMessage{Role: "assistant", Content: "The click worked."}, FinishReason: "stop"},
+	}}
+	disp := &fakeDispatcher{
+		results: map[string]string{
+			"vulpine_page_info": `{"url":"https://www.reddit.com/register","title":"Reddit","readyState":"complete","forms":1,"inputs":2,"buttons":3}`,
+		},
+		errors: map[string]string{
+			"vulpine_click": "nothing clickable at (620, 351)",
+		},
+	}
+	ev := &recordEvents{}
+	loop := NewLoop(model, disp, ev, LoopConfig{Models: []string{"m"}})
+
+	final, err := loop.Run(context.Background(), "create account", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(final, "click worked") {
+		t.Fatalf("final = %q, want failed-tool response instead of model success", final)
+	}
+	if !strings.Contains(final, "https://www.reddit.com/register") || !strings.Contains(final, "vulpine_page_info") {
+		t.Fatalf("final = %q, want last confirmed observation context", final)
+	}
+	if len(ev.observed) < 2 {
+		t.Fatalf("observation states = %#v, want observed then unverified", ev.observed)
+	}
+	if got := ev.observed[0]; got.Confidence != ObservationObserved || got.URL != "https://www.reddit.com/register" {
+		t.Fatalf("first observation state = %#v, want observed reddit URL", got)
+	}
+	if got := ev.observed[len(ev.observed)-1]; got.Confidence != ObservationUnverified || got.LastFailedTool != "vulpine_click" {
+		t.Fatalf("last observation state = %#v, want unverified failed click", got)
+	}
+}
+
+func TestLoopClassifiesAboutBlankObservationAsLost(t *testing.T) {
+	model := &scriptedCompleter{turns: []Completion{
+		toolCallTurn("obs", "vulpine_page_info", `{}`),
+		{Message: ChatMessage{Role: "assistant", Content: "blank"}, FinishReason: "stop"},
+	}}
+	disp := &fakeDispatcher{results: map[string]string{
+		"vulpine_page_info": `{"url":"about:blank","title":"","readyState":"complete","forms":0,"inputs":0,"buttons":0,"links":0}`,
+	}}
+	ev := &recordEvents{}
+	loop := NewLoop(model, disp, ev, LoopConfig{Models: []string{"m"}})
+
+	if _, err := loop.Run(context.Background(), "inspect", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(ev.observed) == 0 {
+		t.Fatal("no observation states emitted")
+	}
+	got := ev.observed[len(ev.observed)-1]
+	if got.Confidence != ObservationLost || !got.Lost || got.URL != "about:blank" {
+		t.Fatalf("observation state = %#v, want lost about:blank", got)
+	}
+}
+
+func TestLoopClassifiesObserveReportAsLost(t *testing.T) {
+	model := &scriptedCompleter{turns: []Completion{
+		toolCallTurn("obs", "vulpine_observe", `{}`),
+		{Message: ChatMessage{Role: "assistant", Content: "blank"}, FinishReason: "stop"},
+	}}
+	disp := &fakeDispatcher{results: map[string]string{
+		"vulpine_observe": `{"confidence":"lost","url":"about:blank","page_info":"{\"url\":\"about:blank\",\"forms\":0,\"inputs\":0,\"buttons\":0,\"links\":0}","guidance":"Retry navigation"}`,
+	}}
+	ev := &recordEvents{}
+	loop := NewLoop(model, disp, ev, LoopConfig{Models: []string{"m"}})
+
+	if _, err := loop.Run(context.Background(), "inspect", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(ev.observed) == 0 {
+		t.Fatal("no observation states emitted")
+	}
+	got := ev.observed[len(ev.observed)-1]
+	if got.Confidence != ObservationLost || !got.Lost || got.URL != "about:blank" {
+		t.Fatalf("observation state = %#v, want lost observe report", got)
+	}
+}
+
+func TestLoopBlocksFalseSuccessAfterLostRecoveryObservation(t *testing.T) {
+	model := &scriptedCompleter{turns: []Completion{
+		toolCallTurn("click", "vulpine_click", `{"x":10,"y":20}`),
+		toolCallTurn("obs", "vulpine_observe", `{}`),
+		{Message: ChatMessage{Role: "assistant", Content: "Done, I clicked it successfully."}, FinishReason: "stop"},
+	}}
+	disp := &fakeDispatcher{
+		results: map[string]string{
+			"vulpine_observe": `{"confidence":"lost","url":"about:blank","guidance":"Retry navigation"}`,
+		},
+		errors: map[string]string{
+			"vulpine_click": "nothing clickable",
+		},
+	}
+	ev := &recordEvents{}
+	loop := NewLoop(model, disp, ev, LoopConfig{Models: []string{"m"}})
+
+	final, err := loop.Run(context.Background(), "click the button", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(final, "successfully") {
+		t.Fatalf("final = %q, want failed-tool guard to replace fake success", final)
+	}
+	if !strings.Contains(final, "could not verify") || !strings.Contains(final, "vulpine_click") {
+		t.Fatalf("final = %q, want grounded failed-tool response", final)
 	}
 }
 

@@ -45,6 +45,13 @@ func TestToolSchemaProperties(t *testing.T) {
 		t.Errorf("retry type = %q, want 'boolean'", snap.InputSchema.Properties["retry"].Type)
 	}
 
+	observe := toolMap["vulpine_observe"]
+	for _, p := range []string{"sessionId", "profile", "visual", "maxElements"} {
+		if _, ok := observe.InputSchema.Properties[p]; !ok {
+			t.Errorf("vulpine_observe missing %q property", p)
+		}
+	}
+
 	// vulpine_click should have x, y as number type
 	click := toolMap["vulpine_click"]
 	for _, coord := range []string{"x", "y"} {
@@ -87,6 +94,100 @@ func TestToolSchemaProperties(t *testing.T) {
 	closeCtx := toolMap["vulpine_close_context"]
 	if _, ok := closeCtx.InputSchema.Properties["contextId"]; !ok {
 		t.Error("vulpine_close_context missing 'contextId' property")
+	}
+}
+
+func TestHandleObserveReturnsCompactObservedReport(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Runtime.evaluate", map[string]any{
+		"result": map[string]any{"value": `{"url":"https://example.test","title":"Example","readyState":"complete","scrollY":0,"scrollHeight":1000,"viewportHeight":720,"forms":1,"inputs":2,"buttons":1,"links":3,"images":0,"modals":0}`},
+	})
+	transport.RespondJSON("Page.getOptimizedDOM", map[string]any{
+		"snapshot":  map[string]any{"v": 1, "title": "Example", "url": "https://example.test", "nodes": []any{}},
+		"truncated": false,
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	result, err := handleObserve(context.Background(), client, nil, json.RawMessage(`{"sessionId":"session-observe","visual":false}`))
+	if err != nil {
+		t.Fatalf("handleObserve returned dispatch error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleObserve result = %#v, want success", result)
+	}
+	var report observeReport
+	if err := json.Unmarshal([]byte(result.Content[0].Text), &report); err != nil {
+		t.Fatalf("decode observe report: %v\n%s", err, result.Content[0].Text)
+	}
+	if report.Confidence != "observed" {
+		t.Fatalf("confidence = %q, want observed", report.Confidence)
+	}
+	if report.URL != "https://example.test" || report.PageInfo == "" || report.Snapshot == "" {
+		t.Fatalf("observe report missing page info/snapshot: %#v", report)
+	}
+	if strings.Contains(result.Content[0].Text, "aGVsbG8=") {
+		t.Fatalf("observe report leaked base64: %s", result.Content[0].Text)
+	}
+}
+
+func TestHandleObserveClassifiesAboutBlankAsLost(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondJSON("Runtime.evaluate", map[string]any{
+		"result": map[string]any{"value": `{"url":"about:blank","title":"","readyState":"complete","scrollY":0,"scrollHeight":8,"viewportHeight":720,"forms":0,"inputs":0,"buttons":0,"links":0,"images":0,"modals":0}`},
+	})
+	transport.RespondJSON("Page.getOptimizedDOM", map[string]any{
+		"snapshot":  map[string]any{"v": 1, "title": "", "url": "about:blank", "nodes": []any{}},
+		"truncated": false,
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	result, err := handleObserve(context.Background(), client, nil, json.RawMessage(`{"sessionId":"session-lost","visual":false}`))
+	if err != nil {
+		t.Fatalf("handleObserve returned dispatch error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleObserve result = %#v, want success with lost confidence", result)
+	}
+	var report observeReport
+	if err := json.Unmarshal([]byte(result.Content[0].Text), &report); err != nil {
+		t.Fatalf("decode observe report: %v\n%s", err, result.Content[0].Text)
+	}
+	if report.Confidence != "lost" || report.URL != "about:blank" {
+		t.Fatalf("observe report = %#v, want lost about:blank", report)
+	}
+	if !strings.Contains(report.Guidance, "Retry navigation") {
+		t.Fatalf("guidance = %q, want recovery hint", report.Guidance)
+	}
+}
+
+func TestHandleObservePlainScreenshotFallbackStaysUnverified(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	transport.RespondError("Runtime.evaluate", "execution context unavailable")
+	transport.RespondError("Page.getOptimizedDOM", "optimized DOM timeout")
+	transport.RespondError("Accessibility.getFullAXTree", "AX timeout")
+	transport.RespondError("Page.getAnnotatedScreenshot", "method not found")
+	transport.RespondJSON("Page.screenshot", map[string]any{"data": "aGVsbG8="})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+
+	result, err := handleObserve(context.Background(), client, nil, json.RawMessage(`{"sessionId":"session-plain-shot","visual":true}`))
+	if err != nil {
+		t.Fatalf("handleObserve returned dispatch error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleObserve result = %#v, want unverified report rather than hard error", result)
+	}
+	var report observeReport
+	if err := json.Unmarshal([]byte(result.Content[0].Text), &report); err != nil {
+		t.Fatalf("decode observe report: %v\n%s", err, result.Content[0].Text)
+	}
+	if report.Confidence != "unverified" {
+		t.Fatalf("confidence = %q, want unverified for plain screenshot fallback", report.Confidence)
+	}
+	if report.VisualFallback != "[image captured]" {
+		t.Fatalf("visual fallback = %q, want summarized plain image", report.VisualFallback)
 	}
 }
 

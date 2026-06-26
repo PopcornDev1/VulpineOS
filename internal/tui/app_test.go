@@ -3270,6 +3270,82 @@ func TestBrowserToggleCmdDefersWindowWork(t *testing.T) {
 	}
 }
 
+func TestBrowserShowCmdDoesNotHideVisibleContext(t *testing.T) {
+	window := &fakeBrowserContextWindow{visible: true}
+
+	msg := browserShowCmd(window, "ctx-1")()
+	notice, ok := msg.(statusNotice)
+	if !ok {
+		t.Fatalf("browserShowCmd returned %T, want statusNotice", msg)
+	}
+	if notice.text != "Context already visible" {
+		t.Fatalf("notice = %q, want context already visible", notice.text)
+	}
+	if strings.Join(window.calls, ",") != "visible:ctx-1" {
+		t.Fatalf("window calls = %#v", window.calls)
+	}
+
+	window = &fakeBrowserContextWindow{visible: false}
+	msg = browserShowCmd(window, "ctx-1")()
+	notice, ok = msg.(statusNotice)
+	if !ok {
+		t.Fatalf("browserShowCmd returned %T, want statusNotice", msg)
+	}
+	if notice.text != "Context shown" {
+		t.Fatalf("notice = %q, want context shown", notice.text)
+	}
+	if strings.Join(window.calls, ",") != "visible:ctx-1,show:ctx-1" {
+		t.Fatalf("window calls = %#v", window.calls)
+	}
+}
+
+func TestRuntimeObservationWarningPersistsAndClears(t *testing.T) {
+	app := NewApp(nil, nil, nil, nil, &config.Config{}, nil)
+	app.agentList.AddAgent(vault.Agent{ID: "agent-1", Name: "Agent 1", Status: "active"})
+
+	model, _ := app.Update(shared.RuntimeEventMsg{Event: vault.RuntimeEvent{
+		Component: "agentcore",
+		Event:     "browser_observation_lost",
+		Metadata: map[string]string{
+			"agent_id": "agent-1",
+			"url":      "about:blank",
+		},
+		Timestamp: time.Now(),
+	}})
+	app = model.(App)
+	if !strings.Contains(app.persistentWarning, "Agent 1") || !strings.Contains(app.persistentWarning, "observation lost") {
+		t.Fatalf("persistent warning = %q", app.persistentWarning)
+	}
+	app.notice = "Temporary notice"
+	app.noticeTTL = 1
+	model, _ = app.Update(shared.TickMsg{})
+	app = model.(App)
+	if app.notice != "" {
+		t.Fatalf("transient notice should clear, got %q", app.notice)
+	}
+	if app.statusNoticeText() != app.persistentWarning || app.persistentWarning == "" {
+		t.Fatalf("persistent warning not restored after transient notice: %q", app.statusNoticeText())
+	}
+
+	model, _ = app.Update(shared.RuntimeEventMsg{Event: vault.RuntimeEvent{
+		Component: "agentcore",
+		Event:     "browser_observation_observed",
+		Metadata:  map[string]string{"agent_id": "agent-1"},
+		Timestamp: time.Now(),
+	}})
+	app = model.(App)
+	if app.persistentWarning != "" {
+		t.Fatalf("persistent warning should clear after observed event, got %q", app.persistentWarning)
+	}
+
+	app.persistentWarning = "stale warning"
+	app.persistentWarningAgent = "agent-1"
+	_ = app.dispatchCommand("clear-warning", "")
+	if app.persistentWarning != "" || app.persistentWarningAgent != "" {
+		t.Fatalf("clear-warning did not clear persistent warning: %q %q", app.persistentWarning, app.persistentWarningAgent)
+	}
+}
+
 func TestBrowserToggleContextIDUsesSelectedAgentLiveContext(t *testing.T) {
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
@@ -3805,6 +3881,133 @@ func TestRemoteStatusUpdatesSystemPanel(t *testing.T) {
 	}
 	if strings.Contains(view, "Pool:") {
 		t.Fatalf("system view should no longer show pool stats:\n%s", view)
+	}
+}
+
+func TestRemoteStatusHydratesPersistentObservationWarning(t *testing.T) {
+	control := &fakeControlClient{responses: map[string]any{
+		"status.get": map[string]any{
+			"browser_observation": map[string]any{
+				"id":        42,
+				"component": "agentcore",
+				"event":     "browser_observation_lost",
+				"level":     "warn",
+				"message":   "browser observation lost",
+				"metadata": map[string]string{
+					"agent_id": "agent-1",
+					"url":      "about:blank",
+				},
+				"timestamp": time.Now(),
+			},
+		},
+	}}
+	app := NewAppWithControl(nil, nil, nil, nil, &config.Config{}, nil, control)
+	defer app.stopForwarders()
+	app.agentList.AddAgent(vault.Agent{ID: "agent-1", Name: "Agent 1", Status: "active"})
+
+	msg := app.loadRemoteStatus()()
+	model, _ := app.Update(msg)
+	app = model.(App)
+
+	if !strings.Contains(app.persistentWarning, "Agent 1") || !strings.Contains(app.persistentWarning, "observation lost") {
+		t.Fatalf("persistent warning = %q", app.persistentWarning)
+	}
+}
+
+func TestClearWarningSuppressesSameRemoteObservation(t *testing.T) {
+	control := &fakeControlClient{responses: map[string]any{
+		"status.get": map[string]any{
+			"browser_observation": map[string]any{
+				"id":        42,
+				"component": "agentcore",
+				"event":     "browser_observation_lost",
+				"level":     "warn",
+				"message":   "browser observation lost",
+				"metadata": map[string]string{
+					"agent_id": "agent-1",
+					"url":      "about:blank",
+				},
+				"timestamp": time.Now(),
+			},
+		},
+	}}
+	app := NewAppWithControl(nil, nil, nil, nil, &config.Config{}, nil, control)
+	defer app.stopForwarders()
+	app.agentList.AddAgent(vault.Agent{ID: "agent-1", Name: "Agent 1", Status: "active"})
+
+	model, _ := app.Update(app.loadRemoteStatus()())
+	app = model.(App)
+	if app.persistentWarning == "" {
+		t.Fatal("expected remote observation warning")
+	}
+	_ = app.dispatchCommand("clear-warning", "/clear-warning")
+	if app.persistentWarning != "" {
+		t.Fatalf("warning should clear, got %q", app.persistentWarning)
+	}
+
+	model, _ = app.Update(app.loadRemoteStatus()())
+	app = model.(App)
+	if app.persistentWarning != "" {
+		t.Fatalf("same remote warning should stay dismissed, got %q", app.persistentWarning)
+	}
+}
+
+func TestRuntimeObservationWarningSeedsBeyondThreeEvents(t *testing.T) {
+	db := openTestVault(t)
+	audit := runtimeaudit.New(db)
+	if _, err := audit.Log("agentcore", "warn", "browser_observation_lost", "agent A lost", map[string]string{
+		"agent_id": "agent-a",
+		"url":      "about:blank",
+	}); err != nil {
+		t.Fatalf("Log lost: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := audit.Log("agentcore", "info", "browser_observation_observed", "other observed", map[string]string{
+			"agent_id": fmt.Sprintf("agent-observed-%d", i),
+			"url":      "https://example.test",
+		}); err != nil {
+			t.Fatalf("Log observed %d: %v", i, err)
+		}
+	}
+
+	app := NewAppWithControl(nil, nil, nil, db, &config.Config{}, audit, nil)
+	defer app.stopForwarders()
+
+	if !strings.Contains(app.persistentWarning, "observation lost") || !strings.Contains(app.persistentWarning, "about:blank") {
+		t.Fatalf("persistent warning = %q, want older unresolved warning", app.persistentWarning)
+	}
+}
+
+func TestLocalRecoverRecordsVisibleUserTurn(t *testing.T) {
+	db := openTestVault(t)
+	fp, err := vault.GenerateFingerprint("recover")
+	if err != nil {
+		t.Fatalf("GenerateFingerprint: %v", err)
+	}
+	agent, err := db.CreateAgent("Agent 1", "recover", fp)
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	if err := db.UpdateAgentStatus(agent.ID, "ready"); err != nil {
+		t.Fatalf("UpdateAgentStatus: %v", err)
+	}
+	app := NewAppWithControl(nil, nil, nil, db, &config.Config{}, nil, nil)
+	defer app.stopForwarders()
+	app.selectedAgentID = agent.ID
+	app.conversation.SetAgentID(agent.ID)
+
+	_ = app.dispatchCommand("recover", "/recover")
+
+	msgs, err := db.GetMessages(agent.ID)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("recover did not append a user-visible message")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != "user" || last.DisplayContent != "/recover: observe current browser state" {
+		t.Fatalf("last message = %#v", last)
 	}
 }
 

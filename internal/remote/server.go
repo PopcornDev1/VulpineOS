@@ -14,6 +14,7 @@ import (
 
 	"vulpineos/internal/agentmsg"
 	"vulpineos/internal/juggler"
+	"vulpineos/internal/vault"
 )
 
 const maxWebSocketMessageBytes int64 = 2 << 20
@@ -229,11 +230,19 @@ func (s *Server) BroadcastEvent(method, sessionID string, params json.RawMessage
 
 func (s *Server) BroadcastAgentStatus(status agentmsg.AgentStatus) {
 	params, err := json.Marshal(map[string]any{
-		"agentId":   status.AgentID,
-		"contextId": status.ContextID,
-		"status":    status.Status,
-		"objective": status.Objective,
-		"tokens":    status.Tokens,
+		"agentId":               status.AgentID,
+		"contextId":             status.ContextID,
+		"status":                status.Status,
+		"objective":             status.Objective,
+		"tokens":                status.Tokens,
+		"phase":                 status.Phase,
+		"turn":                  status.Turn,
+		"maxTurns":              status.MaxTurns,
+		"lastActivity":          status.LastActivity,
+		"observationConfidence": status.ObservationConfidence,
+		"observationSummary":    status.ObservationSummary,
+		"observationUrl":        status.ObservationURL,
+		"lastFailedTool":        status.LastFailedTool,
 	})
 	if err != nil {
 		return
@@ -252,6 +261,14 @@ func (s *Server) BroadcastConversation(msg agentmsg.ConversationMsg) {
 		return
 	}
 	s.BroadcastEvent("Vulpine.conversation", "", params)
+}
+
+func (s *Server) BroadcastRuntimeEvent(event vault.RuntimeEvent) {
+	params, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	s.BroadcastEvent("Vulpine.runtimeEvent", "", params)
 }
 
 func (s *Server) enqueueBroadcast(env []byte) {

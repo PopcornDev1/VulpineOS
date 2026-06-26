@@ -87,3 +87,31 @@ func TestBrowserSystemPromptBoundsBroadWebsiteChecks(t *testing.T) {
 		}
 	}
 }
+
+func TestBrowserSystemPromptIncludesObservationRecoveryPolicy(t *testing.T) {
+	for _, want := range []string{
+		"vulpine_observe with visual:true",
+		"Treat its confidence field literally",
+		"vulpine_annotated_screenshot",
+		"vulpine_click_label",
+		"do not infer success",
+	} {
+		if !strings.Contains(browserSystemPrompt, want) {
+			t.Fatalf("browserSystemPrompt missing observation recovery rule %q:\n%s", want, browserSystemPrompt)
+		}
+	}
+}
+
+func TestBrowserSystemPromptIncludesAccountSecretPolicy(t *testing.T) {
+	for _, want := range []string{
+		"Accounts, Credentials, and Verification",
+		"Do not fabricate legally meaningful identity fields such as date of birth",
+		"treat passwords, recovery codes, and verification codes as secrets",
+		"Never claim an email code, password, signup step, consent choice, or form submission succeeded unless you observed",
+		"CAPTCHA",
+	} {
+		if !strings.Contains(browserSystemPrompt, want) {
+			t.Fatalf("browserSystemPrompt missing account/secret rule %q:\n%s", want, browserSystemPrompt)
+		}
+	}
+}

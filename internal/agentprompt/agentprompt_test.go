@@ -62,3 +62,17 @@ func TestSystemPromptIncludesChatFormattingPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestSystemPromptIncludesObservationRecoveryAndSecretPolicy(t *testing.T) {
+	for _, want := range []string{
+		"vulpine_observe with visual:true",
+		"observed/unverified/lost confidence",
+		"never infer success from a failed tool",
+		"Do not fabricate legally meaningful identity fields such as date of birth",
+		"Treat generated passwords, recovery codes, and verification codes as secrets",
+	} {
+		if !strings.Contains(SystemPrompt, want) {
+			t.Fatalf("SystemPrompt missing recovery/secret rule %q:\n%s", want, SystemPrompt)
+		}
+	}
+}

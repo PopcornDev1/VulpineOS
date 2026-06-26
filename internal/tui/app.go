@@ -104,17 +104,18 @@ type eventNotice struct {
 }
 
 type remoteStatusMsg struct {
-	Err            string `json:"-"`
-	KernelRunning  bool   `json:"kernel_running"`
-	KernelPID      int    `json:"kernel_pid"`
-	KernelHeadless bool   `json:"kernel_headless"`
-	BrowserRoute   string `json:"browser_route"`
-	BrowserWindow  string `json:"browser_window"`
-	PoolAvailable  int    `json:"pool_available"`
-	PoolActive     int    `json:"pool_active"`
-	PoolTotal      int    `json:"pool_total"`
-	ActiveContexts int    `json:"active_contexts"`
-	ActivePages    int    `json:"active_pages"`
+	Err                string             `json:"-"`
+	KernelRunning      bool               `json:"kernel_running"`
+	KernelPID          int                `json:"kernel_pid"`
+	KernelHeadless     bool               `json:"kernel_headless"`
+	BrowserRoute       string             `json:"browser_route"`
+	BrowserWindow      string             `json:"browser_window"`
+	PoolAvailable      int                `json:"pool_available"`
+	PoolActive         int                `json:"pool_active"`
+	PoolTotal          int                `json:"pool_total"`
+	ActiveContexts     int                `json:"active_contexts"`
+	ActivePages        int                `json:"active_pages"`
+	BrowserObservation vault.RuntimeEvent `json:"browser_observation"`
 }
 
 // ControlClient sends TUI control commands over a remote connection.
@@ -221,12 +222,16 @@ type App struct {
 	renameAgentID           string // agent ID being renamed
 	notice                  string
 	noticeTTL               int // number of ticks before notice is cleared
+	persistentWarning       string
+	persistentWarningAgent  string
 	quitConfirmArmed        bool
 	selectionAutoScrollDir  int
 	selectionAutoScrollCol  int
 	pendingChatFocusAgentID string
 	liveAgentContexts       map[string]string
 	agentTokens             map[string]int
+	observationWarnings     map[string]vault.RuntimeEvent
+	dismissedWarnings       map[string]string
 	clipboardWrite          func(string) error
 
 	// Text inputs
@@ -275,34 +280,36 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 	mon := monitor.New()
 
 	app := App{
-		kernel:            k,
-		client:            client,
-		orch:              orch,
-		vault:             v,
-		cfg:               cfg,
-		monitor:           mon,
-		control:           control,
-		leftWidth:         24,
-		rightWidth:        0,
-		leftSplit:         13, // system info height (includes pool stats now)
-		rightSplit:        10, // agent detail height in right column
-		nameInput:         nameIn,
-		taskInput:         taskIn,
-		renameInput:       renameIn,
-		systemInfo:        systeminfo.New(),
-		agentList:         agentlist.New(),
-		agentDetail:       agentdetail.New(),
-		conversation:      conversation.New(),
-		contextList:       contextlist.New(),
-		settings:          settings.New(),
-		commandPalette:    commandpalette.New(),
-		liveAgentContexts: make(map[string]string),
-		agentTokens:       make(map[string]int),
-		clipboardWrite:    clipboard.WriteAll,
-		eventCh:           eventCh,
-		eventIn:           eventIn,
-		stopCh:            stopCh,
-		stopOnce:          &sync.Once{},
+		kernel:              k,
+		client:              client,
+		orch:                orch,
+		vault:               v,
+		cfg:                 cfg,
+		monitor:             mon,
+		control:             control,
+		leftWidth:           24,
+		rightWidth:          0,
+		leftSplit:           13, // system info height (includes pool stats now)
+		rightSplit:          10, // agent detail height in right column
+		nameInput:           nameIn,
+		taskInput:           taskIn,
+		renameInput:         renameIn,
+		systemInfo:          systeminfo.New(),
+		agentList:           agentlist.New(),
+		agentDetail:         agentdetail.New(),
+		conversation:        conversation.New(),
+		contextList:         contextlist.New(),
+		settings:            settings.New(),
+		commandPalette:      commandpalette.New(),
+		liveAgentContexts:   make(map[string]string),
+		agentTokens:         make(map[string]int),
+		observationWarnings: make(map[string]vault.RuntimeEvent),
+		dismissedWarnings:   make(map[string]string),
+		clipboardWrite:      clipboard.WriteAll,
+		eventCh:             eventCh,
+		eventIn:             eventIn,
+		stopCh:              stopCh,
+		stopOnce:            &sync.Once{},
 	}
 	go forwardTUIEvents(stopCh, eventIn, eventCh)
 	if control != nil {
@@ -310,15 +317,21 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 	}
 	emitEvent := app.emitEvent
 	if audit != nil {
-		if events, err := audit.List(vault.RuntimeEventFilter{Limit: 3}); err == nil {
+		if events, err := audit.List(vault.RuntimeEventFilter{Limit: 100}); err == nil {
 			seed := make([]shared.RuntimeEventMsg, 0, len(events))
-			for _, event := range events {
-				seed = append(seed, shared.RuntimeEventMsg{Event: event})
+			for i, event := range events {
+				if i < 3 {
+					seed = append(seed, shared.RuntimeEventMsg{Event: event})
+				}
 			}
 			app.systemInfo.SetRuntimeEvents(seed)
+			for i := len(events) - 1; i >= 0; i-- {
+				app.applyRuntimeObservationEvent(events[i])
+			}
 		}
 		sub := audit.Subscribe()
 		go func() {
+			defer audit.Unsubscribe(sub)
 			for {
 				select {
 				case <-stopCh:
@@ -479,21 +492,39 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		})
 		client.Subscribe("Vulpine.agentStatus", func(sid string, params json.RawMessage) {
 			var e struct {
-				AgentID   string `json:"agentId"`
-				ContextID string `json:"contextId"`
-				Status    string `json:"status"`
-				Objective string `json:"objective"`
-				Tokens    int    `json:"tokens"`
+				AgentID               string `json:"agentId"`
+				ParentID              string `json:"parentId"`
+				ContextID             string `json:"contextId"`
+				Status                string `json:"status"`
+				Objective             string `json:"objective"`
+				Tokens                int    `json:"tokens"`
+				Phase                 string `json:"phase"`
+				Turn                  int    `json:"turn"`
+				MaxTurns              int    `json:"maxTurns"`
+				LastActivity          int64  `json:"lastActivity"`
+				ObservationConfidence string `json:"observationConfidence"`
+				ObservationSummary    string `json:"observationSummary"`
+				ObservationURL        string `json:"observationUrl"`
+				LastFailedTool        string `json:"lastFailedTool"`
 			}
 			if err := json.Unmarshal(params, &e); err != nil {
 				return
 			}
 			emitEvent(shared.AgentStatusMsg{
-				AgentID:   e.AgentID,
-				ContextID: e.ContextID,
-				Status:    e.Status,
-				Objective: e.Objective,
-				Tokens:    e.Tokens,
+				AgentID:               e.AgentID,
+				ParentID:              e.ParentID,
+				ContextID:             e.ContextID,
+				Status:                e.Status,
+				Objective:             e.Objective,
+				Tokens:                e.Tokens,
+				Phase:                 e.Phase,
+				Turn:                  e.Turn,
+				MaxTurns:              e.MaxTurns,
+				LastActivity:          e.LastActivity,
+				ObservationConfidence: e.ObservationConfidence,
+				ObservationSummary:    e.ObservationSummary,
+				ObservationURL:        e.ObservationURL,
+				LastFailedTool:        e.LastFailedTool,
 			})
 		})
 		client.Subscribe("Vulpine.conversation", func(sid string, params json.RawMessage) {
@@ -538,16 +569,20 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 						return
 					}
 					emitEvent(shared.AgentStatusMsg{
-						AgentID:      status.AgentID,
-						ParentID:     status.ParentID,
-						ContextID:    status.ContextID,
-						Status:       status.Status,
-						Objective:    status.Objective,
-						Tokens:       status.Tokens,
-						Phase:        status.Phase,
-						Turn:         status.Turn,
-						MaxTurns:     status.MaxTurns,
-						LastActivity: status.LastActivity,
+						AgentID:               status.AgentID,
+						ParentID:              status.ParentID,
+						ContextID:             status.ContextID,
+						Status:                status.Status,
+						Objective:             status.Objective,
+						Tokens:                status.Tokens,
+						Phase:                 status.Phase,
+						Turn:                  status.Turn,
+						MaxTurns:              status.MaxTurns,
+						LastActivity:          status.LastActivity,
+						ObservationConfidence: status.ObservationConfidence,
+						ObservationSummary:    status.ObservationSummary,
+						ObservationURL:        status.ObservationURL,
+						LastFailedTool:        status.LastFailedTool,
 					})
 				}
 			}
@@ -1141,6 +1176,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.waitForEvent())
 	case shared.RuntimeEventMsg:
 		a.systemInfo, _ = a.systemInfo.Update(msg)
+		a.applyRuntimeObservationEvent(msg.Event)
 		cmds = append(cmds, a.waitForEvent())
 	case shared.TrustWarmMsg:
 		state := strings.ToUpper(strings.TrimSpace(msg.State))
@@ -1350,6 +1386,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			BrowserWindow: msg.BrowserWindow,
 		})
 		a.systemInfo.SetBrowserCounts(msg.ActiveContexts, msg.ActivePages)
+		if strings.TrimSpace(msg.BrowserObservation.Event) != "" {
+			a.applyRuntimeObservationEvent(msg.BrowserObservation)
+		}
 
 	case remoteMessagesLoadedMsg:
 		if msg.AgentID == a.selectedAgentID {
@@ -1680,6 +1719,120 @@ func (a App) agentDisplayName(agentID string) string {
 		}
 	}
 	return agentID
+}
+
+func (a App) statusNoticeText() string {
+	if strings.TrimSpace(a.notice) != "" {
+		return a.notice
+	}
+	return a.persistentWarning
+}
+
+func (a *App) clearPersistentWarning() {
+	if len(a.observationWarnings) > 0 {
+		if a.dismissedWarnings == nil {
+			a.dismissedWarnings = make(map[string]string)
+		}
+		for key, event := range a.observationWarnings {
+			a.dismissedWarnings[key] = runtimeObservationEventSignature(event)
+		}
+	}
+	a.persistentWarning = ""
+	a.persistentWarningAgent = ""
+	if a.observationWarnings != nil {
+		clear(a.observationWarnings)
+	}
+}
+
+func (a *App) applyRuntimeObservationEvent(event vault.RuntimeEvent) {
+	if !strings.EqualFold(strings.TrimSpace(event.Component), "agentcore") {
+		return
+	}
+	if a.observationWarnings == nil {
+		a.observationWarnings = make(map[string]vault.RuntimeEvent)
+	}
+	if a.dismissedWarnings == nil {
+		a.dismissedWarnings = make(map[string]string)
+	}
+	key := runtimeObservationEventKey(event)
+	switch event.Event {
+	case "browser_observation_observed":
+		if key == "" {
+			clear(a.observationWarnings)
+			clear(a.dismissedWarnings)
+		} else {
+			delete(a.observationWarnings, key)
+			delete(a.dismissedWarnings, key)
+		}
+	case "browser_observation_unverified", "browser_observation_lost":
+		signature := runtimeObservationEventSignature(event)
+		if a.dismissedWarnings[key] == signature {
+			a.refreshPersistentObservationWarning()
+			return
+		}
+		delete(a.dismissedWarnings, key)
+		a.observationWarnings[key] = event
+	}
+	a.refreshPersistentObservationWarning()
+}
+
+func runtimeObservationEventKey(event vault.RuntimeEvent) string {
+	if agentID := strings.TrimSpace(event.Metadata["agent_id"]); agentID != "" {
+		return agentID
+	}
+	return "__global__"
+}
+
+func runtimeObservationEventSignature(event vault.RuntimeEvent) string {
+	if event.ID > 0 {
+		return fmt.Sprintf("id:%d", event.ID)
+	}
+	metadata, _ := json.Marshal(event.Metadata)
+	return fmt.Sprintf("event:%s|message:%s|timestamp:%s|metadata:%s", event.Event, event.Message, event.Timestamp.Format(time.RFC3339Nano), metadata)
+}
+
+func (a *App) refreshPersistentObservationWarning() {
+	var latest vault.RuntimeEvent
+	found := false
+	for _, event := range a.observationWarnings {
+		if !found || event.Timestamp.After(latest.Timestamp) || (event.Timestamp.Equal(latest.Timestamp) && event.ID > latest.ID) {
+			latest = event
+			found = true
+		}
+	}
+	if !found {
+		a.persistentWarning = ""
+		a.persistentWarningAgent = ""
+		return
+	}
+	a.persistentWarningAgent = strings.TrimSpace(latest.Metadata["agent_id"])
+	a.persistentWarning = a.runtimeObservationWarningText(latest)
+}
+
+func (a App) runtimeObservationWarningText(event vault.RuntimeEvent) string {
+	agentID := strings.TrimSpace(event.Metadata["agent_id"])
+	name := a.agentDisplayName(agentID)
+	if name == "" {
+		name = "Agent"
+	}
+	state := "observation unverified"
+	if event.Event == "browser_observation_lost" {
+		state = "observation lost"
+	}
+	var detail string
+	if tool := strings.TrimSpace(event.Metadata["last_failed_tool"]); tool != "" {
+		detail = " after " + tool
+	}
+	if url := strings.TrimSpace(event.Metadata["url"]); url != "" {
+		if detail != "" {
+			detail += " at " + url
+		} else {
+			detail = " at " + url
+		}
+	} else if summary := strings.TrimSpace(event.Metadata["summary"]); summary != "" {
+		detail = ": " + summary
+	}
+	return fmt.Sprintf("%s: browser %s%s", name, state, detail)
 }
 
 // updateNameInput handles keystrokes in "new-agent-name" mode.
@@ -2262,6 +2415,12 @@ func (a *App) dispatchCommand(name, rawInput string) tea.Cmd {
 		return a.handleOpenSessionLog()
 	case "trace":
 		a.handleTraceToggle()
+	case "recover":
+		return a.handleObservationRecover()
+	case "clear-warning":
+		a.clearPersistentWarning()
+		a.notice = "Warning cleared"
+		a.noticeTTL = 3
 	case "settings":
 		return a.openSettings()
 	case "config", "model":
@@ -2297,6 +2456,49 @@ func (a *App) handleBrowserToggle() tea.Cmd {
 	a.notice = "Updating context window..."
 	a.noticeTTL = 3
 	return browserToggleCmd(a.kernel.Window(), contextID)
+}
+
+func (a *App) handleObservationRecover() tea.Cmd {
+	if strings.TrimSpace(a.selectedAgentID) == "" {
+		a.notice = "Select an agent first"
+		a.noticeTTL = 3
+		return nil
+	}
+	var cmds []tea.Cmd
+	if a.kernel != nil && a.kernel.Window() != nil {
+		if contextID := a.selectedAgentBrowserContextID(); contextID != "" {
+			cmds = append(cmds, browserShowCmd(a.kernel.Window(), contextID))
+		}
+	}
+	if isLiveAgentStatus(a.selectedAgentStatus()) {
+		a.notice = "Browser shown; recover after the current turn finishes"
+		a.noticeTTL = 4
+		return tea.Batch(cmds...)
+	}
+	a.notice = "Recovering browser observation..."
+	a.noticeTTL = 3
+	prompt := observationRecoverPrompt()
+	display := "/recover: observe current browser state"
+	if a.control == nil {
+		a.recordLocalOperatorMessage(a.selectedAgentID, prompt, display)
+		cmds = append(cmds, conversation.ThinkingTick())
+	}
+	cmds = append(cmds, a.sendMessageToAgent(a.selectedAgentID, prompt, display))
+	return tea.Batch(cmds...)
+}
+
+func (a *App) recordLocalOperatorMessage(agentID, text, displayContent string) {
+	if strings.TrimSpace(agentID) == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	if agentID == a.selectedAgentID {
+		a.conversation.AddEntryWithDisplay("user", text, displayContent)
+		a.conversation.ForceScrollToBottom()
+		a.conversation.SetThinking(true)
+	}
+	if a.vault != nil {
+		a.vault.AppendMessageWithDisplay(agentID, "user", text, displayContent, 0)
+	}
 }
 
 func (a App) browserToggleContextID() (string, string) {
@@ -2368,6 +2570,22 @@ func browserToggleCmd(window browserContextWindow, contextID string) tea.Cmd {
 		}
 		return statusNotice{text: "Context shown"}
 	}
+}
+
+func browserShowCmd(window browserContextWindow, contextID string) tea.Cmd {
+	return func() tea.Msg {
+		if window.IsContextVisible(contextID) {
+			return statusNotice{text: "Context already visible"}
+		}
+		if err := window.ShowContext(contextID); err != nil {
+			return statusNotice{text: "Failed to show context: " + err.Error()}
+		}
+		return statusNotice{text: "Context shown"}
+	}
+}
+
+func observationRecoverPrompt() string {
+	return `Recover browser state now. First call vulpine_observe with visual:true and profile:"compact". If the report is lost or unverified, retry navigation/observation or ask the user to take over. Do not infer success from failed tools.`
 }
 
 func (a *App) handleHideAll() tea.Cmd {
@@ -2774,8 +2992,8 @@ func (a App) View() string {
 		return fitTerminalBlock(a.agentPicker.View(), a.width, a.height)
 	}
 	if a.height < 4 {
-		if a.notice != "" {
-			return fitTerminalLine(shared.WarmingStyle.Render("  "+a.notice), a.width)
+		if notice := a.statusNoticeText(); notice != "" {
+			return fitTerminalLine(shared.WarmingStyle.Render("  "+notice), a.width)
 		}
 		return fitTerminalLine(a.renderStatusBar(), a.width)
 	}
@@ -2854,8 +3072,8 @@ func (a App) View() string {
 
 	// Status bar (notice replaces status bar content when present)
 	var statusBar string
-	if a.notice != "" {
-		statusBar = fitTerminalLine(shared.WarmingStyle.Render("  "+a.notice), a.width)
+	if notice := a.statusNoticeText(); notice != "" {
+		statusBar = fitTerminalLine(shared.WarmingStyle.Render("  "+notice), a.width)
 	} else {
 		statusBar = fitTerminalLine(a.renderStatusBar(), a.width)
 	}
@@ -2923,8 +3141,8 @@ func (a App) renderCompactWorkbench() string {
 	}
 	body := a.renderFocusPanel(panel, content, panelWidth, contentHeight)
 	statusBar := fitTerminalLine(a.renderStatusBar(), a.width)
-	if a.notice != "" {
-		statusBar = fitTerminalLine(shared.WarmingStyle.Render("  "+a.notice), a.width)
+	if notice := a.statusNoticeText(); notice != "" {
+		statusBar = fitTerminalLine(shared.WarmingStyle.Render("  "+notice), a.width)
 	}
 	return fitTerminalBlock(lipgloss.JoinVertical(lipgloss.Left, body, statusBar), a.width, a.height)
 }

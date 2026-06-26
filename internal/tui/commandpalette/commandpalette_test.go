@@ -180,6 +180,18 @@ func TestQuitAliasesDoNotAddDefaultCommands(t *testing.T) {
 	}
 }
 
+func TestDefaultCommandsIncludeRecoveryCommands(t *testing.T) {
+	seen := map[string]bool{}
+	for _, command := range defaultCommands() {
+		seen[command.Name] = true
+	}
+	for _, name := range []string{"recover", "clear-warning"} {
+		if !seen[name] {
+			t.Fatalf("default commands missing %q", name)
+		}
+	}
+}
+
 func TestPartialCloseAliasDoesNotPreferQuit(t *testing.T) {
 	m := New()
 	m.Activate()

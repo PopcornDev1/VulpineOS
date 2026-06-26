@@ -18,40 +18,52 @@ import (
 // browserToolAllowList is the curated set of MCP browser tools exposed to the
 // model. It covers navigation, inspection, interaction, reliability, and
 // human-like input — everything an agent needs to drive Vulpine — while
-// excluding page/context lifecycle tools (the loop manages a single page),
-// pure-image tools (most models aren't multimodal), and extension-gated tools
-// (credential/audio/mobile) that are no-ops without the private build.
+// excluding page/context lifecycle tools (the loop manages a single page), raw
+// image-only tools, and extension-gated tools (credential/audio/mobile) that
+// are no-ops without the private build. Annotated screenshots are allowed as a
+// recovery path because image payloads are summarized and element labels stay
+// textual.
 var browserToolAllowList = map[string]bool{
-	"vulpine_navigate":         true,
-	"vulpine_snapshot":         true,
-	"vulpine_click":            true,
-	"vulpine_type":             true,
-	"vulpine_scroll":           true,
-	"vulpine_get_ax_tree":      true,
-	"vulpine_click_ref":        true,
-	"vulpine_type_ref":         true,
-	"vulpine_hover_ref":        true,
-	"vulpine_scroll_into_view": true,
-	"vulpine_wait":             true,
-	"vulpine_find":             true,
-	"vulpine_verify":           true,
-	"vulpine_page_settled":     true,
-	"vulpine_select_option":    true,
-	"vulpine_fill_form":        true,
-	"vulpine_page_info":        true,
-	"vulpine_press_key":        true,
-	"vulpine_clear_input":      true,
-	"vulpine_get_form_errors":  true,
-	"vulpine_element_status":   true,
-	"vulpine_human_click":      true,
-	"vulpine_human_type":       true,
-	"vulpine_human_scroll":     true,
+	"vulpine_navigate":             true,
+	"vulpine_snapshot":             true,
+	"vulpine_observe":              true,
+	"vulpine_click":                true,
+	"vulpine_type":                 true,
+	"vulpine_scroll":               true,
+	"vulpine_get_ax_tree":          true,
+	"vulpine_click_ref":            true,
+	"vulpine_type_ref":             true,
+	"vulpine_hover_ref":            true,
+	"vulpine_scroll_into_view":     true,
+	"vulpine_wait":                 true,
+	"vulpine_find":                 true,
+	"vulpine_verify":               true,
+	"vulpine_page_settled":         true,
+	"vulpine_select_option":        true,
+	"vulpine_fill_form":            true,
+	"vulpine_page_info":            true,
+	"vulpine_press_key":            true,
+	"vulpine_clear_input":          true,
+	"vulpine_get_form_errors":      true,
+	"vulpine_element_status":       true,
+	"vulpine_annotated_screenshot": true,
+	"vulpine_click_label":          true,
+	"vulpine_human_click":          true,
+	"vulpine_human_type":           true,
+	"vulpine_human_scroll":         true,
 }
 
 // sessionIDArg is the per-page session argument the MCP tools take. The loop
 // owns a single page and injects this automatically, so it is stripped from the
 // schema the model sees.
 const sessionIDArg = "sessionId"
+
+func isInjectedSessionArg(toolName, argName string) bool {
+	if argName == sessionIDArg {
+		return true
+	}
+	return toolName == "vulpine_click_label" && argName == "session_id"
+}
 
 // BrowserTools returns the curated agent tools as OpenAI function schemas:
 // browser tools derived from the canonical MCP definitions plus local workspace
@@ -66,7 +78,7 @@ func BrowserTools() []ToolDef {
 		props := map[string]interface{}{}
 		var required []string
 		for name, p := range d.InputSchema.Properties {
-			if name == sessionIDArg {
+			if isInjectedSessionArg(d.Name, name) {
 				continue
 			}
 			prop := map[string]interface{}{"type": p.Type}
@@ -76,7 +88,7 @@ func BrowserTools() []ToolDef {
 			props[name] = prop
 		}
 		for _, r := range d.InputSchema.Required {
-			if r != sessionIDArg {
+			if !isInjectedSessionArg(d.Name, r) {
 				required = append(required, r)
 			}
 		}
@@ -393,6 +405,9 @@ func (t *BrowserToolset) Dispatch(ctx context.Context, name string, rawArgs stri
 	}
 
 	args[sessionIDArg] = session
+	if name == "vulpine_click_label" {
+		args["session_id"] = session
+	}
 
 	encoded, err := json.Marshal(args)
 	if err != nil {
@@ -404,6 +419,9 @@ func (t *BrowserToolset) Dispatch(ctx context.Context, name string, rawArgs stri
 		return "", false, err
 	}
 	text := contentText(res)
+	if name == "vulpine_annotated_screenshot" {
+		text = truncate(text, 4000)
+	}
 	isErr = res.IsError || looksLikeToolFailure(text)
 	// Navigation moves to a new page; clear the loop history so legitimate
 	// repeated actions on the new page aren't falsely flagged.
@@ -1025,7 +1043,6 @@ func contentText(res *mcp.ToolCallResult) string {
 func looksLikeToolFailure(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	return strings.HasPrefix(trimmed, "FAIL:") ||
-		strings.HasPrefix(trimmed, "No elements found") ||
 		strings.HasPrefix(trimmed, "SAME:") ||
 		strings.Contains(trimmed, "\nErrors:")
 }

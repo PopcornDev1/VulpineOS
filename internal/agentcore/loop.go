@@ -123,6 +123,7 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 	// if the model then replies as if the task succeeded (false-success).
 	lastToolFailed := false
 	lastFailedTool := ""
+	var observation ObservationState
 	navGuard := newNavigationGuard(task)
 
 	for iter := 0; iter < l.cfg.MaxIterations; iter++ {
@@ -154,6 +155,7 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 			final := comp.Message.Content
 			if lastToolFailed {
 				l.events.OnWarning(fmt.Sprintf("assistant replied after %s failed, with no successful retry recorded", lastFailedTool))
+				final = failedToolFinalReply(lastFailedTool, observation)
 			}
 			l.events.OnAssistant(final)
 			l.events.OnStatus("completed")
@@ -195,10 +197,21 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 				if !policyBlocked {
 					lastToolFailed = true
 					lastFailedTool = tc.Function.Name
+					observation = unverifiedStateAfterFailure(observation, tc.Function.Name, result)
+					emitObservationState(l.events, observation)
 				}
 			} else {
-				lastToolFailed = false
-				lastFailedTool = ""
+				if isObservationTool(tc.Function.Name) {
+					observation = observedStateFromTool(tc.Function.Name, result)
+					emitObservationState(l.events, observation)
+					if observation.Confidence == ObservationObserved {
+						lastToolFailed = false
+						lastFailedTool = ""
+					}
+				} else {
+					lastToolFailed = false
+					lastFailedTool = ""
+				}
 			}
 			navGuard.AfterTool(tc.Function.Name, tc.Function.Arguments, isErr)
 			messages = append(messages, ChatMessage{
@@ -215,6 +228,23 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 
 	l.events.OnStatus("error")
 	return "", fmt.Errorf("agent did not finish within %d iterations", l.cfg.MaxIterations)
+}
+
+func failedToolFinalReply(tool string, observation ObservationState) string {
+	tool = strings.TrimSpace(tool)
+	if tool == "" {
+		tool = "the last browser tool"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "I could not verify that action. The last browser tool failed: `%s`.", tool)
+	if observation.LastObservedTool != "" {
+		fmt.Fprintf(&b, " Last confirmed observation: %s.", observation.LastObservedSummary)
+	}
+	if observation.Lost || observation.Confidence == ObservationLost {
+		b.WriteString(" The browser appears to be in a lost page state.")
+	}
+	b.WriteString(" I will not infer success from a failed tool result; please retry observation, use a visual/browser recovery step, or take over the visible browser for this step.")
+	return b.String()
 }
 
 type navigationGuard struct {
@@ -309,7 +339,7 @@ func (g *navigationGuard) AfterTool(name, rawArgs string, isErr bool) {
 
 func isObservationTool(name string) bool {
 	switch name {
-	case "vulpine_page_settled", "vulpine_snapshot", "vulpine_page_info", "vulpine_get_ax_tree":
+	case "vulpine_page_settled", "vulpine_snapshot", "vulpine_page_info", "vulpine_get_ax_tree", "vulpine_observe", "vulpine_annotated_screenshot":
 		return true
 	default:
 		return false

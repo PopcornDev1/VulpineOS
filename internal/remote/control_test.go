@@ -10,6 +10,7 @@ import (
 	"vulpineos/internal/juggler"
 	"vulpineos/internal/orchestrator"
 	"vulpineos/internal/pool"
+	"vulpineos/internal/runtimeaudit"
 	"vulpineos/internal/testutil"
 	"vulpineos/internal/vault"
 )
@@ -156,6 +157,71 @@ func TestControlAPIStatusGetReportsNativeRuntime(t *testing.T) {
 	}
 	if out.BrowserRoute != "disabled" {
 		t.Fatalf("browser route = %q, want disabled", out.BrowserRoute)
+	}
+}
+
+func TestControlAPIStatusGetIncludesLatestBrowserObservation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db := openControlTestVault(t)
+	audit := runtimeaudit.New(db)
+	if _, err := audit.Log("agentcore", "warn", "browser_observation_lost", "browser observation lost", map[string]string{
+		"agent_id": "agent-1",
+		"url":      "about:blank",
+	}); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	api := &ControlAPI{Audit: audit}
+
+	out := callControl[struct {
+		Observation struct {
+			Component string            `json:"component"`
+			Event     string            `json:"event"`
+			Level     string            `json:"level"`
+			Metadata  map[string]string `json:"metadata"`
+		} `json:"browser_observation"`
+	}](t, api, "status.get", map[string]any{})
+
+	if out.Observation.Event != "browser_observation_lost" || out.Observation.Level != "warn" {
+		t.Fatalf("observation = %#v", out.Observation)
+	}
+	if out.Observation.Component != "agentcore" {
+		t.Fatalf("observation component = %q, want agentcore", out.Observation.Component)
+	}
+	if out.Observation.Metadata["url"] != "about:blank" {
+		t.Fatalf("observation metadata = %#v", out.Observation.Metadata)
+	}
+}
+
+func TestControlAPIStatusGetReportsLatestUnresolvedBrowserObservation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db := openControlTestVault(t)
+	audit := runtimeaudit.New(db)
+	if _, err := audit.Log("agentcore", "warn", "browser_observation_lost", "agent A lost", map[string]string{
+		"agent_id": "agent-a",
+		"url":      "about:blank",
+	}); err != nil {
+		t.Fatalf("Log lost: %v", err)
+	}
+	if _, err := audit.Log("agentcore", "info", "browser_observation_observed", "agent B observed", map[string]string{
+		"agent_id": "agent-b",
+		"url":      "https://example.test",
+	}); err != nil {
+		t.Fatalf("Log observed: %v", err)
+	}
+	api := &ControlAPI{Audit: audit}
+
+	out := callControl[struct {
+		Observation struct {
+			Event    string            `json:"event"`
+			Metadata map[string]string `json:"metadata"`
+		} `json:"browser_observation"`
+	}](t, api, "status.get", map[string]any{})
+
+	if out.Observation.Event != "browser_observation_lost" {
+		t.Fatalf("observation event = %q, want unresolved lost warning", out.Observation.Event)
+	}
+	if out.Observation.Metadata["agent_id"] != "agent-a" {
+		t.Fatalf("observation metadata = %#v, want agent-a", out.Observation.Metadata)
 	}
 }
 

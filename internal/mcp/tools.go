@@ -75,6 +75,20 @@ func baseTools() []ToolDefinition {
 			},
 		},
 		{
+			Name:        "vulpine_observe",
+			Description: "Recover compact page state after unreliable DOM/AX/tool failures. Combines page info, semantic snapshot fallback, and optional annotated visual fallback into a small JSON report with confidence observed/unverified/lost.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"sessionId":   {Type: "string", Description: "Target page session ID"},
+					"profile":     {Type: "string", Description: "Snapshot profile to use: compact, expanded, or full. Default compact."},
+					"visual":      {Type: "boolean", Description: "If true, include annotated screenshot fallback when page info/snapshot fail or the page appears blank. Default true."},
+					"maxElements": {Type: "number", Description: "Max labeled elements for visual fallback. Default 50."},
+				},
+				Required: []string{"sessionId"},
+			},
+		},
+		{
 			Name:        "vulpine_click",
 			Description: "Click at specific coordinates on the page. When verify is true, checks that an element actually exists at the target coordinates before clicking.",
 			InputSchema: InputSchema{
@@ -510,6 +524,8 @@ func handleToolCallFull(ctx context.Context, client *juggler.Client, tracker *Co
 		return handleNavigate(client, tracker, args)
 	case "vulpine_snapshot":
 		return handleSnapshot(client, args)
+	case "vulpine_observe":
+		return handleObserve(ctx, client, tracker, args)
 	case "vulpine_click":
 		return handleClick(client, args)
 	case "vulpine_type":

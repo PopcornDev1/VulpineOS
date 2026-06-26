@@ -77,6 +77,7 @@ type nativeAgent struct {
 	turn         int      // current iteration in the agent loop
 	maxTurns     int      // max iterations before forced stop
 	lastActivity int64    // unix timestamp of last recorded activity
+	observation  ObservationState
 }
 
 // NewManager creates a native runtime bound to a juggler client and model
@@ -388,7 +389,7 @@ func (m *Manager) List() []agentmsg.AgentStatus {
 	defer m.mu.RUnlock()
 	out := make([]agentmsg.AgentStatus, 0, len(m.agents))
 	for _, ag := range m.agents {
-		out = append(out, agentmsg.AgentStatus{AgentID: ag.id, ParentID: ag.parentID, ContextID: ag.contextID, Status: ag.status, Objective: ag.objective})
+		out = append(out, agentStatusFromNative(ag))
 	}
 	return out
 }
@@ -485,35 +486,44 @@ func (m *Manager) finish(agentID string, ag *nativeAgent) {
 
 func (m *Manager) emitStatus(agentID, contextID, status, objective string) {
 	m.mu.Lock()
-	tokens := 0
-	parentID := ""
-	var phase string
-	turn := 0
-	maxTurns := 0
-	lastActivity := int64(0)
+	out := agentmsg.AgentStatus{
+		AgentID:   agentID,
+		ContextID: contextID,
+		Status:    status,
+		Objective: objective,
+	}
 	if ag, ok := m.agents[agentID]; ok {
 		ag.status = status
 		ag.objective = objective
-		tokens = ag.tokens
-		parentID = ag.parentID
-		phase = ag.phase
-		turn = ag.turn
-		maxTurns = ag.maxTurns
-		lastActivity = ag.lastActivity
+		out = agentStatusFromNative(ag)
 	}
 	m.mu.Unlock()
-	m.safeSendStatus(agentmsg.AgentStatus{
-		AgentID:      agentID,
-		ParentID:     parentID,
-		ContextID:    contextID,
-		Status:       status,
-		Objective:    objective,
-		Tokens:       tokens,
-		Phase:        phase,
-		Turn:         turn,
-		MaxTurns:     maxTurns,
-		LastActivity: lastActivity,
-	})
+	m.safeSendStatus(out)
+}
+
+func agentStatusFromNative(ag *nativeAgent) agentmsg.AgentStatus {
+	if ag == nil {
+		return agentmsg.AgentStatus{}
+	}
+	status := agentmsg.AgentStatus{
+		AgentID:      ag.id,
+		ParentID:     ag.parentID,
+		ContextID:    ag.contextID,
+		Status:       ag.status,
+		Objective:    ag.objective,
+		Tokens:       ag.tokens,
+		Phase:        ag.phase,
+		Turn:         ag.turn,
+		MaxTurns:     ag.maxTurns,
+		LastActivity: ag.lastActivity,
+	}
+	if ag.observation.Confidence != "" {
+		status.ObservationConfidence = string(ag.observation.Confidence)
+		status.ObservationSummary = ag.observation.LastObservedSummary
+		status.ObservationURL = ag.observation.URL
+		status.LastFailedTool = ag.observation.LastFailedTool
+	}
+	return status
 }
 
 func (m *Manager) emitConversation(agentID, role, content string) {
@@ -919,6 +929,42 @@ func (e *managerEvents) OnUsage(turn Usage)     { e.m.addTokens(e.agentID, turn)
 func (e *managerEvents) OnWarning(text string) {
 	e.m.emitConversation(e.agentID, "system", "Warning: "+text)
 }
+func (e *managerEvents) OnObservationState(state ObservationState) {
+	state = normalizeObservationState(state)
+	status := e.m.updateObservationState(e.agentID, state)
+	if status.AgentID != "" {
+		e.m.safeSendStatus(status)
+	}
+
+	event, level, message := observationRuntimeEvent(state)
+	metadata := map[string]string{
+		"agent_id":   e.agentID,
+		"confidence": state.Confidence,
+	}
+	if state.LastObservedTool != "" {
+		metadata["last_observed_tool"] = state.LastObservedTool
+	}
+	if state.LastFailedTool != "" {
+		metadata["last_failed_tool"] = state.LastFailedTool
+	}
+	if state.URL != "" {
+		metadata["url"] = state.URL
+	}
+	if state.Title != "" {
+		metadata["title"] = state.Title
+	}
+	if state.LastObservedSummary != "" {
+		metadata["summary"] = state.LastObservedSummary
+	}
+	if state.LastFailure != "" {
+		metadata["failure"] = traceSnippet(state.LastFailure)
+	}
+	e.m.logRuntimeEvent(level, event, message, metadata)
+
+	if state.Confidence == ObservationUnverified || state.Confidence == ObservationLost {
+		e.m.emitConversation(e.agentID, "system", observationConversationWarning(state))
+	}
+}
 func (e *managerEvents) OnPhase(phase string) {
 	e.m.mu.Lock()
 	if ag, ok := e.m.agents[e.agentID]; ok {
@@ -926,6 +972,69 @@ func (e *managerEvents) OnPhase(phase string) {
 		ag.lastActivity = time.Now().Unix()
 	}
 	e.m.mu.Unlock()
+}
+
+func (m *Manager) updateObservationState(agentID string, state ObservationState) agentmsg.AgentStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ag, ok := m.agents[agentID]
+	if !ok {
+		return agentmsg.AgentStatus{}
+	}
+	ag.observation = state
+	ag.lastActivity = time.Now().Unix()
+	return agentStatusFromNative(ag)
+}
+
+func normalizeObservationState(state ObservationState) ObservationState {
+	state.Confidence = strings.TrimSpace(state.Confidence)
+	switch state.Confidence {
+	case ObservationObserved, ObservationUnverified, ObservationLost:
+	default:
+		state.Confidence = ObservationUnverified
+	}
+	state.LastObservedTool = strings.TrimSpace(state.LastObservedTool)
+	state.LastObservedSummary = strings.TrimSpace(state.LastObservedSummary)
+	state.LastFailedTool = strings.TrimSpace(state.LastFailedTool)
+	state.LastFailure = strings.TrimSpace(state.LastFailure)
+	state.URL = strings.TrimSpace(state.URL)
+	state.Title = strings.TrimSpace(state.Title)
+	if state.Confidence == ObservationLost {
+		state.Lost = true
+	}
+	return state
+}
+
+func observationRuntimeEvent(state ObservationState) (event, level, message string) {
+	switch state.Confidence {
+	case ObservationObserved:
+		return "browser_observation_observed", "info", "browser observation refreshed"
+	case ObservationLost:
+		return "browser_observation_lost", "warn", "browser observation lost"
+	default:
+		return "browser_observation_unverified", "warn", "browser observation unverified after tool failure"
+	}
+}
+
+func observationConversationWarning(state ObservationState) string {
+	if state.Confidence == ObservationLost {
+		summary := state.LastObservedSummary
+		if summary == "" && state.URL != "" {
+			summary = "url=" + state.URL
+		}
+		if summary == "" {
+			summary = "browser page appears blank or unavailable"
+		}
+		return "Observation warning: browser state appears lost (" + summary + "). Retry observation, use visual recovery, or ask the user to take over."
+	}
+	parts := []string{"Observation warning: browser state is unverified"}
+	if state.LastFailedTool != "" {
+		parts = append(parts, "after "+state.LastFailedTool+" failed")
+	}
+	if state.LastObservedSummary != "" {
+		parts = append(parts, "last confirmed: "+state.LastObservedSummary)
+	}
+	return strings.Join(parts, "; ") + "."
 }
 func (e *managerEvents) OnTurn(turn int) {
 	e.m.mu.Lock()

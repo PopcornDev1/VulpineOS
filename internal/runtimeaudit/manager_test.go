@@ -50,6 +50,32 @@ func TestManagerLogAndSubscribe(t *testing.T) {
 	}
 }
 
+func TestManagerUnsubscribeStopsEvents(t *testing.T) {
+	db, err := vault.OpenPath(t.TempDir() + "/vault.db")
+	if err != nil {
+		t.Fatalf("OpenPath: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	manager := New(db)
+	t.Cleanup(manager.Close)
+
+	sub := manager.Subscribe()
+	manager.Unsubscribe(sub)
+
+	select {
+	case _, ok := <-sub:
+		if ok {
+			t.Fatal("unsubscribed channel should be closed")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for unsubscribed channel to close")
+	}
+	if _, err := manager.Log("kernel", "info", "started", "kernel started", nil); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+}
+
 func TestManagerLogRedactsSensitiveMetadata(t *testing.T) {
 	db, err := vault.OpenPath(t.TempDir() + "/vault.db")
 	if err != nil {
