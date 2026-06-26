@@ -205,6 +205,9 @@ func (m *Model) SetThinking(thinking bool) {
 			m.phraseIdx = rand.Intn(len(wakingPhrases))
 		}
 	}
+	if m.autoScroll {
+		m.scrollToBottom()
+	}
 }
 
 // IsThinking returns whether the conversation is waiting on an agent response.

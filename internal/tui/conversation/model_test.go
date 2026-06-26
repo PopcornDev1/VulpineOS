@@ -247,6 +247,30 @@ func TestThinkingIndicatorLeavesBlankLineAfterMessage(t *testing.T) {
 	}
 }
 
+func TestThinkingIndicatorKeepsJustSentMessageVisible(t *testing.T) {
+	m := New()
+	m.SetSize(60, 12)
+	m.SetAgentID("agent-1")
+	m.SetAwake(true)
+	for i := 0; i < 5; i++ {
+		m.AddEntry("assistant", "history line")
+	}
+	m.AddEntry("user", "new sent message")
+	m.ForceScrollToBottom()
+
+	before := stripANSI(m.View())
+	if !strings.Contains(before, "new sent message") {
+		t.Fatalf("sent message should be visible before thinking starts:\n%s", before)
+	}
+
+	m.SetThinking(true)
+
+	after := stripANSI(m.View())
+	if !strings.Contains(after, "new sent message") {
+		t.Fatalf("sent message should stay visible after thinking starts:\n%s", after)
+	}
+}
+
 func TestActiveToolStatusSuppressesSeparateThinkingIndicator(t *testing.T) {
 	m := New()
 	m.SetSize(80, 18)
