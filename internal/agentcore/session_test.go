@@ -92,12 +92,30 @@ func TestBrowserSystemPromptIncludesObservationRecoveryPolicy(t *testing.T) {
 	for _, want := range []string{
 		"vulpine_observe with visual:true",
 		"Treat its confidence field literally",
+		"Automatic recovery observation",
 		"vulpine_annotated_screenshot",
 		"vulpine_click_label",
 		"do not infer success",
 	} {
 		if !strings.Contains(browserSystemPrompt, want) {
 			t.Fatalf("browserSystemPrompt missing observation recovery rule %q:\n%s", want, browserSystemPrompt)
+		}
+	}
+}
+
+func TestAgentPromptsIncludeFormIntelligencePolicy(t *testing.T) {
+	for name, prompt := range map[string]string{
+		"lead": LeadAgentPrompt,
+		"base": BaseSubAgentPrompt,
+	} {
+		for _, want := range []string{
+			"vulpine_page_info returns formFields and activeElement",
+			"vulpine_fill_form can target fields by label, name, id, placeholder, or autocomplete",
+			"Re-run vulpine_page_info after overlays, route changes, or failed fills",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("%s prompt missing form intelligence rule %q:\n%s", name, want, prompt)
+			}
 		}
 	}
 }
@@ -112,6 +130,25 @@ func TestBrowserSystemPromptIncludesAccountSecretPolicy(t *testing.T) {
 	} {
 		if !strings.Contains(browserSystemPrompt, want) {
 			t.Fatalf("browserSystemPrompt missing account/secret rule %q:\n%s", want, browserSystemPrompt)
+		}
+	}
+}
+
+func TestAgentPromptsIncludeChallengeGovernancePolicy(t *testing.T) {
+	for name, prompt := range map[string]string{
+		"lead": LeadAgentPrompt,
+		"base": BaseSubAgentPrompt,
+	} {
+		for _, want := range []string{
+			"vulpine_captcha_detect",
+			"vulpine_captcha_solve",
+			"vulpine_captcha_apply",
+			"only after operator approval or an explicit configured policy allows it",
+			"NEEDS_USER_ACTION",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("%s prompt missing challenge governance rule %q:\n%s", name, want, prompt)
+			}
 		}
 	}
 }
