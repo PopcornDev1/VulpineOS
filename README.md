@@ -72,7 +72,7 @@ VulpineOS builds on Camoufox's battle-tested stealth foundation (Firefox 146.0.1
 │  ├── Orchestrator (spawn citizens + nomads, auto-release)      │
 │  ├── Native Agent Runtime (streaming model/tool loop)         │
 │  ├── Proxy Manager (geo-synced fingerprints, auto-rotation)    │
-│  ├── MCP Server (36 tools via stdio)                           │
+│  ├── MCP Server (42 tools via stdio)                           │
 │  ├── Foxbridge CDP Proxy (Puppeteer compatibility)             │
 │  ├── Agent Bus (inter-agent messaging with approval policies)  │
 │  ├── Cost Tracker (per-agent budgets, usage alerts)            │
@@ -365,7 +365,7 @@ For a standardized AWS Mac builder runbook and wrapper scripts, see
 
 ## MCP Tools
 
-VulpineOS exposes 36 tools via Model Context Protocol:
+VulpineOS exposes 42 tools via Model Context Protocol:
 
 | Tool | Description |
 |------|-------------|
@@ -374,7 +374,7 @@ VulpineOS exposes 36 tools via Model Context Protocol:
 | Reliability tools | Wait, find, verify, screenshot diff, page-settled checks, select options, fill forms, page info, key press, clear input, form errors |
 | Human-realism tools | Human-like click, scroll, and type timing |
 | Annotated interaction | Annotated screenshots and click-by-label with `@N` labels |
-| Extension surfaces | Credential metadata/autofill, audio capture, Sentinel signals, and mobile bridge hooks. The stock public build returns unavailable unless an extension provider is attached; credential URL metadata/errors are redacted at the MCP boundary. |
+| Extension surfaces | Credential metadata/autofill, audio capture, challenge governance, Sentinel signals, and mobile bridge hooks. The stock public build returns unavailable unless an extension provider is attached; credential, challenge, and URL metadata/errors are redacted at the MCP boundary. |
 | Mobile bridge | List Android devices, start a local CDP bridge, and disconnect bridge sessions when the public mobile bridge provider is installed |
 
 ---

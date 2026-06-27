@@ -65,6 +65,51 @@ func extensionTools() []ToolDefinition {
 			},
 		},
 		{
+			Name:        "vulpine_captcha_detect",
+			Description: "Detect whether the current page has a challenge/captcha and return sanitized metadata only. Public builds report captcha provider unavailable unless an authorized provider is registered.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"sessionId":       {Type: "string", Description: "Target page session ID"},
+					"page_id":         {Type: "string", Description: "Browser page identifier (legacy alias for sessionId)"},
+					"frame_id":        {Type: "string", Description: "Optional frame identifier"},
+					"url":             {Type: "string", Description: "Current page URL, redacted in tool output"},
+					"vendor_hint":     {Type: "string", Description: "Optional challenge vendor hint: recaptcha, hcaptcha, turnstile, image, unknown"},
+					"send_screenshot": {Type: "boolean", Description: "Whether policy allows sending screenshot evidence to the registered provider"},
+				},
+				Required: []string{"sessionId"},
+			},
+		},
+		{
+			Name:        "vulpine_captcha_solve",
+			Description: "Request an authorized provider to solve a detected challenge. Returns only sanitized status/metadata; raw solution tokens never cross the tool boundary.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"challenge_id":     {Type: "string", Description: "Challenge ID returned by vulpine_captcha_detect"},
+					"allow_cost_cents": {Type: "number", Description: "Maximum allowed provider cost in cents for this solve"},
+					"auto_apply":       {Type: "boolean", Description: "Whether policy allows applying after solve"},
+				},
+				Required: []string{"challenge_id"},
+			},
+		},
+		{
+			Name:        "vulpine_captcha_apply",
+			Description: "Apply a provider-owned challenge solution. Does not submit the surrounding form unless submit is true and policy/provider allows it.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"sessionId":    {Type: "string", Description: "Target page session ID"},
+					"challenge_id": {Type: "string", Description: "Challenge ID returned by vulpine_captcha_detect"},
+					"solution_id":  {Type: "string", Description: "Solution ID returned by vulpine_captcha_solve"},
+					"page_id":      {Type: "string", Description: "Browser page identifier (legacy alias for sessionId)"},
+					"frame_id":     {Type: "string", Description: "Optional frame identifier"},
+					"submit":       {Type: "boolean", Description: "Whether to submit the challenge/form after applying"},
+				},
+				Required: []string{"sessionId", "challenge_id", "solution_id"},
+			},
+		},
+		{
 			Name:        "vulpine_autofill",
 			Description: "Look up a credential for site_url and ask the registered credential provider to fill the username and password fields. Plaintext never crosses the tool boundary.",
 			InputSchema: InputSchema{
@@ -170,6 +215,12 @@ func handleExtensionTool(ctx context.Context, client *juggler.Client, name strin
 		return handleAnnotatedScreenshot(ctx, client, args), true
 	case "vulpine_get_credential":
 		return handleGetCredential(ctx, args), true
+	case "vulpine_captcha_detect":
+		return handleCaptchaDetect(ctx, args), true
+	case "vulpine_captcha_solve":
+		return handleCaptchaSolve(ctx, args), true
+	case "vulpine_captcha_apply":
+		return handleCaptchaApply(ctx, args), true
 	case "vulpine_autofill":
 		return handleAutofill(ctx, client, args), true
 	case "vulpine_start_audio_capture":
@@ -276,6 +327,137 @@ func handleClickLabel(ctx context.Context, client *juggler.Client, args json.Raw
 		return errorResult(fmt.Errorf("click_label: click object %q: %w", target.ObjectID, err))
 	}
 	return textResult(fmt.Sprintf("clicked label %s (objectId=%s frameId=%s)", p.Label, target.ObjectID, target.FrameID))
+}
+
+func handleCaptchaDetect(ctx context.Context, args json.RawMessage) *ToolCallResult {
+	var p struct {
+		SessionID      string `json:"sessionId"`
+		PageID         string `json:"page_id"`
+		FrameID        string `json:"frame_id"`
+		URL            string `json:"url"`
+		VendorHint     string `json:"vendor_hint"`
+		SendScreenshot bool   `json:"send_screenshot"`
+	}
+	if err := json.Unmarshal(normalizeArgs(args), &p); err != nil {
+		return errorResult(err)
+	}
+	provider := extensions.Registry.Captcha()
+	if provider == nil || !provider.Available() {
+		return errorResult(fmt.Errorf("captcha provider unavailable"))
+	}
+	pageID := p.SessionID
+	if pageID == "" {
+		pageID = p.PageID
+	}
+	challenge, err := provider.Detect(ctx, extensions.CaptchaDetectRequest{
+		PageID:         pageID,
+		FrameID:        p.FrameID,
+		URL:            p.URL,
+		VendorHint:     p.VendorHint,
+		SendScreenshot: p.SendScreenshot,
+	})
+	if err != nil {
+		return errorResult(fmt.Errorf("%s", redactMCPDisplayText(err.Error())))
+	}
+	if challenge == nil || challenge.ID == "" {
+		b, _ := json.Marshal(map[string]interface{}{"found": false})
+		return textResult(string(b))
+	}
+	body := map[string]interface{}{
+		"found":                 true,
+		"challenge_id":          challenge.ID,
+		"vendor":                challenge.Vendor,
+		"type":                  challenge.Type,
+		"domain":                challenge.Domain,
+		"site_key":              challenge.SiteKey,
+		"action":                challenge.Action,
+		"requires_confirmation": challenge.RequiresConfirmation,
+		"policy_decision":       challenge.PolicyDecision,
+		"url":                   redactMCPURLForDisplay(p.URL),
+	}
+	if !challenge.DetectedAt.IsZero() {
+		body["detected_at"] = challenge.DetectedAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+	b, _ := json.Marshal(body)
+	return textResult(string(b))
+}
+
+func handleCaptchaSolve(ctx context.Context, args json.RawMessage) *ToolCallResult {
+	var p struct {
+		ChallengeID    string `json:"challenge_id"`
+		AllowCostCents int    `json:"allow_cost_cents"`
+		AutoApply      bool   `json:"auto_apply"`
+	}
+	if err := json.Unmarshal(normalizeArgs(args), &p); err != nil {
+		return errorResult(err)
+	}
+	provider := extensions.Registry.Captcha()
+	if provider == nil || !provider.Available() {
+		return errorResult(fmt.Errorf("captcha provider unavailable"))
+	}
+	solution, err := provider.Solve(ctx, extensions.CaptchaSolveRequest{
+		ChallengeID:    p.ChallengeID,
+		AllowCostCents: p.AllowCostCents,
+		AutoApply:      p.AutoApply,
+	})
+	if err != nil {
+		return errorResult(fmt.Errorf("%s", redactMCPDisplayText(err.Error())))
+	}
+	if solution == nil || solution.ID == "" {
+		return errorResult(fmt.Errorf("captcha solve returned no solution"))
+	}
+	body := map[string]interface{}{
+		"solution_id":         solution.ID,
+		"challenge_id":        solution.ChallengeID,
+		"provider":            solution.Provider,
+		"status":              solution.Status,
+		"instructions":        redactMCPDisplayText(solution.Instructions),
+		"cost_estimate_cents": solution.CostEstimateCents,
+		"needs_confirmation":  solution.NeedsConfirmation,
+	}
+	if !solution.ExpiresAt.IsZero() {
+		body["expires_at"] = solution.ExpiresAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+	b, _ := json.Marshal(body)
+	return textResult(string(b))
+}
+
+func handleCaptchaApply(ctx context.Context, args json.RawMessage) *ToolCallResult {
+	var p struct {
+		SessionID   string `json:"sessionId"`
+		ChallengeID string `json:"challenge_id"`
+		SolutionID  string `json:"solution_id"`
+		PageID      string `json:"page_id"`
+		FrameID     string `json:"frame_id"`
+		Submit      bool   `json:"submit"`
+	}
+	if err := json.Unmarshal(normalizeArgs(args), &p); err != nil {
+		return errorResult(err)
+	}
+	provider := extensions.Registry.Captcha()
+	if provider == nil || !provider.Available() {
+		return errorResult(fmt.Errorf("captcha provider unavailable"))
+	}
+	pageID := p.SessionID
+	if pageID == "" {
+		pageID = p.PageID
+	}
+	if err := provider.Apply(ctx, extensions.CaptchaApplyRequest{
+		ChallengeID: p.ChallengeID,
+		SolutionID:  p.SolutionID,
+		PageID:      pageID,
+		FrameID:     p.FrameID,
+		Submit:      p.Submit,
+	}); err != nil {
+		return errorResult(fmt.Errorf("%s", redactMCPDisplayText(err.Error())))
+	}
+	b, _ := json.Marshal(map[string]interface{}{
+		"applied":      true,
+		"challenge_id": p.ChallengeID,
+		"solution_id":  p.SolutionID,
+		"submitted":    p.Submit,
+	})
+	return textResult(string(b))
 }
 
 func handleGetCredential(ctx context.Context, args json.RawMessage) *ToolCallResult {

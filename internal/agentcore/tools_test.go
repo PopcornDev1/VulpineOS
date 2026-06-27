@@ -82,6 +82,15 @@ func TestBrowserToolsStripSessionIDAndCurate(t *testing.T) {
 		}
 	}
 
+	for _, challengeTool := range []string{"vulpine_captcha_detect", "vulpine_captcha_solve", "vulpine_captcha_apply"} {
+		if _, ok := byName[challengeTool]; !ok {
+			t.Errorf("%s missing from exposed challenge tools", challengeTool)
+		}
+		if !IsBrowserTool(challengeTool) {
+			t.Errorf("IsBrowserTool(%q) = false, want true", challengeTool)
+		}
+	}
+
 	// Lifecycle/raw-image tools must be excluded.
 	for _, excluded := range []string{"vulpine_new_context", "vulpine_close_context", "vulpine_screenshot"} {
 		if _, ok := byName[excluded]; ok {

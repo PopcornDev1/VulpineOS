@@ -182,6 +182,90 @@ func withFakeMobile(t *testing.T, fake *extensionstest.FakeMobileBridge) *extens
 	return fake
 }
 
+func withFakeCaptcha(t *testing.T, fake *extensionstest.FakeCaptchaProvider) *extensionstest.FakeCaptchaProvider {
+	t.Helper()
+	original := extensions.Registry.Captcha()
+	t.Cleanup(func() { extensions.Registry.SetCaptcha(original) })
+	extensions.Registry.SetCaptcha(fake)
+	return fake
+}
+
+func TestCaptchaToolsReturnSanitizedMetadata(t *testing.T) {
+	fake := withFakeCaptcha(t, &extensionstest.FakeCaptchaProvider{
+		AvailableFlag: true,
+		Challenge: extensions.CaptchaChallenge{
+			ID:                   "challenge-1",
+			Vendor:               extensions.CaptchaVendorTurnstile,
+			Type:                 "managed",
+			Domain:               "example.com",
+			SiteKey:              "site-key-public",
+			RequiresConfirmation: true,
+			PolicyDecision:       extensions.CaptchaPolicyAllow,
+		},
+		Solution: extensions.CaptchaSolution{
+			ID:                "solution-1",
+			ChallengeID:       "challenge-1",
+			Provider:          "fake-solver",
+			Status:            extensions.CaptchaSolutionSolved,
+			Token:             "secret-solution-token",
+			CostEstimateCents: 7,
+			NeedsConfirmation: false,
+		},
+	})
+
+	detect := runExtTool(t, "vulpine_captcha_detect", map[string]interface{}{
+		"page_id": "page-1",
+		"url":     "https://example.com/login?token=secret-url-token",
+	})
+	if detect.IsError {
+		t.Fatalf("detect returned error: %+v", detect.Content)
+	}
+	detectText := detect.Content[0].Text
+	if strings.Contains(detectText, "secret-url-token") {
+		t.Fatalf("detect leaked URL secret: %s", detectText)
+	}
+	if !strings.Contains(detectText, `"challenge_id":"challenge-1"`) || !strings.Contains(detectText, `"vendor":"turnstile"`) {
+		t.Fatalf("detect metadata missing expected fields: %s", detectText)
+	}
+
+	solve := runExtTool(t, "vulpine_captcha_solve", map[string]interface{}{
+		"challenge_id":     "challenge-1",
+		"allow_cost_cents": 10,
+	})
+	if solve.IsError {
+		t.Fatalf("solve returned error: %+v", solve.Content)
+	}
+	solveText := solve.Content[0].Text
+	if strings.Contains(solveText, "secret-solution-token") {
+		t.Fatalf("solve leaked raw token: %s", solveText)
+	}
+	if !strings.Contains(solveText, `"solution_id":"solution-1"`) || !strings.Contains(solveText, `"cost_estimate_cents":7`) {
+		t.Fatalf("solve metadata missing expected fields: %s", solveText)
+	}
+
+	apply := runExtTool(t, "vulpine_captcha_apply", map[string]interface{}{
+		"challenge_id": "challenge-1",
+		"solution_id":  "solution-1",
+		"submit":       false,
+	})
+	if apply.IsError {
+		t.Fatalf("apply returned error: %+v", apply.Content)
+	}
+	if !strings.Contains(apply.Content[0].Text, `"applied":true`) {
+		t.Fatalf("apply result missing applied=true: %s", apply.Content[0].Text)
+	}
+
+	if got := fake.LastDetectRequest().PageID; got != "page-1" {
+		t.Fatalf("detect page id = %q, want page-1", got)
+	}
+	if got := fake.LastSolveRequest().ChallengeID; got != "challenge-1" {
+		t.Fatalf("solve challenge id = %q, want challenge-1", got)
+	}
+	if got := fake.LastApplyRequest().SolutionID; got != "solution-1" {
+		t.Fatalf("apply solution id = %q, want solution-1", got)
+	}
+}
+
 func TestGetCredentialReturnsCredJSON(t *testing.T) {
 	withFakeCredentials(t, &extensionstest.FakeCredentialProvider{
 		AvailableFlag: true,

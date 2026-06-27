@@ -94,6 +94,9 @@ func okResultMessage(t *testing.T, v interface{}) *juggler.Message {
 func TestExtensionToolsRegistered(t *testing.T) {
 	want := []string{
 		"vulpine_annotated_screenshot",
+		"vulpine_captcha_detect",
+		"vulpine_captcha_solve",
+		"vulpine_captcha_apply",
 		"vulpine_get_credential",
 		"vulpine_autofill",
 		"vulpine_start_audio_capture",
@@ -164,6 +167,9 @@ func TestExtensionTools_NilArgsAccepted(t *testing.T) {
 	}
 	names := []string{
 		"vulpine_annotated_screenshot",
+		"vulpine_captcha_detect",
+		"vulpine_captcha_solve",
+		"vulpine_captcha_apply",
 		"vulpine_get_credential",
 		"vulpine_autofill",
 		"vulpine_start_audio_capture",
@@ -200,6 +206,20 @@ func TestGetCredentialUnavailable(t *testing.T) {
 		"site_url": "https://example.com",
 	})
 	assertUnavailable(t, res, "credential provider unavailable")
+}
+
+func TestCaptchaToolsUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args map[string]interface{}
+	}{
+		{"vulpine_captcha_detect", map[string]interface{}{"page_id": "page-1", "url": "https://example.com"}},
+		{"vulpine_captcha_solve", map[string]interface{}{"challenge_id": "challenge-1"}},
+		{"vulpine_captcha_apply", map[string]interface{}{"challenge_id": "challenge-1", "solution_id": "solution-1"}},
+	} {
+		res := runExtTool(t, tc.name, tc.args)
+		assertUnavailable(t, res, "captcha provider unavailable")
+	}
 }
 
 func TestAutofillUnavailable(t *testing.T) {

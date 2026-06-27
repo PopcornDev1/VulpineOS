@@ -84,6 +84,7 @@ func TestMCPServerSmoke_ToolsListAndValidation(t *testing.T) {
 		"vulpine_select_option":       false,
 		"vulpine_list_mobile_devices": false,
 		"vulpine_click_label":         false,
+		"vulpine_captcha_detect":      false,
 		"vulpine_human_type":          false,
 		"vulpine_screenshot_diff":     false,
 	}

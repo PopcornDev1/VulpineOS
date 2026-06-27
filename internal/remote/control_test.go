@@ -143,6 +143,74 @@ func TestControlAPIConfigSetPreservesBlankAPIKey(t *testing.T) {
 	}
 }
 
+func TestControlAPICaptchaConfigSummaryAndSet(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := &config.Config{
+		Provider:      "anthropic",
+		APIKey:        "sk-existing",
+		Model:         "anthropic/claude-sonnet-4-6",
+		SetupComplete: true,
+		Captcha: config.CaptchaConfig{
+			Enabled:          true,
+			Provider:         "customer-key",
+			ConfirmPolicy:    "per_domain",
+			AllowedDomains:   []string{"example.com"},
+			SendScreenshots:  false,
+			TimeoutSeconds:   30,
+			MaxSolvesPerHour: 4,
+			MaxCostCents:     50,
+		},
+	}
+	api := &ControlAPI{Config: cfg}
+
+	settings := callControl[struct {
+		Config struct {
+			Captcha config.CaptchaConfig `json:"captcha"`
+		} `json:"config"`
+	}](t, api, "settings.get", map[string]any{})
+	if !settings.Config.Captcha.Enabled || settings.Config.Captcha.Provider != "customer-key" || settings.Config.Captcha.AllowedDomains[0] != "example.com" {
+		t.Fatalf("settings captcha summary = %#v", settings.Config.Captcha)
+	}
+	settingsJSON, _ := json.Marshal(settings)
+	for _, leaked := range []string{"solver-secret", "apiKey"} {
+		if strings.Contains(string(settingsJSON), leaked) {
+			t.Fatalf("settings leaked captcha secret marker %q: %s", leaked, settingsJSON)
+		}
+	}
+
+	out := callControl[struct {
+		Captcha config.CaptchaConfig `json:"captcha"`
+	}](t, api, "config.set", map[string]any{
+		"provider": "anthropic",
+		"model":    "anthropic/claude-sonnet-4-6",
+		"apiKey":   "",
+		"captcha": map[string]any{
+			"enabled":          true,
+			"provider":         "managed",
+			"confirmPolicy":    "always",
+			"allowedDomains":   []string{"trusted.example"},
+			"sendScreenshots":  true,
+			"timeoutSeconds":   60,
+			"maxSolvesPerHour": 2,
+			"maxCostCents":     25,
+		},
+	})
+	if out.Captcha.Provider != "managed" || out.Captcha.ConfirmPolicy != "always" || !out.Captcha.SendScreenshots {
+		t.Fatalf("config.set captcha result = %#v", out.Captcha)
+	}
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Captcha.Provider != "managed" || loaded.Captcha.AllowedDomains[0] != "trusted.example" {
+		t.Fatalf("saved captcha config = %#v", loaded.Captcha)
+	}
+	if loaded.APIKey != "sk-existing" {
+		t.Fatalf("blank api key should preserve existing key, got %q", loaded.APIKey)
+	}
+}
+
 func TestControlAPIStatusGetReportsNativeRuntime(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	api := &ControlAPI{}

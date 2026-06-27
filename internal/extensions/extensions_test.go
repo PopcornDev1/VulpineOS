@@ -17,6 +17,9 @@ func TestRegistryDefaultsNonNil(t *testing.T) {
 	if Registry.Mobile() == nil {
 		t.Fatal("Registry.Mobile() is nil")
 	}
+	if Registry.Captcha() == nil {
+		t.Fatal("Registry.Captcha() is nil")
+	}
 }
 
 func TestDefaultCredentialProviderUnavailable(t *testing.T) {
@@ -73,6 +76,24 @@ func TestDefaultMobileBridgeUnavailable(t *testing.T) {
 	}
 	if err := m.Disconnect(ctx, "session"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("Disconnect: expected ErrUnavailable, got %v", err)
+	}
+}
+
+func TestDefaultCaptchaProviderUnavailable(t *testing.T) {
+	p := Registry.Captcha()
+	if p.Available() {
+		t.Fatal("default CaptchaProvider should report Available() == false")
+	}
+	ctx := context.Background()
+
+	if _, err := p.Detect(ctx, CaptchaDetectRequest{PageID: "page-1", URL: "https://example.com"}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Detect: expected ErrUnavailable, got %v", err)
+	}
+	if _, err := p.Solve(ctx, CaptchaSolveRequest{ChallengeID: "challenge-1"}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Solve: expected ErrUnavailable, got %v", err)
+	}
+	if err := p.Apply(ctx, CaptchaApplyRequest{ChallengeID: "challenge-1", SolutionID: "solution-1"}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Apply: expected ErrUnavailable, got %v", err)
 	}
 }
 

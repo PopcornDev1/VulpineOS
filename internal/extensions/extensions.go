@@ -38,13 +38,14 @@ type JugglerCallable interface {
 // methods rather than touching fields directly; this keeps the
 // read-path lock-safe under -race.
 type registry struct {
-	mu          sync.RWMutex
-	credentials CredentialProvider
-	audio       AudioCapturer
-	mobile      MobileBridge
+	mu           sync.RWMutex
+	credentials  CredentialProvider
+	audio        AudioCapturer
+	mobile       MobileBridge
 	sentinel     SentinelProvider
 	fingerprint  FingerprintProvider
 	renderCohort RenderCohortProvider
+	captcha      CaptchaProvider
 }
 
 // Credentials returns the currently-registered credential provider.
@@ -69,6 +70,14 @@ func (r *registry) Mobile() MobileBridge {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.mobile
+}
+
+// Captcha returns the currently-registered captcha/challenge provider.
+// Always non-nil; returns the no-op default when nothing is registered.
+func (r *registry) Captcha() CaptchaProvider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.captcha
 }
 
 // SetCredentials registers a credential provider. Intended to be called
@@ -103,6 +112,17 @@ func (r *registry) SetMobile(b MobileBridge) {
 		b = defaultMobileBridge
 	}
 	r.mobile = b
+}
+
+// SetCaptcha registers a captcha/challenge provider. Intended to be called
+// from init() in build-tagged extension files.
+func (r *registry) SetCaptcha(p CaptchaProvider) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p == nil {
+		p = defaultCaptchaProvider
+	}
+	r.captcha = p
 }
 
 // Sentinel returns the currently-registered sentinel provider.
@@ -164,12 +184,13 @@ func (r *registry) SetRenderCohort(p RenderCohortProvider) {
 // Registry is the global provider registry. It is a pointer so that
 // alternate builds can mutate it from their own init() functions.
 var Registry = &registry{
-	credentials: defaultCredentialProvider,
-	audio:       defaultAudioCapturer,
-	mobile:      defaultMobileBridge,
+	credentials:  defaultCredentialProvider,
+	audio:        defaultAudioCapturer,
+	mobile:       defaultMobileBridge,
 	sentinel:     defaultSentinelProvider,
 	fingerprint:  defaultFingerprintProvider,
 	renderCohort: defaultRenderCohortProvider,
+	captcha:      defaultCaptchaProvider,
 }
 
 // privateProviders holds constructors supplied by local build-tagged
@@ -178,12 +199,13 @@ var Registry = &registry{
 // the struct zero-valued so every entry is nil and InitWithClient becomes
 // a no-op.
 var privateProviders = struct {
-	Vault       func(jc JugglerCallable) CredentialProvider
-	Audio       func(jc JugglerCallable) AudioCapturer
-	Mobile      func(jc JugglerCallable) MobileBridge
+	Vault        func(jc JugglerCallable) CredentialProvider
+	Audio        func(jc JugglerCallable) AudioCapturer
+	Mobile       func(jc JugglerCallable) MobileBridge
 	Sentinel     func(jc JugglerCallable) SentinelProvider
 	Fingerprint  func() FingerprintProvider
 	RenderCohort func() RenderCohortProvider
+	Captcha      func(jc JugglerCallable) CaptchaProvider
 }{}
 
 // Init is called once at startup before a juggler client is available.
@@ -236,6 +258,11 @@ func InitWithClient(jc JugglerCallable) {
 	if privateProviders.Sentinel != nil {
 		if p := privateProviders.Sentinel(jc); p != nil {
 			Registry.SetSentinel(p)
+		}
+	}
+	if privateProviders.Captcha != nil {
+		if p := privateProviders.Captcha(jc); p != nil {
+			Registry.SetCaptcha(p)
 		}
 	}
 }

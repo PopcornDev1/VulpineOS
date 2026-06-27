@@ -17,9 +17,23 @@ type Config struct {
 	BinaryPath              string                  `json:"binaryPath,omitempty"`
 	DefaultBudgetMaxCostUSD float64                 `json:"defaultBudgetMaxCostUsd,omitempty"`
 	DefaultBudgetMaxTokens  int64                   `json:"defaultBudgetMaxTokens,omitempty"`
+	Captcha                 CaptchaConfig           `json:"captcha,omitempty"`
 	FoxbridgeCDPURL         string                  `json:"-"`                      // runtime-only: set when foxbridge is running
 	GlobalSkills            []SkillEntry            `json:"globalSkills,omitempty"` // skills enabled for all agents
 	AgentSkills             map[string][]SkillEntry `json:"agentSkills,omitempty"`  // agentID → skills for that agent only
+}
+
+// CaptchaConfig controls challenge/captcha governance. It intentionally carries
+// no API key; solver credentials belong in private providers or secret stores.
+type CaptchaConfig struct {
+	Enabled          bool     `json:"enabled,omitempty"`
+	Provider         string   `json:"provider,omitempty"`
+	ConfirmPolicy    string   `json:"confirmPolicy,omitempty"`
+	AllowedDomains   []string `json:"allowedDomains,omitempty"`
+	SendScreenshots  bool     `json:"sendScreenshots,omitempty"`
+	TimeoutSeconds   int      `json:"timeoutSeconds,omitempty"`
+	MaxSolvesPerHour int      `json:"maxSolvesPerHour,omitempty"`
+	MaxCostCents     int      `json:"maxCostCents,omitempty"`
 }
 
 // SkillEntry describes a skill configuration.

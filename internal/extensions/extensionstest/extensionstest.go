@@ -265,6 +265,85 @@ func (f *FakeMobileBridge) Available() bool {
 	return f.AvailableFlag
 }
 
+// FakeCaptchaProvider records captcha/challenge requests and returns
+// canned challenge and solution metadata for MCP and extension tests.
+type FakeCaptchaProvider struct {
+	mu            sync.RWMutex
+	AvailableFlag bool
+	Challenge     extensions.CaptchaChallenge
+	Solution      extensions.CaptchaSolution
+	ApplyErr      error
+
+	DetectReq extensions.CaptchaDetectRequest
+	SolveReq  extensions.CaptchaSolveRequest
+	ApplyReq  extensions.CaptchaApplyRequest
+}
+
+func (f *FakeCaptchaProvider) SetAvailable(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.AvailableFlag = v
+}
+
+func (f *FakeCaptchaProvider) SetChallenge(c extensions.CaptchaChallenge) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Challenge = c
+}
+
+func (f *FakeCaptchaProvider) SetSolution(s extensions.CaptchaSolution) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Solution = s
+}
+
+func (f *FakeCaptchaProvider) Detect(ctx context.Context, req extensions.CaptchaDetectRequest) (*extensions.CaptchaChallenge, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.DetectReq = req
+	challenge := f.Challenge
+	return &challenge, nil
+}
+
+func (f *FakeCaptchaProvider) Solve(ctx context.Context, req extensions.CaptchaSolveRequest) (*extensions.CaptchaSolution, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.SolveReq = req
+	solution := f.Solution
+	return &solution, nil
+}
+
+func (f *FakeCaptchaProvider) Apply(ctx context.Context, req extensions.CaptchaApplyRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ApplyReq = req
+	return f.ApplyErr
+}
+
+func (f *FakeCaptchaProvider) Available() bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.AvailableFlag
+}
+
+func (f *FakeCaptchaProvider) LastDetectRequest() extensions.CaptchaDetectRequest {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.DetectReq
+}
+
+func (f *FakeCaptchaProvider) LastSolveRequest() extensions.CaptchaSolveRequest {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.SolveReq
+}
+
+func (f *FakeCaptchaProvider) LastApplyRequest() extensions.CaptchaApplyRequest {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.ApplyReq
+}
+
 // FakeSentinelProvider records events and outcomes while returning
 // canned status and variant bundles.
 type FakeSentinelProvider struct {

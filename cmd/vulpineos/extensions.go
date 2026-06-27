@@ -19,6 +19,7 @@ func PrintExtensionsStatus(w io.Writer) {
 	fmt.Fprintf(w, "  Audio:       %s\n", extensionAvailabilityString(audioAvailable(extensions.Registry.Audio())))
 	fmt.Fprintf(w, "  Mobile:      %s\n", extensionAvailabilityString(mobileAvailable(extensions.Registry.Mobile())))
 	fmt.Fprintf(w, "  Sentinel:    %s\n", extensionAvailabilityString(sentinelAvailable(extensions.Registry.Sentinel())))
+	fmt.Fprintf(w, "  Captcha:     %s\n", extensionAvailabilityString(captchaAvailable(extensions.Registry.Captcha())))
 }
 
 func providerAvailable(p extensions.CredentialProvider) bool {
@@ -35,6 +36,10 @@ func mobileAvailable(m extensions.MobileBridge) bool {
 
 func sentinelAvailable(s extensions.SentinelProvider) bool {
 	return s != nil && s.Available()
+}
+
+func captchaAvailable(c extensions.CaptchaProvider) bool {
+	return c != nil && c.Available()
 }
 
 func extensionAvailabilityString(available bool) string {

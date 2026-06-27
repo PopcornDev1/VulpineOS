@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -86,6 +87,51 @@ func TestConfigSaveLoad(t *testing.T) {
 	}
 	if loaded.NeedsSetup() {
 		t.Error("loaded config should not need setup")
+	}
+}
+
+func TestConfigCaptchaGovernanceRoundTrip(t *testing.T) {
+	raw := []byte(`{
+		"provider": "anthropic",
+		"apiKey": "sk-test",
+		"model": "anthropic/claude-sonnet-4-6",
+		"setupComplete": true,
+		"captcha": {
+			"enabled": true,
+			"provider": "managed",
+			"confirmPolicy": "per_domain",
+			"allowedDomains": ["example.com", "app.example.com"],
+			"sendScreenshots": false,
+			"timeoutSeconds": 45,
+			"maxSolvesPerHour": 12,
+			"maxCostCents": 200
+		}
+	}`)
+
+	var cfg Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if !cfg.Captcha.Enabled {
+		t.Fatal("captcha enabled = false, want true")
+	}
+	if cfg.Captcha.Provider != "managed" || cfg.Captcha.ConfirmPolicy != "per_domain" {
+		t.Fatalf("captcha policy = %#v", cfg.Captcha)
+	}
+	if len(cfg.Captcha.AllowedDomains) != 2 || cfg.Captcha.AllowedDomains[0] != "example.com" {
+		t.Fatalf("captcha allowed domains = %#v", cfg.Captcha.AllowedDomains)
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	for _, leaked := range []string{"apiKey", "solverKey", "token"} {
+		if strings.Contains(string(data), leaked) && leaked != "apiKey" {
+			t.Fatalf("captcha config leaked secret-like field %q: %s", leaked, data)
+		}
+	}
+	if !strings.Contains(string(data), `"captcha"`) || !strings.Contains(string(data), `"maxSolvesPerHour":12`) {
+		t.Fatalf("captcha config did not round trip: %s", data)
 	}
 }
 
