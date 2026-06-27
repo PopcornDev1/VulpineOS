@@ -227,12 +227,16 @@ func handleHumanType(client *juggler.Client, tracker *ContextTracker, args json.
 		key := string(ks.Char)
 
 		if ks.IsCorrection {
-			result, err := evalJSWithTracker(client, tracker, p.SessionID, humaninput.BackspaceExpression())
-			if err != nil {
+			if err := dispatchKeyEvent(client, p.SessionID, "keydown", "Backspace", 0, ""); err != nil {
+				result, fallbackErr := evalJSWithTracker(client, tracker, p.SessionID, humaninput.BackspaceExpression())
+				if fallbackErr != nil {
+					return errorResult(err), nil
+				}
+				if result == "not_input" {
+					return errorResult(fmt.Errorf("human_type: active element is not editable")), nil
+				}
+			} else if err := dispatchKeyEvent(client, p.SessionID, "keyup", "Backspace", 0, ""); err != nil {
 				return errorResult(err), nil
-			}
-			if result == "not_input" {
-				return errorResult(fmt.Errorf("human_type: active element is not editable")), nil
 			}
 
 			// Brief pause after noticing typo
@@ -240,12 +244,16 @@ func handleHumanType(client *juggler.Client, tracker *ContextTracker, args json.
 			continue
 		}
 
-		result, err := evalJSWithTracker(client, tracker, p.SessionID, humaninput.InsertTextExpression(key))
-		if err != nil {
+		if err := dispatchKeyEvent(client, p.SessionID, "keydown", key, 0, key); err != nil {
+			result, fallbackErr := evalJSWithTracker(client, tracker, p.SessionID, humaninput.InsertTextExpression(key))
+			if fallbackErr != nil {
+				return errorResult(err), nil
+			}
+			if result == "not_input" {
+				return errorResult(fmt.Errorf("human_type: active element is not editable")), nil
+			}
+		} else if err := dispatchKeyEvent(client, p.SessionID, "keyup", key, 0, ""); err != nil {
 			return errorResult(err), nil
-		}
-		if result == "not_input" {
-			return errorResult(fmt.Errorf("human_type: active element is not editable")), nil
 		}
 
 		typed++

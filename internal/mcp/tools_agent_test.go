@@ -501,3 +501,50 @@ func TestHandleFillFormUsesFieldNameResolver(t *testing.T) {
 		t.Fatalf("fill_form text = %q, want filled count", got)
 	}
 }
+
+func TestHandleHumanTypeDispatchesKeyboardEvents(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	keyEvents := 0
+	runtimeEvals := 0
+	transport.RespondFunc("Page.dispatchKeyEvent", func(msg *juggler.Message) (json.RawMessage, *juggler.Error) {
+		keyEvents++
+		var params map[string]any
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			return nil, &juggler.Error{Message: err.Error()}
+		}
+		if params["type"] != "keydown" && params["type"] != "keyup" {
+			return nil, &juggler.Error{Message: "unexpected key event type"}
+		}
+		data, err := json.Marshal(map[string]any{})
+		if err != nil {
+			return nil, &juggler.Error{Message: err.Error()}
+		}
+		return data, nil
+	})
+	transport.RespondFunc("Runtime.evaluate", func(msg *juggler.Message) (json.RawMessage, *juggler.Error) {
+		runtimeEvals++
+		data, err := json.Marshal(map[string]any{"result": map[string]any{"value": "ok"}})
+		if err != nil {
+			return nil, &juggler.Error{Message: err.Error()}
+		}
+		return data, nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleHumanType(client, tracker, json.RawMessage(`{"sessionId":"session-human-type","text":"12","wpm":1200}`))
+	if err != nil {
+		t.Fatalf("handleHumanType returned dispatch error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("human_type result = %#v, want success", result)
+	}
+	if keyEvents != 4 {
+		t.Fatalf("keyEvents = %d, want keydown+keyup for each character", keyEvents)
+	}
+	if runtimeEvals != 0 {
+		t.Fatalf("Runtime.evaluate calls = %d, want keyboard dispatch path without JS value mutation", runtimeEvals)
+	}
+}
