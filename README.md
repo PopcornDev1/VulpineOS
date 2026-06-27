@@ -211,7 +211,7 @@ On quit, VulpineOS pauses active agents before exiting so the next launch can re
 
 Local TUI startup and runtime logs are written to `~/.vulpineos/logs/local-tui.log` so the terminal UI stays clean while the kernel, foxbridge, and native runtime initialize.
 
-Live browser and MCP-browser integration tests are gated behind `VULPINEOS_RUN_LIVE=1` so the default `go test` and CI path stay hermetic even on machines that already have Vulpine installed.
+Live browser and MCP-browser integration tests are gated behind `VULPINEOS_RUN_LIVE=1` so the default `go test` and CI path stay hermetic even on machines that already have Vulpine installed. The native-agent reliability gauntlet is additionally gated by `VULPINE_AGENTCORE_GAUNTLET=1`; it uses local fixtures only and avoids verification-code, payment, and real challenge flows.
 
 ---
 
