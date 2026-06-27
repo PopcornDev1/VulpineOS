@@ -421,3 +421,83 @@ func TestHandlePageInfoRejectsFirefoxNetworkErrorPage(t *testing.T) {
 		t.Fatalf("page_info error = %q, want browser error with code", got)
 	}
 }
+
+func TestHandlePageInfoRequestsFormIntelligence(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	var expression string
+	transport.RespondFunc("Runtime.evaluate", func(msg *juggler.Message) (json.RawMessage, *juggler.Error) {
+		var params map[string]any
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			return nil, &juggler.Error{Message: err.Error()}
+		}
+		expression, _ = params["expression"].(string)
+		state := `{"url":"https://example.com/signup","title":"Signup","readyState":"complete","forms":1,"inputs":2,"buttons":1,"links":0,"formFields":[{"label":"Email","name":"email","placeholder":"you@example.com","autocomplete":"email","required":true,"validationMessage":"Please fill out this field."}],"activeElement":{"tag":"input","name":"email","label":"Email","editable":true},"bodyText":"ignored"}`
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": state},
+		})
+		if err != nil {
+			return nil, &juggler.Error{Message: err.Error()}
+		}
+		return data, nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleGetPageInfo(client, tracker, json.RawMessage(`{"sessionId":"session-form-info"}`))
+	if err != nil {
+		t.Fatalf("handleGetPageInfo returned dispatch error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("page_info result = %#v, want success", result)
+	}
+	for _, want := range []string{"formFields", "label", "validationMessage", "activeElement", "shadowRoot"} {
+		if !strings.Contains(expression, want) {
+			t.Fatalf("page_info expression missing %q:\n%s", want, expression)
+		}
+	}
+	text := result.Content[0].Text
+	if !strings.Contains(text, `"formFields"`) || !strings.Contains(text, `"Email"`) || strings.Contains(text, "ignored") {
+		t.Fatalf("page_info text missing form intelligence or leaked bodyText: %s", text)
+	}
+}
+
+func TestHandleFillFormUsesFieldNameResolver(t *testing.T) {
+	transport := testutil.NewFakeJugglerTransport(t)
+	var expression string
+	transport.RespondFunc("Runtime.evaluate", func(msg *juggler.Message) (json.RawMessage, *juggler.Error) {
+		var params map[string]any
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			return nil, &juggler.Error{Message: err.Error()}
+		}
+		expression, _ = params["expression"].(string)
+		data, err := json.Marshal(map[string]any{
+			"result": map[string]any{"value": "ok"},
+		})
+		if err != nil {
+			return nil, &juggler.Error{Message: err.Error()}
+		}
+		return data, nil
+	})
+	client := juggler.NewClient(transport)
+	defer client.Close()
+	tracker := NewContextTracker(client)
+	defer tracker.Close()
+
+	result, err := handleFillForm(client, tracker, json.RawMessage(`{"sessionId":"session-fill","fields":{"Email":"alice@example.com"}}`))
+	if err != nil {
+		t.Fatalf("handleFillForm returned dispatch error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("fill_form result = %#v, want success", result)
+	}
+	for _, want := range []string{"findEditableField", "placeholder", "labels", "shadowRoot"} {
+		if !strings.Contains(expression, want) {
+			t.Fatalf("fill_form expression missing %q:\n%s", want, expression)
+		}
+	}
+	if got := result.Content[0].Text; !strings.Contains(got, "Filled 1/1 fields") {
+		t.Fatalf("fill_form text = %q, want filled count", got)
+	}
+}

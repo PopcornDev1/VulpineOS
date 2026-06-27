@@ -313,19 +313,19 @@ func baseTools() []ToolDefinition {
 		},
 		{
 			Name:        "vulpine_fill_form",
-			Description: "Fill multiple form fields at once. Pass a map of CSS selectors to values. Triggers input and change events on each field.",
+			Description: "Fill multiple form fields at once. Pass a map of CSS selectors, labels, names, ids, placeholders, or autocomplete values to desired values. Traverses shadow roots and triggers input/change events.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
 					"sessionId": {Type: "string", Description: "Target page session ID"},
-					"fields":    {Type: "object", Description: "Map of CSS selector → value to fill"},
+					"fields":    {Type: "object", Description: "Map of field selector/label/name/placeholder → value to fill"},
 				},
 				Required: []string{"sessionId", "fields"},
 			},
 		},
 		{
 			Name:        "vulpine_page_info",
-			Description: "Get comprehensive page state: URL, title, scroll position, number of forms/inputs/buttons/links, whether you can scroll further, and whether modals are open. Use this to understand the current page before deciding what to do.",
+			Description: "Get comprehensive page state: URL, title, scroll position, counts, modals, focus state, active element, and form field metadata including labels/placeholders/validation. Use this to understand the current page before deciding what to do.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{

@@ -607,11 +607,76 @@ func handleFillForm(client *juggler.Client, tracker *ContextTracker, args json.R
 
 	for selector, value := range p.Fields {
 		js := fmt.Sprintf(`(() => {
-			const el = document.querySelector(%q);
+			const target = %q;
+			function* roots(root) {
+				yield root;
+				const all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+				for (const node of all) {
+					if (node.shadowRoot) yield* roots(node.shadowRoot);
+				}
+			}
+			function fieldLabels(el) {
+				const labels = [];
+				if (el.labels) {
+					for (const label of el.labels) labels.push((label.innerText || label.textContent || '').trim());
+				}
+				const labelledBy = el.getAttribute && el.getAttribute('aria-labelledby');
+				if (labelledBy) {
+					for (const id of labelledBy.split(/\s+/)) {
+						const ref = document.getElementById(id);
+						if (ref) labels.push((ref.innerText || ref.textContent || '').trim());
+					}
+				}
+				const aria = el.getAttribute && el.getAttribute('aria-label');
+				if (aria) labels.push(aria);
+				const parentLabel = el.closest && el.closest('label');
+				if (parentLabel) labels.push((parentLabel.innerText || parentLabel.textContent || '').trim());
+				return labels.filter(Boolean);
+			}
+			function isEditable(el) {
+				if (!el) return false;
+				if ('value' in el) return true;
+				return el.isContentEditable || el.getAttribute('contenteditable') === 'true' || el.getAttribute('contenteditable') === '';
+			}
+			function matchesField(el, q) {
+				const labels = fieldLabels(el);
+				const values = [
+					el.name || '',
+					el.id || '',
+					el.getAttribute('placeholder') || '',
+					el.getAttribute('autocomplete') || '',
+					el.getAttribute('aria-label') || '',
+					...labels,
+				].map(v => String(v).trim().toLowerCase()).filter(Boolean);
+				return values.some(v => v === q || v.includes(q));
+			}
+			function findEditableField(target) {
+				for (const root of roots(document)) {
+					try {
+						const direct = root.querySelector && root.querySelector(target);
+						if (isEditable(direct)) return direct;
+					} catch (e) {}
+				}
+				const q = String(target).trim().toLowerCase();
+				for (const root of roots(document)) {
+					const fields = root.querySelectorAll ? root.querySelectorAll('input, textarea, select, [contenteditable="true"], [contenteditable=""]') : [];
+					for (const el of fields) {
+						if (isEditable(el) && matchesField(el, q)) return el;
+					}
+				}
+				return null;
+			}
+			const el = findEditableField(target);
 			if (!el) return "not_found";
+			if (!isEditable(el)) return "not_editable";
 			el.focus();
-			el.value = %q;
-			el.dispatchEvent(new Event('input', {bubbles: true}));
+			const value = %q;
+			if ('value' in el) {
+				el.value = value;
+			} else {
+				el.textContent = value;
+			}
+			el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
 			el.dispatchEvent(new Event('change', {bubbles: true}));
 			return "ok";
 		})()`, selector, value)
@@ -623,6 +688,10 @@ func handleFillForm(client *juggler.Client, tracker *ContextTracker, args json.R
 		}
 		if result == "not_found" {
 			errors = append(errors, fmt.Sprintf("%s: not found", selector))
+			continue
+		}
+		if result == "not_editable" {
+			errors = append(errors, fmt.Sprintf("%s: not editable", selector))
 			continue
 		}
 		filled++
@@ -644,25 +713,105 @@ func handleGetPageInfo(client *juggler.Client, tracker *ContextTracker, args jso
 		return errorResult(err), nil
 	}
 
-	js := `JSON.stringify({
-		url: window.location.href,
-		title: document.title,
-		readyState: document.readyState,
-		scrollY: Math.round(window.scrollY),
-		scrollHeight: document.documentElement.scrollHeight,
-		viewportHeight: window.innerHeight,
-		canScrollDown: (window.scrollY + window.innerHeight) < document.documentElement.scrollHeight - 10,
-		forms: document.forms.length,
-		inputs: document.querySelectorAll('input, textarea, select').length,
-		buttons: document.querySelectorAll('button, [role="button"], input[type="submit"]').length,
-		links: document.querySelectorAll('a[href]').length,
-		images: document.images.length,
-		modals: document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, .Modal, [aria-modal="true"]').length,
-		focusedTag: document.activeElement ? document.activeElement.tagName.toLowerCase() : null,
-		focusedType: document.activeElement ? document.activeElement.type : null,
-		alerts: 0,
-		bodyText: document.body ? (document.body.innerText || document.body.textContent || "").slice(0, 1000) : ""
-	})`
+	js := `(() => {
+		function* roots(root) {
+			yield root;
+			const all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+			for (const node of all) {
+				if (node.shadowRoot) yield* roots(node.shadowRoot);
+			}
+		}
+		function fieldLabel(el) {
+			const labels = [];
+			if (el && el.labels) {
+				for (const label of el.labels) labels.push((label.innerText || label.textContent || '').trim());
+			}
+			const labelledBy = el && el.getAttribute && el.getAttribute('aria-labelledby');
+			if (labelledBy) {
+				for (const id of labelledBy.split(/\s+/)) {
+					const ref = document.getElementById(id);
+					if (ref) labels.push((ref.innerText || ref.textContent || '').trim());
+				}
+			}
+			const aria = el && el.getAttribute && el.getAttribute('aria-label');
+			if (aria) labels.push(aria);
+			const parentLabel = el && el.closest && el.closest('label');
+			if (parentLabel) labels.push((parentLabel.innerText || parentLabel.textContent || '').trim());
+			return labels.filter(Boolean).join(' | ');
+		}
+		function fieldSelector(el) {
+			if (!el) return '';
+			const esc = (value) => (window.CSS && CSS.escape) ? CSS.escape(value) : String(value).replace(/["\\]/g, '\\$&');
+			if (el.id) return '#' + esc(el.id);
+			if (el.name) return el.tagName.toLowerCase() + '[name="' + String(el.name).replaceAll('"', '\\"') + '"]';
+			return el.tagName.toLowerCase();
+		}
+		function visible(el) {
+			if (!el || !el.getBoundingClientRect) return false;
+			const rect = el.getBoundingClientRect();
+			const style = window.getComputedStyle(el);
+			return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+		}
+		function fieldInfo(el) {
+			return {
+				selector: fieldSelector(el),
+				tag: el.tagName.toLowerCase(),
+				type: el.type || '',
+				name: el.name || '',
+				id: el.id || '',
+				label: fieldLabel(el),
+				placeholder: el.getAttribute('placeholder') || '',
+				autocomplete: el.getAttribute('autocomplete') || '',
+				required: !!el.required,
+				disabled: !!el.disabled,
+				visible: visible(el),
+				valueLength: typeof el.value === 'string' ? el.value.length : 0,
+				checked: !!el.checked,
+				ariaInvalid: el.getAttribute('aria-invalid') || '',
+				validationMessage: el.validationMessage || ''
+			};
+		}
+		const formFields = [];
+		for (const root of roots(document)) {
+			const fields = root.querySelectorAll ? root.querySelectorAll('input, textarea, select, [contenteditable="true"], [contenteditable=""]') : [];
+			for (const el of fields) {
+				if (formFields.length >= 30) break;
+				formFields.push(fieldInfo(el));
+			}
+			if (formFields.length >= 30) break;
+		}
+		const active = document.activeElement;
+		const activeElement = active ? {
+			tag: active.tagName ? active.tagName.toLowerCase() : '',
+			type: active.type || '',
+			name: active.name || '',
+			id: active.id || '',
+			label: fieldLabel(active),
+			placeholder: active.getAttribute ? (active.getAttribute('placeholder') || '') : '',
+			editable: !!(('value' in active) || active.isContentEditable)
+		} : null;
+		return JSON.stringify({
+			url: window.location.href,
+			title: document.title,
+			readyState: document.readyState,
+			scrollY: Math.round(window.scrollY),
+			scrollHeight: document.documentElement.scrollHeight,
+			viewportHeight: window.innerHeight,
+			canScrollDown: (window.scrollY + window.innerHeight) < document.documentElement.scrollHeight - 10,
+			forms: document.forms.length,
+			inputs: document.querySelectorAll('input, textarea, select').length,
+			buttons: document.querySelectorAll('button, [role="button"], input[type="submit"]').length,
+			links: document.querySelectorAll('a[href]').length,
+			images: document.images.length,
+			modals: document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, .Modal, [aria-modal="true"]').length,
+			focusedTag: active ? active.tagName.toLowerCase() : null,
+			focusedType: active ? active.type : null,
+			activeElement: activeElement,
+			formFields: formFields,
+			alerts: 0,
+			bodyText: document.body ? (document.body.innerText || document.body.textContent || "").slice(0, 1000) : ""
+		});
+	})()`
 
 	result, err := evalJSWithTracker(client, tracker, p.SessionID, js)
 	if err != nil {
