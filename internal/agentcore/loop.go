@@ -190,6 +190,20 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 			} else {
 				result, isErr = r, e
 			}
+
+			var recoveryResult string
+			var recoveryIsErr bool
+			if isErr && !policyBlocked && l.tools != nil && shouldAutoObserveAfterFailure(tc.Function.Name) {
+				recoveryArgs := `{"visual":true,"profile":"compact"}`
+				l.events.OnToolCall("vulpine_observe", recoveryArgs)
+				if r, e, derr := l.tools.Dispatch(ctx, "vulpine_observe", recoveryArgs); derr != nil {
+					recoveryResult, recoveryIsErr = "tool dispatch error: "+derr.Error(), true
+				} else {
+					recoveryResult, recoveryIsErr = r, e
+				}
+				l.events.OnToolResult("vulpine_observe", recoveryResult, recoveryIsErr)
+				result = result + "\n\nAutomatic recovery observation via `vulpine_observe`: " + recoveryResult
+			}
 			l.events.OnPhase("processing")
 
 			l.events.OnToolResult(tc.Function.Name, result, isErr)
@@ -199,6 +213,12 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 					lastFailedTool = tc.Function.Name
 					observation = unverifiedStateAfterFailure(observation, tc.Function.Name, result)
 					emitObservationState(l.events, observation)
+					if recoveryResult != "" && !recoveryIsErr {
+						if recovered, ok := observationStateFromAutoRecovery("vulpine_observe", recoveryResult); ok {
+							observation = recovered
+							emitObservationState(l.events, observation)
+						}
+					}
 				}
 			} else {
 				if isObservationTool(tc.Function.Name) {
@@ -228,6 +248,42 @@ func (l *Loop) Run(ctx context.Context, task string, history []ChatMessage) (str
 
 	l.events.OnStatus("error")
 	return "", fmt.Errorf("agent did not finish within %d iterations", l.cfg.MaxIterations)
+}
+
+func shouldAutoObserveAfterFailure(name string) bool {
+	switch name {
+	case "vulpine_navigate",
+		"vulpine_snapshot",
+		"vulpine_click",
+		"vulpine_type",
+		"vulpine_scroll",
+		"vulpine_get_ax_tree",
+		"vulpine_click_ref",
+		"vulpine_type_ref",
+		"vulpine_hover_ref",
+		"vulpine_scroll_into_view",
+		"vulpine_wait",
+		"vulpine_verify",
+		"vulpine_page_settled",
+		"vulpine_select_option",
+		"vulpine_fill_form",
+		"vulpine_page_info",
+		"vulpine_press_key",
+		"vulpine_clear_input",
+		"vulpine_get_form_errors",
+		"vulpine_element_status":
+		return true
+	default:
+		return false
+	}
+}
+
+func observationStateFromAutoRecovery(name, result string) (ObservationState, bool) {
+	if _, ok := parseObserveObservation(result); ok {
+		state := observedStateFromTool(name, result)
+		return state, true
+	}
+	return ObservationState{}, false
 }
 
 func failedToolFinalReply(tool string, observation ObservationState) string {

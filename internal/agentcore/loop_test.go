@@ -215,6 +215,62 @@ func TestLoopTracksObservationStateInFailedToolReply(t *testing.T) {
 	}
 }
 
+func TestLoopAutoObservesAfterRecoverableBrowserToolFailure(t *testing.T) {
+	model := &scriptedCompleter{turns: []Completion{
+		toolCallTurn("click", "vulpine_click", `{"x":620,"y":351,"verify":true}`),
+		{Message: ChatMessage{Role: "assistant", Content: "Done, clicked."}, FinishReason: "stop"},
+	}}
+	disp := &fakeDispatcher{
+		results: map[string]string{
+			"vulpine_observe": `{"confidence":"observed","url":"https://example.com/form","title":"Form","guidance":"Use labeled controls"}`,
+		},
+		errors: map[string]string{
+			"vulpine_click": "nothing clickable at (620, 351)",
+		},
+	}
+	ev := &recordEvents{}
+	loop := NewLoop(model, disp, ev, LoopConfig{Models: []string{"m"}})
+
+	final, err := loop.Run(context.Background(), "click continue", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(disp.calls) != 2 || disp.calls[0] != "vulpine_click" || disp.calls[1] != "vulpine_observe" {
+		t.Fatalf("dispatcher calls = %#v, want click then automatic observe", disp.calls)
+	}
+	if len(model.lastMsgs) < 2 {
+		t.Fatalf("model calls = %d, want second turn after tool result", len(model.lastMsgs))
+	}
+	toolMsg := model.lastMsgs[1][len(model.lastMsgs[1])-1]
+	if !strings.Contains(toolMsg.Content, "Automatic recovery observation") || !strings.Contains(toolMsg.Content, "https://example.com/form") {
+		t.Fatalf("tool message missing automatic observation: %q", toolMsg.Content)
+	}
+	if strings.Contains(final, "clicked") {
+		t.Fatalf("final = %q, want failed-tool guard to remain active", final)
+	}
+	if !strings.Contains(final, "https://example.com/form") {
+		t.Fatalf("final = %q, want automatic observation context", final)
+	}
+}
+
+func TestLoopDoesNotAutoObserveCaptchaUnavailable(t *testing.T) {
+	model := &scriptedCompleter{turns: []Completion{
+		toolCallTurn("captcha", "vulpine_captcha_solve", `{"challenge_id":"challenge-1"}`),
+		{Message: ChatMessage{Role: "assistant", Content: "I solved it."}, FinishReason: "stop"},
+	}}
+	disp := &fakeDispatcher{errors: map[string]string{
+		"vulpine_captcha_solve": "captcha provider unavailable",
+	}}
+	loop := NewLoop(model, disp, nil, LoopConfig{Models: []string{"m"}})
+
+	if _, err := loop.Run(context.Background(), "solve challenge", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(disp.calls) != 1 || disp.calls[0] != "vulpine_captcha_solve" {
+		t.Fatalf("dispatcher calls = %#v, want no automatic observe for captcha provider state", disp.calls)
+	}
+}
+
 func TestLoopClassifiesAboutBlankObservationAsLost(t *testing.T) {
 	model := &scriptedCompleter{turns: []Completion{
 		toolCallTurn("obs", "vulpine_page_info", `{}`),
