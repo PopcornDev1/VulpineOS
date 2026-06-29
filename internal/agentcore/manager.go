@@ -58,7 +58,8 @@ type Manager struct {
 	conversationSubs   map[chan agentmsg.ConversationMsg]struct{}
 	// results holds completed sub-agent outputs so they survive finish()
 	// deletion and remain readable by the lead agent across turns.
-	results map[string]string
+	results  map[string]string
+	finished map[string]finishedAgent
 }
 
 type nativeAgent struct {
@@ -73,11 +74,18 @@ type nativeAgent struct {
 	tokens       int      // cumulative tokens consumed this run
 	inbox        []string // steering messages from lead agent
 	result       string   // final output text, set when sub-agent completes
+	errText      string   // terminal error text, set when a sub-agent fails
 	phase        string   // processing, waiting_on_tool, idle, finalizing
 	turn         int      // current iteration in the agent loop
 	maxTurns     int      // max iterations before forced stop
 	lastActivity int64    // unix timestamp of last recorded activity
 	observation  ObservationState
+}
+
+type finishedAgent struct {
+	status agentmsg.AgentStatus
+	result string
+	err    string
 }
 
 // NewManager creates a native runtime bound to a juggler client and model
@@ -464,8 +472,17 @@ func (m *Manager) finish(agentID string, ag *nativeAgent) {
 	var cleanup func()
 	m.mu.Lock()
 	if cur, ok := m.agents[agentID]; ok && cur == ag {
-		// Save completed sub-agent results so they survive deletion and
-		// remain readable by the lead agent across turns.
+		// Save terminal sub-agent state so status/snapshot/result retrieval
+		// remains diagnosable after browser context cleanup removes the live
+		// agent entry.
+		if m.finished == nil {
+			m.finished = make(map[string]finishedAgent)
+		}
+		m.finished[agentID] = finishedAgent{
+			status: agentStatusFromNative(ag),
+			result: ag.result,
+			err:    ag.errText,
+		}
 		if ag.status == "completed" && ag.result != "" {
 			if m.results == nil {
 				m.results = make(map[string]string)
@@ -727,6 +744,11 @@ func (m *Manager) DelegateForParentMission(mission Mission, parentID string) (st
 		final := "completed"
 		if err != nil {
 			final = "error"
+			m.mu.Lock()
+			if cur, ok := m.agents[id]; ok && cur == ag {
+				ag.errText = err.Error()
+			}
+			m.mu.Unlock()
 			m.emitConversation(id, "system", "sub-agent error: "+err.Error())
 			m.logRuntimeEvent("error", "sub_agent_failed", err.Error(), map[string]string{"agent_id": id})
 		} else {
@@ -763,11 +785,22 @@ func (m *Manager) SteerAgent(agentID, message string) error {
 func (m *Manager) AgentStatus(agentID string) (string, error) {
 	m.mu.RLock()
 	ag, ok := m.agents[agentID]
-	m.mu.RUnlock()
-	if !ok {
-		return "", fmt.Errorf("agent %s not found", agentID)
+	if ok {
+		status := ag.status
+		m.mu.RUnlock()
+		return status, nil
 	}
-	return ag.status, nil
+	if done, ok := m.finished[agentID]; ok {
+		status := done.status.Status
+		m.mu.RUnlock()
+		return status, nil
+	}
+	if _, ok := m.results[agentID]; ok {
+		m.mu.RUnlock()
+		return "completed", nil
+	}
+	m.mu.RUnlock()
+	return "", fmt.Errorf("agent %s not found", agentID)
 }
 
 // AgentResult returns the final output of a completed sub-agent. It checks live
@@ -781,6 +814,15 @@ func (m *Manager) AgentResult(agentID string) (string, error) {
 			return "", fmt.Errorf("agent %s has status %q, not completed", agentID, ag.status)
 		}
 		return ag.result, nil
+	}
+	if done, ok := m.finished[agentID]; ok {
+		if done.status.Status != "completed" {
+			if done.err != "" {
+				return "", fmt.Errorf("agent %s has status %q: %s", agentID, done.status.Status, done.err)
+			}
+			return "", fmt.Errorf("agent %s has status %q, not completed", agentID, done.status.Status)
+		}
+		return done.result, nil
 	}
 	if m.results != nil {
 		if result, ok := m.results[agentID]; ok {
@@ -798,6 +840,10 @@ func (m *Manager) AgentSnapshot(agentID string) (string, error) {
 	m.mu.RLock()
 	ag, ok := m.agents[agentID]
 	if !ok {
+		if done, ok := m.finished[agentID]; ok {
+			m.mu.RUnlock()
+			return formatAgentSnapshot(done.status, done.result != "", done.err), nil
+		}
 		// Check results cache for completed agents that were cleaned up.
 		wasCached := false
 		if m.results != nil {
@@ -809,21 +855,54 @@ func (m *Manager) AgentSnapshot(agentID string) (string, error) {
 		}
 		return "", fmt.Errorf("agent %s not found", agentID)
 	}
-	parentID := ag.parentID
-	status := ag.status
-	phase := ag.phase
-	objective := ag.objective
-	turn := ag.turn
-	maxTurns := ag.maxTurns
-	lastActivity := ag.lastActivity
-	tokens := ag.tokens
+	status := agentStatusFromNative(ag)
 	hasResult := ag.result != ""
 	m.mu.RUnlock()
 
-	return fmt.Sprintf(
-		`{"agent_id":%q,"parent_id":%q,"status":%q,"phase":%q,"objective":%q,"turn":%d,"max_turns":%d,"last_activity_at":%d,"tokens":%d,"result_available":%t}`,
-		agentID, parentID, status, phase, objective, turn, maxTurns, lastActivity, tokens, hasResult,
-	), nil
+	return formatAgentSnapshot(status, hasResult, ""), nil
+}
+
+func formatAgentSnapshot(status agentmsg.AgentStatus, resultAvailable bool, errText string) string {
+	out := struct {
+		AgentID               string `json:"agent_id"`
+		ParentID              string `json:"parent_id,omitempty"`
+		ContextID             string `json:"context_id,omitempty"`
+		Status                string `json:"status"`
+		Phase                 string `json:"phase,omitempty"`
+		Objective             string `json:"objective,omitempty"`
+		Turn                  int    `json:"turn,omitempty"`
+		MaxTurns              int    `json:"max_turns,omitempty"`
+		LastActivity          int64  `json:"last_activity_at,omitempty"`
+		Tokens                int    `json:"tokens,omitempty"`
+		ResultAvailable       bool   `json:"result_available"`
+		Error                 string `json:"error,omitempty"`
+		ObservationConfidence string `json:"observation_confidence,omitempty"`
+		ObservationSummary    string `json:"observation_summary,omitempty"`
+		ObservationURL        string `json:"observation_url,omitempty"`
+		LastFailedTool        string `json:"last_failed_tool,omitempty"`
+	}{
+		AgentID:               status.AgentID,
+		ParentID:              status.ParentID,
+		ContextID:             status.ContextID,
+		Status:                status.Status,
+		Phase:                 status.Phase,
+		Objective:             status.Objective,
+		Turn:                  status.Turn,
+		MaxTurns:              status.MaxTurns,
+		LastActivity:          status.LastActivity,
+		Tokens:                status.Tokens,
+		ResultAvailable:       resultAvailable,
+		Error:                 errText,
+		ObservationConfidence: status.ObservationConfidence,
+		ObservationSummary:    status.ObservationSummary,
+		ObservationURL:        status.ObservationURL,
+		LastFailedTool:        status.LastFailedTool,
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return fmt.Sprintf(`{"agent_id":%q,"status":%q,"result_available":%t}`, status.AgentID, status.Status, resultAvailable)
+	}
+	return string(data)
 }
 
 // ReleaseAgent terminates a sub-agent and cleans up its resources.

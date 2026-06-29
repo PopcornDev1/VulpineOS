@@ -2,6 +2,7 @@ package agentcore
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -513,6 +514,85 @@ func TestSubAgentResultSurvivesFinish(t *testing.T) {
 	}
 	if result != "result that must survive finish" {
 		t.Errorf("result = %q, want 'result that must survive finish'", result)
+	}
+}
+
+func TestFinishedSubAgentStatusSurvivesFinish(t *testing.T) {
+	m := NewManager(nil, Config{})
+	defer m.Dispose()
+
+	ag := &nativeAgent{
+		id:       "done-sub",
+		parentID: "lead-1",
+		cancel:   func() {},
+		status:   "completed",
+		result:   "done",
+	}
+	m.mu.Lock()
+	m.agents["done-sub"] = ag
+	m.mu.Unlock()
+
+	m.finish("done-sub", ag)
+
+	status, err := m.AgentStatus("done-sub")
+	if err != nil {
+		t.Fatalf("AgentStatus after finish: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("status = %q, want completed", status)
+	}
+}
+
+func TestErroredSubAgentDiagnosticsSurviveFinish(t *testing.T) {
+	m := NewManager(nil, Config{})
+	defer m.Dispose()
+
+	ag := &nativeAgent{
+		id:       "error-sub",
+		parentID: "lead-1",
+		cancel:   func() {},
+		status:   "error",
+		errText:  "agent did not finish within 25 iterations",
+		maxTurns: 25,
+		turn:     25,
+	}
+	m.mu.Lock()
+	m.agents["error-sub"] = ag
+	m.mu.Unlock()
+
+	m.finish("error-sub", ag)
+
+	status, err := m.AgentStatus("error-sub")
+	if err != nil {
+		t.Fatalf("AgentStatus after errored finish: %v", err)
+	}
+	if status != "error" {
+		t.Fatalf("status = %q, want error", status)
+	}
+
+	result, err := m.AgentResult("error-sub")
+	if err == nil {
+		t.Fatalf("AgentResult returned result %q, want error", result)
+	}
+	if !strings.Contains(err.Error(), "error") || !strings.Contains(err.Error(), "25 iterations") {
+		t.Fatalf("AgentResult error = %q, want status and terminal reason", err.Error())
+	}
+
+	snapshot, err := m.AgentSnapshot("error-sub")
+	if err != nil {
+		t.Fatalf("AgentSnapshot after errored finish: %v", err)
+	}
+	var got struct {
+		Status          string `json:"status"`
+		ResultAvailable bool   `json:"result_available"`
+		Error           string `json:"error"`
+		MaxTurns        int    `json:"max_turns"`
+	}
+	if err := json.Unmarshal([]byte(snapshot), &got); err != nil {
+		t.Fatalf("snapshot JSON: %v; %s", err, snapshot)
+	}
+	if got.Status != "error" || got.ResultAvailable || got.MaxTurns != 25 || !strings.Contains(got.Error, "25 iterations") {
+		t.Fatalf("snapshot = %+v, want preserved error diagnostics", got)
 	}
 }
 

@@ -616,7 +616,7 @@ func delegationTools() []ToolDef {
 				"context":     strProp("Optional background information the sub-agent needs"),
 				"constraints": arrStrProp("Optional list of rules and boundaries for the sub-agent"),
 				"output_spec": strProp("Optional expected output format"),
-				"max_turns":   intProp("Optional maximum iterations for this mission (default 25)"),
+				"max_turns":   intProp(fmt.Sprintf("Optional maximum iterations for this mission (default %d)", defaultMissionMaxTurns)),
 			}, "required": []string{"objective"}},
 		}},
 		{Type: "function", Function: FunctionDef{

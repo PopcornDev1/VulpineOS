@@ -488,6 +488,33 @@ func TestAgentToolsExposeDelegationTools(t *testing.T) {
 	}
 }
 
+func TestDelegateAgentToolAdvertisesActualDefaultMaxTurns(t *testing.T) {
+	tools := BrowserTools()
+	var delegate ToolDef
+	for _, td := range tools {
+		if td.Function.Name == toolDelegateAgent {
+			delegate = td
+			break
+		}
+	}
+	if delegate.Function.Name == "" {
+		t.Fatal("delegate tool missing")
+	}
+	props, ok := delegate.Function.Parameters["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("delegate properties = %#v", delegate.Function.Parameters["properties"])
+	}
+	maxTurns, ok := props["max_turns"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("max_turns property = %#v", props["max_turns"])
+	}
+	description, _ := maxTurns["description"].(string)
+	want := fmt.Sprintf("default %d", defaultMissionMaxTurns)
+	if !strings.Contains(description, want) {
+		t.Fatalf("max_turns description = %q, want %q", description, want)
+	}
+}
+
 func TestDelegationToolsErrorWhenNoManager(t *testing.T) {
 	ts := &BrowserToolset{}
 
