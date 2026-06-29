@@ -182,6 +182,12 @@ const (
 
 type selectionAutoScrollMsg struct{}
 
+type queuedChatTurn struct {
+	AgentID        string
+	Content        string
+	DisplayContent string
+}
+
 var hostGOOS = runtime.GOOS
 
 // App is the root Bubbletea model for the 3-column agent workbench.
@@ -228,6 +234,7 @@ type App struct {
 	selectionAutoScrollDir  int
 	selectionAutoScrollCol  int
 	pendingChatFocusAgentID string
+	queuedChatTurns         map[string][]queuedChatTurn
 	liveAgentContexts       map[string]string
 	agentTokens             map[string]int
 	observationWarnings     map[string]vault.RuntimeEvent
@@ -301,6 +308,7 @@ func NewAppWithControl(k *kernel.Kernel, client *juggler.Client, orch *orchestra
 		contextList:         contextlist.New(),
 		settings:            settings.New(),
 		commandPalette:      commandpalette.New(),
+		queuedChatTurns:     make(map[string][]queuedChatTurn),
 		liveAgentContexts:   make(map[string]string),
 		agentTokens:         make(map[string]int),
 		observationWarnings: make(map[string]vault.RuntimeEvent),
@@ -1066,9 +1074,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "rename":
 			return a.updateRenameInput(msg)
 		case "chat":
-			if a.conversationInputLocked() && isGlobalLifecycleKey(msg) {
-				break
-			}
 			return a.updateChatInput(msg)
 		}
 
@@ -1272,6 +1277,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.focus == FocusConversation && a.inputMode == "chat" && !a.conversation.Focused() {
 				cmds = append(cmds, a.conversation.Focus())
 			}
+		}
+		if cmd := a.flushQueuedChatTurnAfterStatus(msg.AgentID, msg.Status); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 		cmds = append(cmds, a.waitForEvent())
 
@@ -1526,6 +1534,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.noticeTTL = 3
 
 	case shared.BulkAgentStatusMsg:
+		flushedQueuedTurn := false
 		for _, agentID := range msg.AgentIDs {
 			a.agentList.UpdateStatus(agentID, msg.Status)
 			if a.vault != nil {
@@ -1544,9 +1553,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.refreshAgentDetail(agentID)
 				}
 			}
+			if cmd := a.flushQueuedChatTurnAfterStatus(agentID, msg.Status); cmd != nil {
+				flushedQueuedTurn = true
+				cmds = append(cmds, cmd)
+			}
 		}
-		a.notice = msg.Notice
-		a.noticeTTL = 3
+		if !flushedQueuedTurn {
+			a.notice = msg.Notice
+			a.noticeTTL = 3
+		}
 
 	case shared.SettingsClosedMsg:
 		cmds = append(cmds, a.focusChatComposer())
@@ -1910,10 +1925,6 @@ func (a *App) applyConversationStatus(status string) {
 	}
 }
 
-func (a App) conversationInputLocked() bool {
-	return a.conversation.IsThinking()
-}
-
 func isGlobalLifecycleKey(msg tea.KeyMsg) bool {
 	switch msg.String() {
 	case "ctrl+c":
@@ -2171,21 +2182,6 @@ func (a App) updateRenameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateChatInput handles keystrokes in "chat" mode.
 func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if a.conversationInputLocked() {
-		switch msg.String() {
-		case "ctrl+c":
-			return a.handleCtrlC()
-		case "ctrl+k":
-			return a.handleKillAgent()
-		case "enter":
-			a.notice = "Agent is still working — wait for the current response"
-			a.noticeTTL = 3
-		case "esc":
-			return a, a.cancelChatSelectionAndFocus()
-		}
-		return a, nil
-	}
-
 	// The command palette owns input while open (it filters from the chat box).
 	if a.commandPalette.Active() {
 		return a.updateCommandPaletteInput(msg)
@@ -2213,6 +2209,13 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		text, displayText := a.conversation.InputPayloadAndDisplay()
 		if text != "" && a.selectedAgentID != "" {
 			displayContent := operatorDisplayContent(text, displayText)
+			if a.selectedAgentBusy() {
+				a.appendQueuedChatTurn(a.selectedAgentID, text, displayContent)
+				a.conversation.SetThinking(true)
+				a.notice = a.queuedChatNotice(a.selectedAgentID)
+				a.noticeTTL = 4
+				return a, conversation.ThinkingTick()
+			}
 			// Add to conversation view + show thinking with animation
 			a.conversation.AddEntryWithDisplay("user", text, displayContent)
 			a.conversation.ForceScrollToBottom()
@@ -2227,6 +2230,9 @@ func (a App) updateChatInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 	case "esc":
+		if a.selectedAgentID != "" && a.hasQueuedChatTurn(a.selectedAgentID) {
+			return a.handleQueuedChatInterrupt()
+		}
 		return a, a.cancelChatSelectionAndFocus()
 	default:
 		if !a.conversation.Focused() {
@@ -2499,6 +2505,110 @@ func (a *App) recordLocalOperatorMessage(agentID, text, displayContent string) {
 	if a.vault != nil {
 		a.vault.AppendMessageWithDisplay(agentID, "user", text, displayContent, 0)
 	}
+}
+
+func (a App) selectedAgentBusy() bool {
+	return a.conversation.IsThinking() || isLiveAgentStatus(a.selectedAgentStatus())
+}
+
+func (a *App) appendQueuedChatTurn(agentID, text, displayContent string) {
+	if strings.TrimSpace(agentID) == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	if a.queuedChatTurns == nil {
+		a.queuedChatTurns = make(map[string][]queuedChatTurn)
+	}
+	a.queuedChatTurns[agentID] = append(a.queuedChatTurns[agentID], queuedChatTurn{
+		AgentID:        agentID,
+		Content:        text,
+		DisplayContent: displayContent,
+	})
+}
+
+func (a App) queuedChatCount(agentID string) int {
+	return len(a.queuedChatTurns[agentID])
+}
+
+func (a App) hasQueuedChatTurn(agentID string) bool {
+	return a.queuedChatCount(agentID) > 0
+}
+
+func (a *App) popQueuedChatTurn(agentID string) (queuedChatTurn, bool) {
+	queue := a.queuedChatTurns[agentID]
+	if len(queue) == 0 {
+		return queuedChatTurn{}, false
+	}
+	turn := queue[0]
+	if len(queue) == 1 {
+		delete(a.queuedChatTurns, agentID)
+	} else {
+		a.queuedChatTurns[agentID] = append([]queuedChatTurn(nil), queue[1:]...)
+	}
+	return turn, true
+}
+
+func (a App) queuedChatNotice(agentID string) string {
+	count := a.queuedChatCount(agentID)
+	if count <= 1 {
+		return "Message queued - press Esc to interrupt and send it now"
+	}
+	return fmt.Sprintf("%d messages queued - press Esc to interrupt and send them now", count)
+}
+
+func (a App) queuedChatSentNotice(agentID string) string {
+	remaining := a.queuedChatCount(agentID)
+	if remaining > 0 {
+		return fmt.Sprintf("Queued message sent (%d remaining)", remaining)
+	}
+	return "Queued message sent"
+}
+
+func (a *App) flushNextQueuedChatTurn(agentID string) tea.Cmd {
+	turn, ok := a.popQueuedChatTurn(agentID)
+	if !ok {
+		return nil
+	}
+	a.recordLocalOperatorMessage(agentID, turn.Content, turn.DisplayContent)
+	return tea.Batch(a.sendMessageToAgent(agentID, turn.Content, turn.DisplayContent), conversation.ThinkingTick())
+}
+
+func (a *App) flushQueuedChatTurnAfterStatus(agentID, status string) tea.Cmd {
+	if isLiveAgentStatus(status) || !a.hasQueuedChatTurn(agentID) {
+		return nil
+	}
+	cmd := a.flushNextQueuedChatTurn(agentID)
+	if cmd != nil {
+		a.notice = a.queuedChatSentNotice(agentID)
+		a.noticeTTL = 3
+	}
+	return cmd
+}
+
+func (a App) handleQueuedChatInterrupt() (tea.Model, tea.Cmd) {
+	agentID := a.selectedAgentID
+	if agentID == "" || !a.hasQueuedChatTurn(agentID) {
+		return a, a.cancelChatSelectionAndFocus()
+	}
+	if a.control != nil && isLiveAgentStatus(a.selectedAgentStatus()) {
+		a.notice = "Interrupting agent - queued message will send next"
+		a.noticeTTL = 4
+		return a, a.remoteAgentStatusCommand("agents.kill", agentID, "interrupted", "Agent interrupted: ")
+	}
+	if a.orch != nil && isLiveAgentStatus(a.selectedAgentStatus()) {
+		if err := a.orch.KillAgent(agentID); err != nil && !strings.Contains(err.Error(), "not found") {
+			a.notice = "Interrupt failed: " + err.Error()
+			a.noticeTTL = 4
+			return a, nil
+		}
+		a.conversation.AddEntry("system", "Agent interrupted")
+	}
+	cmd := a.flushNextQueuedChatTurn(agentID)
+	if cmd != nil {
+		a.quitConfirmArmed = false
+		a.notice = a.queuedChatSentNotice(agentID)
+		a.noticeTTL = 3
+	}
+	return a, cmd
 }
 
 func (a App) browserToggleContextID() (string, string) {

@@ -623,7 +623,7 @@ func TestExistingReadyAgentWithNoMessagesOpensUnlockedChat(t *testing.T) {
 	}
 }
 
-func TestStartupLockedChatDoesNotAcceptInput(t *testing.T) {
+func TestStartupActiveChatAcceptsInputAndQueuesEnter(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -639,20 +639,20 @@ func TestStartupLockedChatDoesNotAcceptInput(t *testing.T) {
 	app = model.(App)
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
 	app = model.(App)
-	if cmd != nil {
-		t.Fatalf("locked startup input returned command: %#v", cmd())
-	}
-	if got := app.conversation.TextInput().Value(); got != "" {
-		t.Fatalf("locked startup input value = %q, want empty", got)
+	if got := app.conversation.TextInput().Value(); got != "h" {
+		t.Fatalf("startup input value = %q, want typed draft", got)
 	}
 
 	model, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = model.(App)
-	if cmd != nil {
-		t.Fatalf("locked startup enter returned command: %#v", cmd())
+	if cmd == nil {
+		t.Fatal("startup queued enter should keep thinking animation alive")
 	}
-	if app.conversation.IsAwake() {
-		t.Fatal("conversation should remain locked before first reply")
+	if got := app.queuedChatCount(agent.ID); got != 1 {
+		t.Fatalf("queued turns = %d, want 1", got)
+	}
+	if got := app.conversation.TextInput().Value(); got != "" {
+		t.Fatalf("startup input value = %q, want cleared after queue", got)
 	}
 }
 
@@ -723,7 +723,7 @@ func TestStartupLockedChatRequiresSecondCtrlCToQuit(t *testing.T) {
 	}
 }
 
-func TestStartupLockedChatIgnoresPlainQuitKey(t *testing.T) {
+func TestStartupActiveChatTreatsPlainQuitKeyAsText(t *testing.T) {
 	db := openTestVault(t)
 	app := NewApp(nil, nil, nil, db, &config.Config{}, nil)
 	app.conversation.SetSize(80, 20)
@@ -741,11 +741,11 @@ func TestStartupLockedChatIgnoresPlainQuitKey(t *testing.T) {
 
 	if cmd != nil {
 		if _, ok := cmd().(tea.QuitMsg); ok {
-			t.Fatal("plain q should not quit a locked chat")
+			t.Fatal("plain q should not quit active chat")
 		}
 	}
-	if app.conversation.TextInput().Value() != "" {
-		t.Fatal("locked startup should not type into chat")
+	if app.conversation.TextInput().Value() != "q" {
+		t.Fatal("plain q should type into active chat")
 	}
 }
 
@@ -1981,6 +1981,79 @@ func TestRemoteControlBulkStatusRefreshesSelectedDetail(t *testing.T) {
 	}
 }
 
+func TestRemoteQueuedChatEscInterruptsAndSendsQueuedTurn(t *testing.T) {
+	control := &fakeControlClient{responses: map[string]any{
+		"agents.kill":   map[string]any{},
+		"agents.resume": map[string]any{"agentId": "agent-1"},
+	}}
+	app := NewAppWithControl(nil, nil, nil, nil, nil, nil, control)
+	app.agentList.SetAgents([]vault.Agent{{ID: "agent-1", Name: "Remote", Status: "active", TotalTokens: 7}})
+	app.agentList.SelectAgentID("agent-1")
+	app.selectedAgentID = "agent-1"
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.conversation.SetAgentID("agent-1")
+	app.conversation.SetAgentName("Remote")
+	app.conversation.SetAwake(true)
+	app.conversation.SetThinking(true)
+	app.conversation.Focus()
+	app.conversation.TextInput().SetValue("continue with this next")
+
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if got := app.queuedChatCount("agent-1"); got != 1 {
+		t.Fatalf("queued turns = %d, want 1", got)
+	}
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("Esc with queued remote chat should interrupt the live agent")
+	}
+	msg := runCommandWithTimeout(t, cmd)
+	bulk, ok := msg.(shared.BulkAgentStatusMsg)
+	if !ok || bulk.Status != "interrupted" {
+		t.Fatalf("interrupt command returned %#v, want interrupted bulk status", msg)
+	}
+
+	model, cmd = app.Update(bulk)
+	app = model.(App)
+	if got := app.queuedChatCount("agent-1"); got != 0 {
+		t.Fatalf("queued turns = %d, want 0 after interrupted status flush", got)
+	}
+	if cmd == nil {
+		t.Fatal("interrupted status should send the queued remote turn")
+	}
+	msg = runCommandWithTimeout(t, cmd)
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, child := range batch {
+			if child != nil {
+				_ = runCommandWithTimeout(t, child)
+			}
+		}
+	}
+
+	var sawKill, sawResume bool
+	var resumeParams map[string]any
+	for _, call := range control.calls {
+		switch call.method {
+		case "agents.kill":
+			sawKill = true
+		case "agents.resume":
+			sawResume = true
+			if err := json.Unmarshal(call.params, &resumeParams); err != nil {
+				t.Fatalf("decode resume params: %v", err)
+			}
+		}
+	}
+	if !sawKill || !sawResume {
+		t.Fatalf("control calls = %+v, want kill then resume", control.calls)
+	}
+	if resumeParams["message"] != "continue with this next" {
+		t.Fatalf("resume message = %#v, want queued text", resumeParams["message"])
+	}
+}
+
 func TestRemoteControlBulkStatusExcludesFailures(t *testing.T) {
 	control := &fakeControlClient{responses: map[string]any{
 		"agents.pauseMany": map[string]any{
@@ -2965,7 +3038,7 @@ func TestFocusedDraftChatTreatsShortcutLettersAsText(t *testing.T) {
 	}
 }
 
-func TestThinkingChatDoesNotStartSecondTurn(t *testing.T) {
+func TestThinkingChatEnterQueuesSecondTurn(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -2974,6 +3047,9 @@ func TestThinkingChatDoesNotStartSecondTurn(t *testing.T) {
 	agent, err := db.CreateAgent("Researcher", "Research", "{}")
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
+	}
+	if err := db.UpdateAgentStatus(agent.ID, "active"); err != nil {
+		t.Fatalf("set agent active: %v", err)
 	}
 	app.selectedAgentID = agent.ID
 	app.focus = FocusConversation
@@ -2988,14 +3064,106 @@ func TestThinkingChatDoesNotStartSecondTurn(t *testing.T) {
 	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = model.(App)
 
-	if cmd != nil {
-		t.Fatal("thinking chat enter returned a command")
+	if cmd == nil {
+		t.Fatal("thinking chat enter should keep the thinking animation alive")
 	}
-	if got := app.conversation.TextInput().Value(); got != "second turn" {
-		t.Fatalf("conversation input = %q, want draft preserved", got)
+	if got := app.conversation.TextInput().Value(); got != "" {
+		t.Fatalf("conversation input = %q, want draft cleared", got)
 	}
-	if app.notice == "" {
-		t.Fatal("expected a notice explaining why chat is locked")
+	if got := app.queuedChatCount(agent.ID); got != 1 {
+		t.Fatalf("queued turns = %d, want 1", got)
+	}
+	if app.queuedChatTurns[agent.ID][0].Content != "second turn" {
+		t.Fatalf("queued content = %q, want second turn", app.queuedChatTurns[agent.ID][0].Content)
+	}
+	msgs, err := db.GetMessages(agent.ID)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("persisted messages = %d, want 0 until queued turn starts", len(msgs))
+	}
+	if !strings.Contains(app.notice, "queued") || !strings.Contains(app.notice, "Esc") {
+		t.Fatalf("notice = %q, want queued interrupt hint", app.notice)
+	}
+}
+
+func TestQueuedChatSendsAfterAgentStops(t *testing.T) {
+	db := openTestVault(t)
+	cfg := &config.Config{}
+	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Researcher", "Research", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if err := db.UpdateAgentStatus(agent.ID, "active"); err != nil {
+		t.Fatalf("set agent active: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.SetAgentName(agent.Name)
+	app.conversation.SetAwake(true)
+	app.conversation.SetThinking(true)
+	app.conversation.Focus()
+	app.conversation.TextInput().SetValue("second turn")
+
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+
+	model, cmd := app.Update(shared.AgentStatusMsg{AgentID: agent.ID, Status: "completed"})
+	app = model.(App)
+
+	if cmd == nil {
+		t.Fatal("terminal status with queued chat should return a send command")
+	}
+	if got := app.queuedChatCount(agent.ID); got != 0 {
+		t.Fatalf("queued turns = %d, want 0 after flush", got)
+	}
+	msgs, err := db.GetMessages(agent.ID)
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Role != "user" || msgs[0].Content != "second turn" {
+		t.Fatalf("persisted messages = %#v, want queued user turn", msgs)
+	}
+	if !strings.Contains(app.conversation.View(), "second turn") {
+		t.Fatalf("conversation missing flushed queued turn:\n%s", app.conversation.View())
+	}
+	if !app.conversation.IsThinking() {
+		t.Fatal("queued turn should put conversation back into thinking state")
+	}
+}
+
+func TestSlashPaletteOpensWhileAgentThinking(t *testing.T) {
+	db := openTestVault(t)
+	cfg := &config.Config{}
+	app := NewApp(nil, nil, nil, db, cfg, nil)
+
+	agent, err := db.CreateAgent("Researcher", "Research", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	if err := db.UpdateAgentStatus(agent.ID, "active"); err != nil {
+		t.Fatalf("set agent active: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.SetAgentName(agent.Name)
+	app.conversation.SetAwake(true)
+	app.conversation.SetThinking(true)
+	app.conversation.Focus()
+
+	model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	app = model.(App)
+
+	if !app.commandPalette.Active() {
+		t.Fatal("slash palette should open while agent is thinking")
 	}
 }
 
