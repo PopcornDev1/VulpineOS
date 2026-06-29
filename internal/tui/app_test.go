@@ -2752,7 +2752,7 @@ func TestChatShortPasteDisplaysRawAndPersistsRawContent(t *testing.T) {
 	}
 }
 
-func TestChatLongPasteDisplaysMarkerAndPersistsRawContent(t *testing.T) {
+func TestChatLongPasteShowsMarkerUntilSendThenExpandsRawContent(t *testing.T) {
 	db := openTestVault(t)
 	cfg := &config.Config{}
 	app := NewApp(nil, nil, nil, db, cfg, nil)
@@ -2791,15 +2791,15 @@ func TestChatLongPasteDisplaysMarkerAndPersistsRawContent(t *testing.T) {
 	if msgs[0].Content != raw {
 		t.Fatalf("persisted content = %q, want raw paste", msgs[0].Content)
 	}
-	if msgs[0].DisplayContent != "[Pasted Content 201 Chars]" {
-		t.Fatalf("display content = %q, want paste marker", msgs[0].DisplayContent)
+	if msgs[0].DisplayContent != "" {
+		t.Fatalf("display content = %q, want empty display override after send", msgs[0].DisplayContent)
 	}
 	view := app.conversation.View()
-	if strings.Contains(view, raw) {
-		t.Fatalf("conversation leaked raw paste:\n%s", view)
+	if got := strings.Count(stripANSITest(view), "x"); got < len(raw) {
+		t.Fatalf("conversation should show all raw pasted characters after send, got %d want at least %d:\n%s", got, len(raw), view)
 	}
-	if !strings.Contains(view, "[Pasted Content 201 Chars]") {
-		t.Fatalf("conversation missing paste marker:\n%s", view)
+	if strings.Contains(view, "[Pasted Content 201 Chars]") {
+		t.Fatalf("conversation should expand paste marker after send:\n%s", view)
 	}
 }
 

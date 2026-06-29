@@ -883,6 +883,9 @@ func (m *Model) insertDraftText(text string) {
 func (m *Model) InputPayloadAndDisplay() (string, string) {
 	display := strings.TrimSpace(m.textInput.Value())
 	payload := m.expandPasteMarkers(display)
+	if payload != display && containsPasteMarkerDisplay(display) {
+		display = payload
+	}
 	m.textInput.Reset()
 	m.pasteSnippets = nil
 	return payload, display
@@ -924,9 +927,16 @@ func visiblePasteText(raw string) string {
 
 func messageDisplayText(content, displayContent string) string {
 	if strings.TrimSpace(displayContent) != "" {
+		if containsPasteMarkerDisplay(displayContent) {
+			return content
+		}
 		return displayContent
 	}
 	return content
+}
+
+func containsPasteMarkerDisplay(text string) bool {
+	return rePasteMarker.MatchString(text)
 }
 
 // Focus focuses the text input.
@@ -1570,6 +1580,7 @@ var (
 	reBullet         = regexp.MustCompile(`^\s*[-*]\s+(.+)$`)
 	reNumbered       = regexp.MustCompile(`^\s*(\d+)[.)]\s+(.+)$`)
 	reTableDelimiter = regexp.MustCompile(`^:?-{3,}:?$`)
+	rePasteMarker    = regexp.MustCompile(`\[Pasted Content \d+ Chars?\]`)
 )
 
 // renderMarkdown applies lightweight inline markdown styling and word wraps.
@@ -1739,6 +1750,9 @@ func renderTableRows(rows [][]string, maxWidth int) []string {
 		return nil
 	}
 	widths := tableColumnWidths(rows, maxWidth)
+	if maxWidth > 0 && tableRenderedWidth(widths) > maxWidth {
+		return renderStackedTableRows(rows, maxWidth)
+	}
 	out := make([]string, 0, len(rows)+1)
 	out = append(out, renderTableRow(rows[0], widths, true))
 	out = append(out, renderTableSeparator(widths))
@@ -1762,33 +1776,60 @@ func tableColumnWidths(rows [][]string, maxWidth int) []int {
 		}
 	}
 
-	available := maxWidth - 2 - ((columns - 1) * 3)
-	if available < columns {
-		available = columns
+	return widths
+}
+
+func tableRenderedWidth(widths []int) int {
+	if len(widths) == 0 {
+		return 0
 	}
-	total := 0
+	total := 2
 	for _, width := range widths {
 		total += width
 	}
-	if total <= available {
-		return widths
-	}
+	total += (len(widths) - 1) * 3
+	return total
+}
 
-	scaled := make([]int, columns)
-	remaining := available
-	for i, width := range widths {
-		next := width * available / total
-		if next < 1 {
-			next = 1
+func renderStackedTableRows(rows [][]string, maxWidth int) []string {
+	if len(rows) < 2 {
+		return nil
+	}
+	headers := rows[0]
+	out := make([]string, 0, len(rows)*len(headers))
+	for rowIdx, row := range rows[1:] {
+		if rowIdx > 0 {
+			out = append(out, "")
 		}
-		scaled[i] = next
-		remaining -= next
+		out = append(out, shared.MutedStyle.Render(fmt.Sprintf("  Row %d", rowIdx+1)))
+		for colIdx, header := range headers {
+			value := ""
+			if colIdx < len(row) {
+				value = strings.TrimSpace(row[colIdx])
+			}
+			if value == "" {
+				continue
+			}
+			label := strings.TrimSpace(header)
+			if label == "" {
+				label = fmt.Sprintf("Column %d", colIdx+1)
+			}
+			out = append(out, renderStackedTableField(label, value, maxWidth)...)
+		}
 	}
-	for i := 0; remaining > 0; i = (i + 1) % columns {
-		scaled[i]++
-		remaining--
+	return out
+}
+
+func renderStackedTableField(label, value string, maxWidth int) []string {
+	firstPrefix := "    " + label + ": "
+	nextPrefix := strings.Repeat(" ", ansiVisualWidth(firstPrefix))
+	if maxWidth > 0 && ansiVisualWidth(firstPrefix) >= maxWidth {
+		return append(
+			[]string{shared.MutedStyle.Render("    " + label + ":")},
+			renderPrefixedMarkdown(value, maxWidth, "      ", "      ")...,
+		)
 	}
-	return scaled
+	return renderPrefixedMarkdown(value, maxWidth, firstPrefix, nextPrefix)
 }
 
 func renderTableRow(row []string, widths []int, header bool) string {

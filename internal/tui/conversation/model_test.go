@@ -480,8 +480,8 @@ func TestInsertLongPastedContentUsesMarkerButKeepsPayload(t *testing.T) {
 	if payload != raw {
 		t.Fatalf("payload = %q, want raw paste", payload)
 	}
-	if display != "[Pasted Content 201 Chars]" {
-		t.Fatalf("display = %q, want paste marker", display)
+	if display != raw {
+		t.Fatalf("display = %q, want raw paste after send", display)
 	}
 }
 
@@ -497,18 +497,18 @@ func TestDeletedPasteMarkerDoesNotSendHiddenPayload(t *testing.T) {
 	}
 }
 
-func TestAddEntryWithDisplayRendersMarkerNotRawPaste(t *testing.T) {
+func TestAddEntryWithDisplayExpandsPasteMarkerToRawContent(t *testing.T) {
 	m := New()
 	m.SetSize(80, 20)
 	m.SetAgentID("agent-1")
 	m.AddEntryWithDisplay("user", "raw pasted secret", "[Pasted Content 17 Chars]")
 
 	view := m.View()
-	if strings.Contains(view, "raw pasted secret") {
-		t.Fatalf("view leaked raw paste:\n%s", view)
+	if !strings.Contains(view, "raw pasted secret") {
+		t.Fatalf("view missing raw paste:\n%s", view)
 	}
-	if !strings.Contains(view, "[Pasted Content 17 Chars]") {
-		t.Fatalf("view missing paste marker:\n%s", view)
+	if strings.Contains(view, "[Pasted Content 17 Chars]") {
+		t.Fatalf("view should expand paste marker after send:\n%s", view)
 	}
 }
 
@@ -816,6 +816,40 @@ func TestRenderMarkdownFormatsTables(t *testing.T) {
 	}
 	if !strings.Contains(joined, "─") {
 		t.Fatalf("table should include a terminal separator line: %#v", lines)
+	}
+}
+
+func TestRenderMarkdownStacksWideTablesWithoutEllipses(t *testing.T) {
+	table := strings.Join([]string{
+		"| Address | Asking price | Verification status | 1-line rationale |",
+		"| --- | --- | --- | --- |",
+		"| Edgar Street, Stockton-on-Tees | £65,000 | **NO PASS** | Strong headline yield but needs sold comparables and rental comps before inclusion. |",
+		"| Westbourne Road, Middlesbrough | £75,000 | **NO PASS** | Modern Method of Auction fees could materially worsen the numbers. |",
+	}, "\n")
+
+	lines := renderMarkdown(table, 56)
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{
+		"Address: Edgar Street, Stockton-on-Tees",
+		"Asking price: £65,000",
+		"Verification status: NO PASS",
+		"1-line rationale: Strong headline yield but needs",
+		"sold comparables and rental comps",
+		"before inclusion.",
+		"Address: Westbourne Road, Middlesbrough",
+		"Modern Method of Auction fees",
+	} {
+		if !strings.Contains(stripANSI(joined), want) {
+			t.Fatalf("stacked table missing %q in:\n%s", want, stripANSI(joined))
+		}
+	}
+	if strings.Contains(joined, "...") {
+		t.Fatalf("wide table should not ellipsize cell content:\n%s", joined)
+	}
+	for i, line := range lines {
+		if width := ansiVisualWidth(line); width > 56 {
+			t.Fatalf("line %d width = %d, want <= 56:\n%s", i+1, width, stripANSI(line))
+		}
 	}
 }
 
