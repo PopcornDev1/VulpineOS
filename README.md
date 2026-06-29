@@ -191,7 +191,7 @@ Use `/` in an empty chat input to open the command palette. It includes common a
 
 The native runtime keeps agent identity and browser guidance in the model prompt. New agents start on the assigned task immediately and restate their assigned runtime name, reducing drift toward stale persona state. The prompt forces exact action/result reporting and explicitly forbids claiming a browser action succeeded after an error, timeout, or incomplete result.
 Browser recovery is layered into both the tools and the prompt. Recoverable browser-tool failures automatically feed a compact `vulpine_observe` result back into the next model turn, but the agent is still instructed to treat the failed action as unverified until a later observation proves the outcome. `vulpine_page_info` returns active-element and form-field metadata, and `vulpine_fill_form` can resolve fields by label, name, id, placeholder, or autocomplete so dynamic forms and open shadow DOM forms do not require brittle coordinate clicks.
-Challenge handling is an extension-governed path. The public build exposes `vulpine_captcha_detect`, `vulpine_captcha_solve`, and `vulpine_captcha_apply`, but returns unavailable unless an authorized provider is registered. Captcha configuration stores policy limits only, not API keys. Tool output is sanitized so provider request IDs and raw solution tokens do not cross the MCP boundary. When policy denies a solve or human action is required, agents report `NEEDS_USER_ACTION` and keep the session ready for operator takeover instead of pretending the task succeeded or failed permanently.
+Challenge handling is an extension-governed path. The public build exposes `vulpine_captcha_detect`, `vulpine_captcha_solve`, and `vulpine_captcha_apply`, but returns unavailable unless an authorized provider is registered. Captcha configuration stores policy limits only, not API keys. Tool output is sanitized so provider request IDs and raw solution tokens do not cross the MCP boundary. When policy denies a solve or human action is required, agents report `NEEDS_USER_ACTION` and keep the session ready for operator takeover instead of pretending the task succeeded or failed permanently. See [docs/captcha-provider-adapters.md](docs/captcha-provider-adapters.md) for acceptable-use guidance and a mock adapter example.
 Human-input tools provide heuristic click, scroll, and typing variation in the public build. `vulpine_human_type` dispatches real key events when possible and falls back to DOM insertion only when key dispatch is unavailable.
 The system panel shows both the browser mode (`GUI` or `HEADLESS`) and the active browser route (`VULPINE`), so the operator can verify the runtime path without checking logs.
 The TUI also shows the current browser window state (`VISIBLE`, `HIDDEN`, `HEADLESS`, or `N/A`) so browser visibility is diagnosable without checking logs.
@@ -364,6 +364,10 @@ For public release gating and audit steps, see
 For a standardized AWS Mac builder runbook and wrapper scripts, see
 [docs/ec2-mac-builder.md](docs/ec2-mac-builder.md).
 
+For challenge/captcha provider adapter guidance, including acceptable-use
+requirements and a harmless mock provider, see
+[docs/captcha-provider-adapters.md](docs/captcha-provider-adapters.md).
+
 ---
 
 ## MCP Tools
@@ -377,7 +381,7 @@ VulpineOS exposes 42 tools via Model Context Protocol:
 | Reliability tools | Wait, find, verify, screenshot diff, page-settled checks, select options, fill forms, form field intelligence, page info, key press, clear input, form errors, and automatic observation recovery |
 | Human-realism tools | Human-like click, scroll, and key-event typing cadence |
 | Annotated interaction | Annotated screenshots and click-by-label with `@N` labels |
-| Extension surfaces | Credential metadata/autofill, audio capture, challenge governance, Sentinel signals, and mobile bridge hooks. The stock public build returns unavailable unless an extension provider is attached; credential, challenge, and URL metadata/errors are redacted at the MCP boundary. |
+| Extension surfaces | Credential metadata/autofill, audio capture, challenge governance, Sentinel signals, and mobile bridge hooks. The stock public build returns unavailable unless an extension provider is attached; credential, challenge, and URL metadata/errors are redacted at the MCP boundary. See the captcha adapter guide for the BYO provider pattern. |
 | Mobile bridge | List Android devices, start a local CDP bridge, and disconnect bridge sessions when the public mobile bridge provider is installed |
 
 ---
