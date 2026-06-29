@@ -2883,6 +2883,8 @@ func TestFocusedChatIgnoresLeakedMouseReports(t *testing.T) {
 		paste  bool
 	}{
 		{name: "single motion report", report: "[<65;43;23M"},
+		{name: "user reported motion report a", report: "[<65;65;24M"},
+		{name: "user reported motion report b", report: "[<65;68;19M"},
 		{name: "repeated motion reports", report: "[<65;72;20M[<65;72;20M"},
 		{name: "paste-marked report", report: "[<65;43;23M", paste: true},
 		{name: "paste-marked repeated reports", report: "[<65;43;23M[<65;43;23M", paste: true},
@@ -2919,6 +2921,62 @@ func TestFocusedChatIgnoresLeakedMouseReports(t *testing.T) {
 				t.Fatalf("conversation input = %q, want leaked mouse reports ignored", got)
 			}
 		})
+	}
+}
+
+func TestFocusedChatIgnoresChunkedLeakedMouseReports(t *testing.T) {
+	db := openTestVault(t)
+	cfg := &config.Config{}
+	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Scraper", "Scrape prices", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.SetAgentName(agent.Name)
+	app.conversation.SetAwake(true)
+	app.conversation.Focus()
+
+	for _, chunk := range []string{"[<65;", "65;", "24M", "[<65;", "68;", "19M"} {
+		model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(chunk)})
+		app = model.(App)
+	}
+
+	if got := app.conversation.TextInput().Value(); got != "" {
+		t.Fatalf("conversation input = %q, want chunked leaked mouse reports ignored", got)
+	}
+}
+
+func TestFocusedChatKeepsMouseLikeTextWhenChunksStopMatching(t *testing.T) {
+	db := openTestVault(t)
+	cfg := &config.Config{}
+	app := NewApp(nil, nil, nil, db, cfg, nil)
+	app.conversation.SetSize(80, 20)
+
+	agent, err := db.CreateAgent("Scraper", "Scrape prices", "{}")
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	app.selectedAgentID = agent.ID
+	app.focus = FocusConversation
+	app.inputMode = "chat"
+	app.conversation.SetAgentID(agent.ID)
+	app.conversation.SetAgentName(agent.Name)
+	app.conversation.SetAwake(true)
+	app.conversation.Focus()
+
+	for _, chunk := range []string{"[<65;", "hello"} {
+		model, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(chunk)})
+		app = model.(App)
+	}
+
+	if got := app.conversation.TextInput().Value(); got != "[<65;hello" {
+		t.Fatalf("conversation input = %q, want mouse-like text preserved", got)
 	}
 }
 

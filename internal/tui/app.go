@@ -221,25 +221,26 @@ type App struct {
 	agentPicker    *agentpicker.Model
 
 	// State
-	selectedAgentID         string
-	inputMode               string // "" | "new-agent-name" | "new-agent-desc" | "chat" | "rename"
-	newAgentName            string // temp storage during agent creation
-	newAgentContext         string
-	renameAgentID           string // agent ID being renamed
-	notice                  string
-	noticeTTL               int // number of ticks before notice is cleared
-	persistentWarning       string
-	persistentWarningAgent  string
-	quitConfirmArmed        bool
-	selectionAutoScrollDir  int
-	selectionAutoScrollCol  int
-	pendingChatFocusAgentID string
-	queuedChatTurns         map[string][]queuedChatTurn
-	liveAgentContexts       map[string]string
-	agentTokens             map[string]int
-	observationWarnings     map[string]vault.RuntimeEvent
-	dismissedWarnings       map[string]string
-	clipboardWrite          func(string) error
+	selectedAgentID            string
+	inputMode                  string // "" | "new-agent-name" | "new-agent-desc" | "chat" | "rename"
+	newAgentName               string // temp storage during agent creation
+	newAgentContext            string
+	renameAgentID              string // agent ID being renamed
+	notice                     string
+	noticeTTL                  int // number of ticks before notice is cleared
+	persistentWarning          string
+	persistentWarningAgent     string
+	quitConfirmArmed           bool
+	selectionAutoScrollDir     int
+	selectionAutoScrollCol     int
+	pendingChatFocusAgentID    string
+	pendingTerminalMouseReport string
+	queuedChatTurns            map[string][]queuedChatTurn
+	liveAgentContexts          map[string]string
+	agentTokens                map[string]int
+	observationWarnings        map[string]vault.RuntimeEvent
+	dismissedWarnings          map[string]string
+	clipboardWrite             func(string) error
 
 	// Text inputs
 	nameInput   textinput.Model
@@ -1020,8 +1021,12 @@ func (a App) copyTextCommand(content, success string) tea.Cmd {
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
-	if key, ok := msg.(tea.KeyMsg); ok && isLeakedTerminalMouseReportKey(key) {
-		return a, nil
+	if key, ok := msg.(tea.KeyMsg); ok {
+		filtered, consumed := a.filterLeakedTerminalMouseReportKey(key)
+		if consumed {
+			return a, nil
+		}
+		msg = filtered
 	}
 	if isCopySelectionMsg(msg) {
 		return a.handleCopySelection()
@@ -2033,6 +2038,46 @@ func isLeakedTerminalMouseReportKey(msg tea.KeyMsg) bool {
 	return msg.Type == tea.KeyRunes && isOnlyTerminalMouseReports(string(msg.Runes))
 }
 
+func (a *App) filterLeakedTerminalMouseReportKey(msg tea.KeyMsg) (tea.KeyMsg, bool) {
+	if msg.Type != tea.KeyRunes {
+		a.pendingTerminalMouseReport = ""
+		return msg, false
+	}
+	raw := string(msg.Runes)
+	if raw == "" {
+		return msg, false
+	}
+	if msg.Paste && a.pendingTerminalMouseReport == "" && !isOnlyTerminalMouseReports(raw) && !isTerminalMouseReportPrefix(raw) {
+		return msg, false
+	}
+
+	combined := raw
+	if a.pendingTerminalMouseReport != "" {
+		combined = a.pendingTerminalMouseReport + raw
+		a.pendingTerminalMouseReport = ""
+	}
+
+	if rest, ok := consumeLeadingTerminalMouseReports(combined); ok {
+		if rest == "" {
+			return msg, true
+		}
+		msg.Runes = []rune(rest)
+		msg.Paste = false
+		return msg, false
+	}
+
+	if isTerminalMouseReportPrefix(combined) {
+		a.pendingTerminalMouseReport = combined
+		return msg, true
+	}
+
+	if combined != raw {
+		msg.Runes = []rune(combined)
+		msg.Paste = false
+	}
+	return msg, false
+}
+
 func isOnlyTerminalMouseReports(s string) bool {
 	if s == "" {
 		return false
@@ -2047,11 +2092,96 @@ func isOnlyTerminalMouseReports(s string) bool {
 	return true
 }
 
+func consumeLeadingTerminalMouseReports(s string) (string, bool) {
+	consumed := false
+	for s != "" {
+		next, ok := consumeTerminalMouseReport(s)
+		if !ok {
+			break
+		}
+		consumed = true
+		s = next
+	}
+	return s, consumed
+}
+
 func consumeTerminalMouseReport(s string) (string, bool) {
 	if next, ok := consumeSGRMouseReport(s); ok {
 		return next, true
 	}
 	return consumeLegacyMouseReport(s)
+}
+
+func isTerminalMouseReportPrefix(s string) bool {
+	return isSGRMouseReportPrefix(s) || isLegacyMouseReportPrefix(s)
+}
+
+func isSGRMouseReportPrefix(s string) bool {
+	const minBracketPrefixLen = len("[<")
+	markers := []string{"\x1b[<", "\u009b<", "[<"}
+	for _, marker := range markers {
+		if len(s) < len(marker) {
+			if marker == "[<" && len(s) < minBracketPrefixLen {
+				continue
+			}
+			if strings.HasPrefix(marker, s) {
+				return true
+			}
+			continue
+		}
+		if !strings.HasPrefix(s, marker) {
+			continue
+		}
+		rest := s[len(marker):]
+		for field := 0; field < 3; field++ {
+			if rest == "" {
+				return true
+			}
+			digits := 0
+			for rest != "" && isASCIIDigit(rest[0]) {
+				rest = rest[1:]
+				digits++
+			}
+			if digits == 0 {
+				return false
+			}
+			if field < 2 {
+				if rest == "" {
+					return true
+				}
+				if rest[0] != ';' {
+					return false
+				}
+				rest = rest[1:]
+				continue
+			}
+			if rest == "" {
+				return true
+			}
+			return false
+		}
+	}
+	return false
+}
+
+func isLegacyMouseReportPrefix(s string) bool {
+	markers := []string{"\x1b[M", "\u009bM", "[M"}
+	for _, marker := range markers {
+		if len(s) < len(marker) {
+			if marker == "[M" && len(s) < len("[M") {
+				continue
+			}
+			if strings.HasPrefix(marker, s) {
+				return true
+			}
+			continue
+		}
+		if !strings.HasPrefix(s, marker) {
+			continue
+		}
+		return len([]rune(s[len(marker):])) < 3
+	}
+	return false
 }
 
 func consumeSGRMouseReport(s string) (string, bool) {
